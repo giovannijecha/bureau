@@ -29,5 +29,25 @@ export const GateDecisionRequestDto = z.object({
   notes: z.string().optional(),
 });
 
+export const GateKindSchema = z.enum(["plan_review", "diff_review", "pr_approval"]);
+export const GateStatusSchema = z.enum(["pending", "open", "approved", "rejected"]);
+
+export const GateViewDto = z.object({
+  id: z.string(),
+  kind: GateKindSchema,
+  status: GateStatusSchema,
+  decision: GateDecisionSchema.optional(),
+});
+
+/** Full task view for the Assistant panel: summary + gates + the diff + PR url. */
+export const TaskDetailDto = TaskSummaryDto.extend({
+  diff: z.string().nullable(),
+  prUrl: z.string().nullable(),
+  worktreePath: z.string().optional(),
+  gates: z.array(GateViewDto),
+});
+
 export type TaskSummary = z.infer<typeof TaskSummaryDto>;
 export type GateDecisionRequest = z.infer<typeof GateDecisionRequestDto>;
+export type GateView = z.infer<typeof GateViewDto>;
+export type TaskDetail = z.infer<typeof TaskDetailDto>;

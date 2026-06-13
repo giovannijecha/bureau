@@ -6,6 +6,10 @@
   "main": "./dist/server.js",
   "scripts": {
     "build": "tsc --build",
+    "typecheck": "tsc --build --noEmit",
+    "test": "vitest run",
+    "test:watch": "vitest",
+    "test:coverage": "vitest run --coverage",
     "dev": "node --watch ./dist/server.js",
     "start": "node ./dist/server.js"
   },
@@ -16,10 +20,15 @@
     "@bureau/vcs": "workspace:*",
     "@bureau/mind": "workspace:*",
     "@bureau/capabilities": "workspace:*",
-    "@bureau/contracts": "workspace:*"
+    "@bureau/contracts": "workspace:*",
+    "@anthropic-ai/sdk": "^0.104.1",
+    "ws": "^8.18.0"
   },
   "devDependencies": {
     "@types/node": "^24.0.0",
-    "typescript": "*"
+    "@types/ws": "^8.5.0",
+    "@vitest/coverage-v8": "^2.1.0",
+    "typescript": "*",
+    "vitest": "^2.1.0"
   }
 }

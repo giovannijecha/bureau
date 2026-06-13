@@ -1,14 +1,16 @@
 {
   "extends": "../../tsconfig.base.json",
+  "comment": "Next.js app — built by `next build`, NOT the root tsc graph. Uses bundler module resolution, not the workspace's Node16, and emits nothing (Next handles bundling).",
   "compilerOptions": {
-    "rootDir": "./src",
-    "outDir": "./dist",
+    "module": "ESNext",
+    "moduleResolution": "Bundler",
+    "composite": false,
+    "declaration": false,
+    "declarationMap": false,
+    "noEmit": true,
     "jsx": "preserve",
     "lib": ["ES2022", "DOM", "DOM.Iterable"],
     "plugins": [{ "name": "next" }]
   },
-  "include": ["src", "next-env.d.ts"],
-  "references": [
-    { "path": "../../packages/contracts" }
-  ]
+  "include": ["src", "next-env.d.ts"]
 }

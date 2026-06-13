@@ -12,7 +12,11 @@
     }
   },
   "scripts": {
-    "build": "tsc --build"
+    "build": "tsc --build",
+    "typecheck": "tsc --build --noEmit",
+    "test": "vitest run",
+    "test:watch": "vitest",
+    "test:coverage": "vitest run --coverage"
   },
   "dependencies": {
     "@bureau/core": "workspace:*",
@@ -20,6 +24,9 @@
     "@bureau/contracts": "workspace:*"
   },
   "devDependencies": {
-    "typescript": "*"
+    "@types/node": "^24.0.0",
+    "@vitest/coverage-v8": "^2.1.0",
+    "typescript": "*",
+    "vitest": "^2.1.0"
   }
 }
