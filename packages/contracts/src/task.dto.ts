@@ -76,7 +76,11 @@ export const ChatResponseDto = z.object({
   proposal: TaskProposalDto.optional(),
 });
 
-export const CreateTaskRequestDto = z.object({ proposal: TaskProposalDto });
+export const CreateTaskRequestDto = z.object({
+  proposal: TaskProposalDto,
+  /** Which project to create the task in (defaults to the first project). */
+  projectId: z.string().optional(),
+});
 
 export type TaskSummary = z.infer<typeof TaskSummaryDto>;
 export type GateDecisionRequest = z.infer<typeof GateDecisionRequestDto>;

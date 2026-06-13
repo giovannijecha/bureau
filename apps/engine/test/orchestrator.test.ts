@@ -7,7 +7,8 @@ import type { CapabilityInput } from "@bureau/capabilities";
 import type { Provider } from "@bureau/providers";
 import type { WsEvent, Message, TaskProposal } from "@bureau/contracts";
 
-import { Orchestrator, type OrchestratorConfig } from "../src/orchestrator.js";
+import { Orchestrator } from "../src/orchestrator.js";
+import { ProjectRegistry, type ProjectConfig } from "../src/projects.js";
 import type { TaskStore, VcsPort } from "../src/ports.js";
 import { toTaskDetail } from "../src/summary.js";
 
@@ -90,11 +91,14 @@ function fakeProvider(reply: string) {
   return { provider, setReply: (r: string) => void (content = r) };
 }
 
-const CONFIG: OrchestratorConfig = {
-  repoOwner: "acme",
-  repoName: "widget",
+const PROJECT: ProjectConfig = {
+  id: "widget",
+  owner: "acme",
+  name: "widget",
+  url: "file:///repos/acme/widget.git",
   baseBranch: "main",
-  worktreesDir: "/tmp/wt",
+  canonicalPath: "/tmp/acme/widget/repo",
+  worktreesDir: "/tmp/acme/widget/worktrees",
 };
 
 let store: TaskStore;
@@ -139,12 +143,20 @@ beforeEach(() => {
     store,
     capabilities: registry,
     provider: prov.provider,
-    vcs: vcs.vcs,
+    projects: new ProjectRegistry([PROJECT]),
+    vcs: () => vcs.vcs,
     events: { emit: (e) => void events.push(e) },
     messages: { append: (m) => void messages.push(m), list: () => messages },
-    config: CONFIG,
     ids: () => `id-${++n}`,
     clock: () => "2026-06-13T00:00:00.000Z",
+  });
+});
+
+// ── projects ─────────────────────────────────────────────────────────────────
+
+describe("projects", () => {
+  it("lists projects as DTOs (no urls or on-disk paths leaked)", () => {
+    expect(orch.listProjects()).toEqual([{ id: "widget", owner: "acme", name: "widget", baseBranch: "main" }]);
   });
 });
 
@@ -171,10 +183,12 @@ describe("chat", () => {
 // ── createTask ─────────────────────────────────────────────────────────────
 
 describe("createTask", () => {
-  it("materializes a DRAFT task (created, not started) with a pr_approval gate", () => {
+  it("materializes a DRAFT task (created, not started) in the active project, with a pr_approval gate", () => {
     const task = orch.createTask(PROPOSAL);
     expect(task.status).toBe("created");
     expect(task.goal).toBe(PROPOSAL.title);
+    expect(task.repoOwner).toBe("acme");
+    expect(task.repoName).toBe("widget");
     expect(task.steps).toHaveLength(1);
     expect(task.steps[0]!.gateAfter).toBe(task.gates[0]!.id);
     expect(task.gates[0]!.kind).toBe("pr_approval");

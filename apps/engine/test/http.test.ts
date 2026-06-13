@@ -51,9 +51,12 @@ function fakeMessages(): MessageLog {
 }
 
 function fakeOrchestrator(
-  over: Partial<Record<"chat" | "createTask" | "startTask" | "stopTask" | "confirmMerge", (...a: never[]) => unknown>> = {}
+  over: Partial<
+    Record<"chat" | "createTask" | "startTask" | "stopTask" | "confirmMerge" | "listProjects", (...a: never[]) => unknown>
+  > = {}
 ) {
   return {
+    listProjects: over.listProjects ?? (() => [{ id: "widget", owner: "acme", name: "widget", baseBranch: "main" }]),
     chat: over.chat ?? (async () => ({ reply: irisMsg, proposal: PROPOSAL })),
     createTask: over.createTask ?? (() => makeTask()),
     startTask: over.startTask ?? (async () => makeTask()),
@@ -81,6 +84,16 @@ const post = (url: string, body: unknown) =>
   });
 
 // ── tests ─────────────────────────────────────────────────────────────────
+
+describe("GET /api/projects", () => {
+  it("lists the configured projects", async () => {
+    const url = await listen({ orchestrator: fakeOrchestrator(), store: fakeStore(), messages: fakeMessages() });
+    const res = await fetch(`${url}/api/projects`);
+    expect(res.status).toBe(200);
+    const body = (await res.json()) as { id: string; name: string }[];
+    expect(body[0]!.name).toBe("widget");
+  });
+});
 
 describe("POST /api/chat", () => {
   it("returns Iris's reply + proposal", async () => {

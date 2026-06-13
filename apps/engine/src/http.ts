@@ -1,6 +1,7 @@
 // HTTP API for the panel. Plain node:http (no framework) — localhost only.
 // Routes:
 //   GET  /health                  liveness
+//   GET  /api/projects            the repositories Bureau works on
 //   POST /api/chat                converse with Iris → { reply, proposal? }
 //   GET  /api/messages            the chat log
 //   GET  /api/tasks               TaskSummary[]
@@ -63,10 +64,16 @@ async function handle(deps: HttpDeps, req: IncomingMessage, res: ServerResponse)
     return;
   }
 
-  // POST /api/chat — a conversation turn with Iris.
+  // GET /api/projects — the repositories Bureau works on.
+  if (method === "GET" && path === "/api/projects") {
+    sendJson(res, 200, deps.orchestrator.listProjects());
+    return;
+  }
+
+  // POST /api/chat — a conversation turn with Iris, scoped to a project.
   if (method === "POST" && path === "/api/chat") {
     const body = SendMessageRequestDto.parse(await readJson(req));
-    sendJson(res, 200, await deps.orchestrator.chat(body.content));
+    sendJson(res, 200, await deps.orchestrator.chat(body.content, body.projectId));
     return;
   }
 
@@ -82,10 +89,10 @@ async function handle(deps: HttpDeps, req: IncomingMessage, res: ServerResponse)
     return;
   }
 
-  // POST /api/tasks — create a draft task from a proposal.
+  // POST /api/tasks — create a draft task from a proposal, in a project.
   if (method === "POST" && path === "/api/tasks") {
     const body = CreateTaskRequestDto.parse(await readJson(req));
-    sendJson(res, 201, toTaskDetail(deps.orchestrator.createTask(body.proposal)));
+    sendJson(res, 201, toTaskDetail(deps.orchestrator.createTask(body.proposal, body.projectId)));
     return;
   }
 

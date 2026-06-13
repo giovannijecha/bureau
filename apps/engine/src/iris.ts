@@ -21,9 +21,23 @@ export interface IrisTurn {
   proposal?: TaskProposal;
 }
 
-export async function irisRespond(provider: Provider, history: Message[]): Promise<IrisTurn> {
+/** The active project, scoped into Iris's system prompt so her proposals target it. */
+export interface IrisProject {
+  readonly owner: string;
+  readonly name: string;
+  readonly baseBranch: string;
+}
+
+export async function irisRespond(
+  provider: Provider,
+  history: Message[],
+  project: IrisProject
+): Promise<IrisTurn> {
+  const system = `${IRIS_SYSTEM}
+
+You are currently working on the repository ${project.owner}/${project.name} (default branch "${project.baseBranch}"). Scope every proposal to this repository — the work happens there.`;
   const messages: ProviderMessage[] = [
-    { role: "system", content: IRIS_SYSTEM },
+    { role: "system", content: system },
     ...history.map(toProviderMessage),
   ];
   const res = await provider.send(messages, { maxTokens: 4000 });
