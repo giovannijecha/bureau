@@ -1,0 +1,14 @@
+{
+  "files": [],
+  "references": [
+    { "path": "./packages/core" },
+    { "path": "./packages/contracts" },
+    { "path": "./packages/db" },
+    { "path": "./packages/providers" },
+    { "path": "./packages/vcs" },
+    { "path": "./packages/mind" },
+    { "path": "./packages/capabilities" },
+    { "path": "./apps/engine" },
+    { "path": "./apps/panel" }
+  ]
+}

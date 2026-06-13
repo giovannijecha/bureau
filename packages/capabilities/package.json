@@ -1,0 +1,25 @@
+{
+  "name": "@bureau/capabilities",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "main": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "exports": {
+    ".": {
+      "import": "./dist/index.js",
+      "types": "./dist/index.d.ts"
+    }
+  },
+  "scripts": {
+    "build": "tsc --build"
+  },
+  "dependencies": {
+    "@bureau/core": "workspace:*",
+    "@bureau/providers": "workspace:*",
+    "@bureau/contracts": "workspace:*"
+  },
+  "devDependencies": {
+    "typescript": "*"
+  }
+}

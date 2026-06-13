@@ -1,0 +1,6 @@
+// @bureau/contracts — Zod DTOs shared between panel and engine.
+// No runtime imports from other @bureau/* packages.
+
+export * from "./task.dto.js";
+export * from "./message.dto.js";
+export * from "./ws.dto.js";

@@ -1,0 +1,14 @@
+{
+  "extends": "../../tsconfig.base.json",
+  "compilerOptions": {
+    "rootDir": "./src",
+    "outDir": "./dist",
+    "jsx": "preserve",
+    "lib": ["ES2022", "DOM", "DOM.Iterable"],
+    "plugins": [{ "name": "next" }]
+  },
+  "include": ["src", "next-env.d.ts"],
+  "references": [
+    { "path": "../../packages/contracts" }
+  ]
+}

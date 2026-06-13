@@ -1,0 +1,25 @@
+{
+  "name": "bureau",
+  "private": true,
+  "version": "0.1.0",
+  "packageManager": "pnpm@9.0.0",
+  "scripts": {
+    "build": "tsc --build",
+    "typecheck": "tsc --build --noEmit",
+    "lint:boundaries": "depcruise --config .dependency-cruiser.cjs packages apps",
+    "clean": "tsc --build --clean"
+  },
+  "devDependencies": {
+    "typescript": "^5.5.0",
+    "dependency-cruiser": "^16.0.0"
+  },
+  "workspaces": [
+    "packages/*",
+    "apps/*"
+  ],
+  "pnpm": {
+    "onlyBuiltDependencies": [
+      "esbuild"
+    ]
+  }
+}

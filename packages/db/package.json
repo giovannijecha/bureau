@@ -1,0 +1,28 @@
+{
+  "name": "@bureau/db",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "main": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "exports": {
+    ".": {
+      "import": "./dist/index.js",
+      "types": "./dist/index.d.ts"
+    }
+  },
+  "scripts": {
+    "build": "tsc --build",
+    "migrate": "drizzle-kit migrate"
+  },
+  "dependencies": {
+    "better-sqlite3": "^9.6.0",
+    "drizzle-orm": "^0.31.0",
+    "@bureau/core": "workspace:*"
+  },
+  "devDependencies": {
+    "@types/better-sqlite3": "^7.6.0",
+    "drizzle-kit": "^0.22.0",
+    "typescript": "*"
+  }
+}
