@@ -1,0 +1,25 @@
+{
+  "name": "@bureau/engine",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "main": "./dist/server.js",
+  "scripts": {
+    "build": "tsc --build",
+    "dev": "node --watch ./dist/server.js",
+    "start": "node ./dist/server.js"
+  },
+  "dependencies": {
+    "@bureau/core": "workspace:*",
+    "@bureau/db": "workspace:*",
+    "@bureau/providers": "workspace:*",
+    "@bureau/vcs": "workspace:*",
+    "@bureau/mind": "workspace:*",
+    "@bureau/capabilities": "workspace:*",
+    "@bureau/contracts": "workspace:*"
+  },
+  "devDependencies": {
+    "@types/node": "^24.0.0",
+    "typescript": "*"
+  }
+}
