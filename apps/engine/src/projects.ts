@@ -91,7 +91,11 @@ export function projectsFromJson(json: string, reposRoot: string): ProjectConfig
     const name = requireStr(r.name, `projects[${i}].name`);
     const url = requireStr(r.url, `projects[${i}].url`);
     const baseBranch = typeof r.baseBranch === "string" && r.baseBranch.trim() !== "" ? r.baseBranch : "main";
-    const id = typeof r.id === "string" && r.id.trim() !== "" ? r.id : slug(name);
+    // The id keys the on-disk paths, so it MUST be a safe slug — including any
+    // explicit id (slug strips `/`, `.`, `..`, so it can't escape reposRoot).
+    // Derive from owner+name (not name alone) so two repos that share a name under
+    // different owners don't collide.
+    const id = typeof r.id === "string" && r.id.trim() !== "" ? slug(r.id) : slug(`${owner}-${name}`);
     return {
       id,
       owner,

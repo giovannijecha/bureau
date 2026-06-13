@@ -63,9 +63,10 @@ function buildRegistry(): ProjectRegistry {
     return new ProjectRegistry(projectsFromJson(json, env("BUREAU_REPOS_ROOT")));
   }
   const name = env("BUREAU_REPO_NAME");
+  const owner = env("BUREAU_REPO_OWNER");
   const project: ProjectConfig = {
-    id: slug(name),
-    owner: env("BUREAU_REPO_OWNER"),
+    id: slug(`${owner}-${name}`),
+    owner,
     name,
     url: env("BUREAU_REPO_URL"),
     baseBranch: env("BUREAU_BASE_BRANCH", "main"),

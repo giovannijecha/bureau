@@ -184,11 +184,21 @@ export function transition(task: Task, event: TransitionEvent): Task {
       } satisfies DecisionEntry);
 
     case "ABORT_TASK":
-      return patch(task, now, { status: "aborted" }, {
-        type: "task_aborted",
-        at: now,
-        reason: event.reason,
-      } satisfies DecisionEntry);
+      // Aborting also terminalises any in-flight step, so a stopped task never
+      // carries a perpetually "running" step (which the panel would render as a
+      // spinner on a dead task). The step's failure reason is the abort reason.
+      return {
+        ...patch(task, now, { status: "aborted" }, {
+          type: "task_aborted",
+          at: now,
+          reason: event.reason,
+        } satisfies DecisionEntry),
+        steps: task.steps.map((s) =>
+          s.status === "running"
+            ? { ...s, status: "failed", failureReason: event.reason, completedAt: now }
+            : s
+        ),
+      };
 
     default: {
       const _exhaustive: never = event;

@@ -1,6 +1,6 @@
 "use client";
 
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import Link from "next/link";
 import {
   ArrowLeft,
@@ -36,12 +36,15 @@ export default function TaskDetailPage({ params }: { params: { id: string } }) {
   const [task, setTask] = useState<TaskDetail | null>(null);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const alive = useRef(true);
+  useEffect(() => () => void (alive.current = false), []);
 
   const load = useCallback(async () => {
     try {
-      setTask(await getTask(id));
+      const t = await getTask(id);
+      if (alive.current) setTask(t);
     } catch (e) {
-      setError(errMsg(e));
+      if (alive.current) setError(errMsg(e));
     }
   }, [id]);
 

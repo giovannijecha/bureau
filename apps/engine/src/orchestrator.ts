@@ -96,6 +96,7 @@ export class Orchestrator {
     const task: Task = {
       id: taskId as TaskId,
       goal: proposal.title,
+      projectId: project.id,
       repoOwner: project.owner,
       repoName: project.name,
       status: "created",
@@ -139,9 +140,14 @@ export class Orchestrator {
     const branch = this.branchFor(taskId);
     let currentStepId: StepId | undefined;
     try {
-      const project = this.d.projects.find(this.requireTask(taskId).repoOwner, this.requireTask(taskId).repoName);
+      const project = this.resolveProject(this.requireTask(taskId));
       const vcs = this.d.vcs(project);
       const worktreePath = join(project.worktreesDir, taskId);
+
+      // Persist the worktree path BEFORE creating it: the path is deterministic,
+      // but both cleanup paths (stop, failure) gate on the persisted field — so a
+      // throw or stop during setup must already have it recorded to clean up.
+      this.setWorktree(this.requireTask(taskId), worktreePath);
 
       await vcs.ensureClone();
       await vcs.setupWorktree(branch, worktreePath);
@@ -152,7 +158,6 @@ export class Orchestrator {
         await vcs.removeWorktree({ path: worktreePath, branch }, true).catch(() => {});
         return;
       }
-      task = this.setWorktree(task, worktreePath);
       task = this.drive(task, { type: "PLANNING_DONE" });
       this.emitTaskUpdated(task);
 
@@ -180,6 +185,7 @@ export class Orchestrator {
 
       // Capture the diff (incl. new files), then commit it locally on the branch.
       const diff = await vcs.workingDiff(worktreePath);
+      if (this.requireTask(taskId).status !== "executing") return; // stopped before commit
       await vcs.commitAll(worktreePath, `Bureau: ${truncate(this.requireTask(taskId).goal)}`);
       task = this.requireTask(taskId);
       if (task.status !== "executing") return; // stopped during commit
@@ -199,13 +205,14 @@ export class Orchestrator {
       this.emitTaskUpdated(task);
       this.appendMessage("iris", `Done — the branch for "${task.goal}" is ready for your review.`, taskId);
     } catch (err) {
-      this.failPipeline(taskId, currentStepId, err);
+      await this.failPipeline(taskId, currentStepId, err);
     }
   }
 
   /** A pipeline error: mark the running step failed (if any), abort the task, and
-   *  clean up — best-effort, never throws (it runs in a floating background promise). */
-  private failPipeline(taskId: string, stepId: StepId | undefined, err: unknown): void {
+   *  clean up. Best-effort, never throws. Awaited as part of runPipeline so the
+   *  worktree teardown is covered by settle()/settleAll() (graceful shutdown). */
+  private async failPipeline(taskId: string, stepId: StepId | undefined, err: unknown): Promise<void> {
     let task: Task;
     try {
       task = this.requireTask(taskId);
@@ -222,7 +229,13 @@ export class Orchestrator {
       this.appendMessage("iris", `"${task.goal}" hit a problem and stopped: ${errMessage(err)}.`, taskId);
       if (task.worktreePath !== undefined) {
         const vcs = this.vcsForTask(task);
-        if (vcs) void vcs.removeWorktree({ path: task.worktreePath, branch: this.branchFor(taskId) }, true).catch(() => {});
+        if (vcs) {
+          try {
+            await vcs.removeWorktree({ path: task.worktreePath, branch: this.branchFor(taskId) }, true);
+          } catch (cleanupErr) {
+            console.warn(`[engine] could not remove worktree for task ${taskId} (orphaned): ${errMessage(cleanupErr)}`);
+          }
+        }
       }
     } catch {
       /* best-effort: a concurrent stop may have already aborted it */
@@ -235,14 +248,22 @@ export class Orchestrator {
     if (task.status === "completed" || task.status === "aborted") return task; // already resolved
     task = this.drive(task, { type: "ABORT_TASK", reason: "Stopped by the CEO." });
     this.emitTaskUpdated(task);
-    this.appendMessage("iris", `Stopped "${task.goal}" and cleaned up its workspace.`, taskId);
+    this.appendMessage("iris", `Stopped "${task.goal}".`, taskId);
     if (task.worktreePath !== undefined) {
       const vcs = this.vcsForTask(task);
       if (vcs) {
-        try {
-          await vcs.removeWorktree({ path: task.worktreePath, branch: this.branchFor(task.id) }, true);
-        } catch {
-          /* best-effort: a background step may still hold a file; the worktree is orphaned but safe */
+        const ref = { path: task.worktreePath, branch: this.branchFor(task.id) };
+        if (this.running.has(taskId)) {
+          // The background pipeline still holds the worktree. Tear it down AFTER it
+          // observes the abort and releases the path — single-owner, no race — and
+          // don't block the Stop response on it. (settle never rejects.)
+          void this.settle(taskId).then(() => vcs.removeWorktree(ref, true).catch(() => {}));
+        } else {
+          try {
+            await vcs.removeWorktree(ref, true);
+          } catch {
+            /* best-effort: the worktree is orphaned but safe */
+          }
         }
       }
     }
@@ -267,38 +288,57 @@ export class Orchestrator {
       this.appendMessage("iris", "Approved, but the push gate isn't satisfied — nothing was merged.", task.id);
       return task;
     }
-    const project = this.d.projects.find(task.repoOwner, task.repoName);
+    // Resolve push + PR/merge from ONE project (the task's stable id), so the
+    // branch and the PR can never target different repos.
+    const project = this.resolveProject(task);
     const vcs = this.d.vcs(project);
     const worktreePath = requireWorktree(task);
     const branch = this.branchFor(task.id);
     const title = `Bureau: ${truncate(task.goal)}`;
+    let prUrl: string | undefined;
     try {
       await vcs.push(worktreePath, branch);
-      const url = await vcs.openPr(branch, title, prBody(task.goal));
+      prUrl = await vcs.openPr(branch, title, prBody(task.goal));
       await vcs.mergePr(branch);
       task = this.addArtifacts(task, [
         {
           id: this.d.ids() as ArtifactId,
           kind: "pr_url",
-          ref: url,
+          ref: prUrl,
           producedByStep: task.steps[task.steps.length - 1]!.id,
           createdAt: this.d.clock(),
         },
       ]);
-      this.appendMessage("iris", `Merged to main — ${url}. Branch deleted, repo clean.`, task.id);
-      await vcs.removeWorktree({ path: worktreePath, branch }, true);
+      this.appendMessage("iris", `Merged to main — ${prUrl}. Branch deleted, repo clean.`, task.id);
     } catch (err) {
-      this.appendMessage("iris", `The merge failed: ${errMessage(err)}. The branch ${branch} may be pushed — check GitHub.`, task.id);
+      const detail =
+        prUrl !== undefined
+          ? `The PR is open at ${prUrl} — you can complete the merge on GitHub.`
+          : `The branch ${branch} may be pushed — check GitHub.`;
+      this.appendMessage("iris", `The merge didn't complete: ${errMessage(err)}. ${detail}`, task.id);
+    } finally {
+      // Always release the local worktree (the work now lives on the branch / PR).
+      await vcs.removeWorktree({ path: worktreePath, branch }, true).catch(() => {});
     }
     return task;
   }
 
   // ── helpers ───────────────────────────────────────────────────────────────
 
+  /** Resolve the project a task belongs to — by its stable, unique id (preferred),
+   *  falling back to owner/name only for tasks persisted before projectId existed.
+   *  Resolving by id keeps push/PR/merge bound to the same repo even if two
+   *  configured projects share an owner/name. */
+  private resolveProject(task: Task): ProjectConfig {
+    return task.projectId !== undefined
+      ? this.d.projects.get(task.projectId)
+      : this.d.projects.find(task.repoOwner, task.repoName);
+  }
+
   /** A VCS port bound to a task's project, or null if its project is gone. */
   private vcsForTask(task: Task): VcsPort | null {
     try {
-      return this.d.vcs(this.d.projects.find(task.repoOwner, task.repoName));
+      return this.d.vcs(this.resolveProject(task));
     } catch {
       return null;
     }

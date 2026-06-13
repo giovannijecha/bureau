@@ -107,6 +107,11 @@ export type TaskStatus =
 export interface Task {
   readonly id: TaskId;
   readonly goal: string;
+  /** The project (repository) this task belongs to — the registry's stable, unique
+   *  key. Resolution downstream MUST use this, not repoOwner/repoName (which are
+   *  display-only and not guaranteed unique across forks). Optional only so tasks
+   *  persisted before this field existed still load. */
+  readonly projectId?: string;
   readonly repoOwner: string;
   readonly repoName: string;
   /** worktree path on disk, set after VCS setup */

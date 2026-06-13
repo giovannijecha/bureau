@@ -478,6 +478,22 @@ describe("transition() — ABORT_TASK", () => {
       reason: "user cancelled",
     });
   });
+
+  it("terminalises a running step → failed (no perpetually-running step on a dead task)", () => {
+    const task = makeTask({
+      status: "executing",
+      steps: [
+        makeStep({ id: sid("s1"), status: "completed" }),
+        makeStep({ id: sid("s2"), status: "running" }),
+        makeStep({ id: sid("s3"), status: "pending" }),
+      ],
+    });
+
+    const next = transition(task, { type: "ABORT_TASK", reason: "stopped" });
+
+    expect(next.steps.map((s) => s.status)).toEqual(["completed", "failed", "pending"]);
+    expect(next.steps[1]).toMatchObject({ status: "failed", failureReason: "stopped" });
+  });
 });
 
 describe("transition() — unknown event", () => {
