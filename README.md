@@ -9,6 +9,10 @@
 
 Local-first AI agent team that works on your GitHub repositories. You are the CEO and talk exclusively with **Iris** (the orchestrator). Iris materialises a persistent **Task** and delegates to stateless **capability** workers (plan/edit/test/review/document). State is the truth; agents are replaceable operatives.
 
+## About
+
+Bureau is a local-first AI agent team that turns plain-language requests into reviewed pull requests on your own GitHub repositories — you stay the CEO while stateless workers do the work behind durable, human-gated Tasks.
+
 ## Quick Start
 
 ### Prerequisites
@@ -42,20 +46,41 @@ apps/       engine (Node daemon), panel (Next.js, localhost only)
 
 Start with `packages/core/src/task.ts` and `packages/core/src/state-machine.ts` — pure, unit-testable, no dependencies.
 
+### Run the engine
+
+The engine is configured entirely via env. Multi-repo:
+
+```bash
+BUREAU_PROJECTS='[{"owner":"you","name":"your-repo","url":"https://github.com/you/your-repo.git","baseBranch":"main"}]' \
+BUREAU_REPOS_ROOT="$HOME/.bureau/repos" \   # each project clones to <root>/<id>/repo, worktrees under <root>/<id>/worktrees
+BUREAU_GH_PATH="$(command -v gh)" \           # gh must be authenticated (run `gh auth setup-git` once)
+BUREAU_AUTHOR_NAME="Bureau" BUREAU_AUTHOR_EMAIL="you@example.com" \
+node apps/engine/dist/server.js               # listens on :4319 (HTTP + ws:/ws)
+```
+
+Provider: set `ANTHROPIC_API_KEY` to use the API directly, otherwise the engine delegates to the local `claude` CLI. Optional: `PORT` (4319), `BUREAU_DB` (`./bureau.db`), `BUREAU_GIT_PATH`. A single repo can also be configured with the legacy `BUREAU_REPO_OWNER` / `BUREAU_REPO_NAME` / `BUREAU_REPO_URL` / `BUREAU_CANONICAL` / `BUREAU_WORKTREES` vars.
+
+Then run the panel (`apps/panel`) with `pnpm dev` and open it on localhost.
+
 ## How it works
 
-You never drive the workers directly — you chat with Iris, and she turns the conversation into durable state that the engine executes step by step.
+You never drive the workers directly — you chat with Iris, and she turns the conversation into durable state that the engine executes in the background. Your decisive powers are exactly three: **Start**, **Stop**, and the final **Confirm-merge**.
 
 ```
-chat ──▶ Task ──▶ worktree ──▶ diff ──▶ approval ──▶ PR
+chat ──▶ proposal ──▶ Task ──▶ Start ──▶ worktree ──▶ diff ──▶ confirm-merge ──▶ squash-merged
 ```
 
-1. **chat** — you describe the change to Iris in plain language.
-2. **Task** — Iris materialises a persistent Task (steps + gates) in SQLite; this state, not the agent, is the source of truth.
-3. **worktree** — the engine checks out an isolated git worktree under the repo's canonical clone, so concurrent tasks never collide.
-4. **diff** — a capability worker (e.g. `edit`) makes the change; the resulting diff is surfaced in the panel.
-5. **approval** — a human-review gate (`diff_review`) waits for *your* decision. The agent proposes, you decide.
-6. **PR** — only once `canPush()` returns `true` does the engine `push` and `openPr` via `gh`.
+1. **chat** — you converse with Iris about the active **Project** (one of your repos). The chat is pure conversation — no diffs here.
+2. **proposal** — when there's something concrete, Iris proposes a Task: a pipeline of steps. You can **Create** it, **Refine** the proposal, or keep chatting.
+3. **Start** — you press Start. The engine runs the pipeline in an isolated git worktree **in the background** (it returns immediately), and the panel streams live progress over a WebSocket — you can walk away.
+4. **diff** — a capability worker (e.g. `edit`) makes the change; it is committed **locally** on a branch and **never pushed**. You review the branch in the panel.
+5. **confirm-merge** — your final confirmation squash-merges into `main` and deletes the branch. Only here, and only when `canPush()` returns `true`, does anything reach GitHub.
+
+At any point you can **Stop** a running task — it aborts and tears down its worktree, having pushed nothing.
+
+## Projects
+
+One engine serves many repositories. Each repo is a **Project**; you pick the active one in the Assistant (a dropdown) so Iris scopes her proposals and tasks to it. Configure them with `BUREAU_PROJECTS` (see below).
 
 ## Capability workers
 
@@ -112,7 +137,7 @@ Imports only ever point inward. `core` and `contracts` depend on no other `@bure
 
 ## Security
 
-`canPush()` lives in `packages/core` and is the **only** gate before any `push` or `openPr`. Human-review gates (`plan_review`, `diff_review`, `pr_approval`) accept only human decisions — the agent proposes, the human decides. Secrets are always encrypted at rest; the DB stores only a `secret_ref`, never plaintext.
+`canPush()` lives in `packages/core` and is the **only** gate before any `push`, `openPr`, or `mergePr`. These three run from exactly one place — the CEO's final confirm-merge — inside an `if (canPush(task))` branch; the background pipeline only ever commits locally. Human-review gates (`plan_review`, `diff_review`, `pr_approval`) accept only human decisions — the agent proposes, the human decides. Secrets are always encrypted at rest; the DB stores only a `secret_ref`, never plaintext.
 
 ## Roadmap
 
