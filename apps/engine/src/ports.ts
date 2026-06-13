@@ -30,6 +30,8 @@ export interface VcsPort {
   push(worktreePath: string, branch: string): Promise<void>;
   /** Open a PR and return its URL. Iris calls this ONLY after canPush()===true. */
   openPr(branch: string, title: string, body: string): Promise<string>;
+  /** Squash-merge the branch's PR into main and delete it (the final merge). */
+  mergePr(branch: string): Promise<void>;
   /** Tear down a worktree (force = remove even if dirty, for aborts). */
   removeWorktree(ref: WorktreeRef, force: boolean): Promise<void>;
 }

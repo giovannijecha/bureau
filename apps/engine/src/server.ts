@@ -64,8 +64,9 @@ function main(): void {
   runMigrations(db);
   const store = new TaskRepo(db);
 
+  const provider = buildProvider();
   const capabilities = new CapabilityRegistry();
-  capabilities.register(new EditCapability({ provider: buildProvider() }));
+  capabilities.register(new EditCapability({ provider }));
 
   const runner = makeRunner({
     ...(process.env.BUREAU_GIT_PATH !== undefined ? { gitPath: process.env.BUREAU_GIT_PATH } : {}),
@@ -94,6 +95,7 @@ function main(): void {
   const orchestrator = new Orchestrator({
     store,
     capabilities,
+    provider,
     vcs,
     events,
     messages,

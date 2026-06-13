@@ -10,6 +10,7 @@ import {
   commitAll,
   push,
   openPr,
+  mergePr,
   removeWorktree,
   defaultRunner,
   type Runner,
@@ -64,6 +65,10 @@ export class RealVcs implements VcsPort {
 
   openPr(branch: string, title: string, body: string): Promise<string> {
     return openPr(this.ownerRepo, branch, title, body, this.runner);
+  }
+
+  mergePr(branch: string): Promise<void> {
+    return mergePr(this.ownerRepo, branch, this.runner);
   }
 
   async removeWorktree(ref: WorktreeRef, force: boolean): Promise<void> {

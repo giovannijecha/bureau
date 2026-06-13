@@ -1,41 +1,34 @@
 "use client";
 
 import { useRef, useState } from "react";
+import Link from "next/link";
 import {
   Sparkles,
-  ArrowRight,
-  FileText,
-  BookOpen,
   Send,
   Loader2,
-  GitBranch,
-  CheckCircle2,
   AlertCircle,
-  type LucideIcon,
+  Workflow,
+  Pencil,
+  MessageSquare,
+  ArrowRight,
+  CheckCircle2,
 } from "lucide-react";
-import type { TaskDetail, Message } from "@bureau/contracts";
-import { sendMessage, decideGate, retryPr } from "../lib/api";
+import type { Message, TaskProposal } from "@bureau/contracts";
+import { chat, createTask } from "../lib/api";
 import { cn } from "../lib/utils";
 
-const EXAMPLES: { title: string; icon: LucideIcon; prompt: string }[] = [
-  { title: "Add an endpoint", icon: ArrowRight, prompt: "Add a GET /health endpoint that returns 200 OK." },
-  { title: "Write a file", icon: FileText, prompt: "Add a CONTRIBUTING.md with a short contribution guide." },
-  { title: "Improve the README", icon: BookOpen, prompt: "Add a Quick Start section to the README.md." },
-];
-
-const STATUS_COLOR: Record<string, string> = {
-  awaiting_human: "border-amber-500/40 text-amber-500",
-  completed: "border-green-500/40 text-green-500",
-  executing: "border-blue-500/40 text-blue-400",
-  planning: "border-blue-500/40 text-blue-400",
-  created: "border-border text-muted-foreground",
-  aborted: "border-red-500/40 text-red-500",
+const ASSIGNEE: Record<string, string> = {
+  plan: "Planner",
+  edit: "Editor",
+  test: "Tester",
+  review: "Reviewer",
+  document: "Scribe",
 };
 
 export default function AssistantPage() {
   const [input, setInput] = useState("");
   const [log, setLog] = useState<Message[]>([]);
-  const [task, setTask] = useState<TaskDetail | null>(null);
+  const [proposal, setProposal] = useState<TaskProposal | null>(null);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const inputRef = useRef<HTMLTextAreaElement>(null);
@@ -45,12 +38,13 @@ export default function AssistantPage() {
     if (!content || busy) return;
     setBusy(true);
     setError(null);
-    setLog((l) => [...l, localUser(content)]);
+    setProposal(null);
+    setLog((l) => [...l, local("user", content)]);
     setInput("");
     try {
-      const res = await sendMessage(content);
-      setLog((l) => [...l, res.message]);
-      setTask(res.task);
+      const res = await chat(content);
+      setLog((l) => [...l, res.reply]);
+      if (res.proposal) setProposal(res.proposal);
     } catch (e) {
       setError(errMsg(e));
     } finally {
@@ -58,12 +52,20 @@ export default function AssistantPage() {
     }
   }
 
-  async function act(fn: () => Promise<TaskDetail>) {
-    if (busy) return;
+  function refine() {
+    setProposal(null);
+    setInput("Let's refine that: ");
+    inputRef.current?.focus();
+  }
+
+  async function create() {
+    if (!proposal || busy) return;
     setBusy(true);
     setError(null);
     try {
-      setTask(await fn());
+      const task = await createTask(proposal);
+      setProposal(null);
+      setLog((l) => [...l, createdNote(task.id, proposal.title)]);
     } catch (e) {
       setError(errMsg(e));
     } finally {
@@ -71,147 +73,38 @@ export default function AssistantPage() {
     }
   }
 
-  const openGate = task?.gates.find((g) => g.status === "open");
-  const needsRetry = task?.status === "completed" && !task.prUrl;
-  const empty = log.length === 0 && !task;
+  const empty = log.length === 0 && !proposal;
 
   return (
     <div className="flex h-full flex-col">
-      {/* page header */}
       <div className="flex items-center gap-2.5 border-b px-6 py-4">
         <Sparkles className="h-5 w-5 text-primary" />
         <div>
           <h1 className="text-base font-semibold leading-none">Assistant</h1>
           <p className="mt-1.5 text-xs text-muted-foreground">
-            Describe a change — Iris prepares it in an isolated worktree and opens a PR on your approval.
+            Talk with Iris. When you&apos;re aligned, she proposes a task you can create and run.
           </p>
         </div>
       </div>
 
-      {/* scrollable body */}
       <div className="flex-1 overflow-y-auto">
         {empty ? (
-          <div className="flex min-h-full flex-col items-center justify-center gap-8 px-6 py-10">
-            <div className="flex flex-col items-center gap-3 text-center">
-              <div className="flex h-12 w-12 items-center justify-center rounded-2xl bg-primary/10 text-primary">
-                <Sparkles className="h-6 w-6" />
-              </div>
-              <h2 className="text-xl font-semibold">What should Bureau build?</h2>
-              <p className="max-w-md text-sm text-muted-foreground">
-                Describe a change in plain language. Iris reads the repo, makes the edit, and shows you the diff before
-                anything is pushed.
-              </p>
+          <div className="flex min-h-full flex-col items-center justify-center gap-3 px-6 py-10 text-center">
+            <div className="flex h-12 w-12 items-center justify-center rounded-2xl bg-primary/10 text-primary">
+              <Sparkles className="h-6 w-6" />
             </div>
-            <div className="grid w-full max-w-2xl grid-cols-1 gap-3 sm:grid-cols-3">
-              {EXAMPLES.map((ex) => {
-                const Icon = ex.icon;
-                return (
-                  <button
-                    key={ex.title}
-                    onClick={() => {
-                      setInput(ex.prompt);
-                      inputRef.current?.focus();
-                    }}
-                    className="group flex flex-col gap-2.5 rounded-xl border bg-card p-4 text-left transition-colors hover:border-primary/50 hover:bg-accent/50"
-                  >
-                    <span className="flex h-9 w-9 items-center justify-center rounded-lg bg-primary/10 text-primary transition-colors group-hover:bg-primary/15">
-                      <Icon className="h-[18px] w-[18px]" />
-                    </span>
-                    <span className="text-sm font-semibold">{ex.title}</span>
-                    <span className="text-xs leading-relaxed text-muted-foreground">{ex.prompt}</span>
-                  </button>
-                );
-              })}
-            </div>
+            <h2 className="text-xl font-semibold">Let&apos;s figure out what to build</h2>
+            <p className="max-w-md text-sm text-muted-foreground">
+              Tell Iris what you need or where you are. She&apos;ll talk it through and, when it&apos;s clear, propose a
+              task — a pipeline you can create, review, and run.
+            </p>
           </div>
         ) : (
           <div className="mx-auto w-full max-w-3xl space-y-4 px-6 py-6">
             {log.map((m) => (
-              <div key={m.id} className={cn("flex", m.role === "user" ? "justify-end" : "justify-start")}>
-                <div
-                  className={cn(
-                    "max-w-[82%] rounded-2xl px-4 py-2.5 text-sm leading-relaxed",
-                    m.role === "user" ? "bg-primary text-primary-foreground" : "border bg-card"
-                  )}
-                >
-                  {m.content}
-                </div>
-              </div>
+              <ChatBubble key={m.id} message={m} />
             ))}
-
-            {task && (
-              <div className="overflow-hidden rounded-xl border bg-card">
-                <div className="flex items-center justify-between border-b px-4 py-3">
-                  <div className="flex items-center gap-2.5">
-                    <span
-                      className={cn(
-                        "inline-flex items-center rounded-full border px-2 py-0.5 text-xs font-medium",
-                        STATUS_COLOR[task.status] ?? "border-border text-muted-foreground"
-                      )}
-                    >
-                      {task.status.replace(/_/g, " ")}
-                    </span>
-                    <code className="font-mono text-xs text-muted-foreground">{task.id.slice(0, 8)}</code>
-                  </div>
-                  <span className="flex items-center gap-1.5 text-xs text-muted-foreground">
-                    <GitBranch className="h-3.5 w-3.5" />
-                    {task.repoOwner}/{task.repoName}
-                  </span>
-                </div>
-
-                {task.diff !== null && <DiffView diff={task.diff} />}
-
-                {openGate && (
-                  <div className="flex items-center justify-between gap-4 border-t bg-muted/40 px-4 py-3">
-                    <span className="text-sm text-muted-foreground">
-                      Review the diff. Approving commits, pushes, and opens the PR.
-                    </span>
-                    <div className="flex shrink-0 gap-2">
-                      <button
-                        disabled={busy}
-                        onClick={() => act(() => decideGate(openGate.id, "approved"))}
-                        className="inline-flex h-9 items-center gap-1.5 rounded-md bg-green-600 px-3.5 text-sm font-medium text-white transition-colors hover:bg-green-700 disabled:opacity-50"
-                      >
-                        {busy ? <Loader2 className="h-4 w-4 animate-spin" /> : <CheckCircle2 className="h-4 w-4" />}
-                        Approve &amp; open PR
-                      </button>
-                      <button
-                        disabled={busy}
-                        onClick={() => act(() => decideGate(openGate.id, "rejected"))}
-                        className="inline-flex h-9 items-center rounded-md border bg-background px-3.5 text-sm font-medium transition-colors hover:bg-accent disabled:opacity-50"
-                      >
-                        Reject
-                      </button>
-                    </div>
-                  </div>
-                )}
-
-                {needsRetry && (
-                  <div className="flex items-center justify-between gap-4 border-t bg-muted/40 px-4 py-3">
-                    <span className="text-sm text-muted-foreground">The branch was pushed but the PR didn&apos;t open.</span>
-                    <button
-                      disabled={busy}
-                      onClick={() => act(() => retryPr(task.id))}
-                      className="inline-flex h-9 items-center gap-1.5 rounded-md bg-green-600 px-3.5 text-sm font-medium text-white transition-colors hover:bg-green-700 disabled:opacity-50"
-                    >
-                      {busy ? <Loader2 className="h-4 w-4 animate-spin" /> : null}
-                      Retry PR
-                    </button>
-                  </div>
-                )}
-
-                {task.prUrl && (
-                  <div className="flex items-center gap-2 border-t bg-green-500/5 px-4 py-3 text-sm text-green-500">
-                    <CheckCircle2 className="h-4 w-4 shrink-0" />
-                    <span className="text-foreground">PR opened —</span>
-                    <a href={task.prUrl} target="_blank" rel="noreferrer" className="font-medium text-green-500 underline underline-offset-2">
-                      {task.prUrl}
-                    </a>
-                  </div>
-                )}
-              </div>
-            )}
-
+            {proposal && <ProposalCard proposal={proposal} busy={busy} onCreate={create} onRefine={refine} onKeep={() => setProposal(null)} />}
             {error && (
               <div className="flex items-center gap-1.5 text-sm text-destructive">
                 <AlertCircle className="h-4 w-4" />
@@ -222,7 +115,6 @@ export default function AssistantPage() {
         )}
       </div>
 
-      {/* composer */}
       <div className="shrink-0 px-4 pb-4 pt-1">
         <div className="mx-auto w-full max-w-3xl rounded-xl border bg-card shadow-sm transition-colors focus-within:border-primary/60">
           <textarea
@@ -237,14 +129,10 @@ export default function AssistantPage() {
               }
             }}
             rows={2}
-            placeholder="Describe a change… (Enter to send, Shift+Enter for a new line)"
+            placeholder="Talk to Iris… (Enter to send, Shift+Enter for a new line)"
             className="min-h-[56px] w-full resize-none bg-transparent px-3.5 py-3 text-sm outline-none placeholder:text-muted-foreground"
           />
-          <div className="flex items-center justify-between px-2 pb-2">
-            <span className="inline-flex items-center gap-1.5 rounded-lg px-2 py-1 text-xs text-muted-foreground">
-              <GitBranch className="h-3.5 w-3.5" />
-              {task ? `${task.repoOwner}/${task.repoName}` : "target repo"}
-            </span>
+          <div className="flex items-center justify-end px-2 pb-2">
             <button
               onClick={onSend}
               disabled={busy || !input.trim()}
@@ -260,38 +148,109 @@ export default function AssistantPage() {
   );
 }
 
-function DiffView({ diff }: { diff: string }) {
-  if (diff.trim() === "") {
-    return <pre className="px-4 py-6 text-center font-mono text-xs text-muted-foreground">(no changes)</pre>;
+function ChatBubble({ message }: { message: Message }) {
+  if (message.role === "system") {
+    return (
+      <div className="flex justify-center">
+        <Link
+          href={message.taskId ? `/tasks/${message.taskId}` : "/tasks"}
+          className="inline-flex items-center gap-2 rounded-lg border bg-card px-3 py-2 text-sm text-muted-foreground transition-colors hover:bg-accent/50"
+        >
+          <CheckCircle2 className="h-4 w-4 text-green-500" />
+          {message.content}
+        </Link>
+      </div>
+    );
   }
-  const lines = diff.split("\n");
   return (
-    <pre className="max-h-[420px] overflow-auto bg-black/40 px-4 py-3 font-mono text-xs leading-relaxed">
-      {lines.map((line, i) => {
-        const cls =
-          line.startsWith("+") && !line.startsWith("+++")
-            ? "text-green-400"
-            : line.startsWith("-") && !line.startsWith("---")
-              ? "text-red-400"
-              : /^(@@|diff |index |\+\+\+|---)/.test(line)
-                ? "text-muted-foreground"
-                : "text-foreground/80";
-        return (
-          <div key={i} className={cls}>
-            {line || " "}
-          </div>
-        );
-      })}
-    </pre>
+    <div className={cn("flex", message.role === "user" ? "justify-end" : "justify-start")}>
+      <div
+        className={cn(
+          "max-w-[82%] rounded-2xl px-4 py-2.5 text-sm leading-relaxed",
+          message.role === "user" ? "bg-primary text-primary-foreground" : "border bg-card"
+        )}
+      >
+        {message.content}
+      </div>
+    </div>
   );
 }
 
-function localUser(content: string): Message {
-  return { id: `local-${content.length}-${hash(content)}`, role: "user", content, createdAt: "" };
+function ProposalCard({
+  proposal,
+  busy,
+  onCreate,
+  onRefine,
+  onKeep,
+}: {
+  proposal: TaskProposal;
+  busy: boolean;
+  onCreate: () => void;
+  onRefine: () => void;
+  onKeep: () => void;
+}) {
+  return (
+    <div className="rounded-xl border border-primary/30 bg-card p-4">
+      <div className="mb-1 flex items-center gap-2">
+        <Workflow className="h-4 w-4 text-primary" />
+        <span className="font-semibold">{proposal.title}</span>
+        <span className="ml-auto rounded-full border border-primary/30 bg-primary/10 px-2 py-0.5 text-[10px] font-medium uppercase tracking-wide text-primary">
+          Proposed task
+        </span>
+      </div>
+      <p className="mb-3 text-sm text-muted-foreground">{proposal.summary}</p>
+      <div className="mb-4 space-y-1.5">
+        {proposal.steps.map((s, i) => (
+          <div key={i} className="flex items-center gap-2.5 text-sm">
+            <span className="flex h-5 w-5 items-center justify-center rounded-full bg-muted text-[11px] text-muted-foreground">
+              {i + 1}
+            </span>
+            <span className="rounded-md border bg-muted/50 px-1.5 py-0.5 text-xs text-muted-foreground">
+              {ASSIGNEE[s.capability] ?? s.capability}
+            </span>
+            <span>{s.description}</span>
+          </div>
+        ))}
+      </div>
+      <div className="flex flex-wrap gap-2">
+        <button
+          onClick={onCreate}
+          disabled={busy}
+          className="inline-flex h-9 items-center gap-1.5 rounded-md bg-primary px-3.5 text-sm font-medium text-primary-foreground transition-colors hover:bg-primary/90 disabled:opacity-50"
+        >
+          {busy ? <Loader2 className="h-4 w-4 animate-spin" /> : <ArrowRight className="h-4 w-4" />}
+          Create task
+        </button>
+        <button
+          onClick={onRefine}
+          disabled={busy}
+          className="inline-flex h-9 items-center gap-1.5 rounded-md border bg-background px-3.5 text-sm font-medium transition-colors hover:bg-accent disabled:opacity-50"
+        >
+          <Pencil className="h-4 w-4" />
+          Refine
+        </button>
+        <button
+          onClick={onKeep}
+          disabled={busy}
+          className="inline-flex h-9 items-center gap-1.5 rounded-md px-3.5 text-sm font-medium text-muted-foreground transition-colors hover:bg-accent hover:text-foreground disabled:opacity-50"
+        >
+          <MessageSquare className="h-4 w-4" />
+          Keep chatting
+        </button>
+      </div>
+    </div>
+  );
+}
+
+function local(role: "user" | "iris", content: string): Message {
+  return { id: `local-${role}-${Math.abs(hash(content))}`, role, content, createdAt: "" };
+}
+function createdNote(taskId: string, title: string): Message {
+  return { id: `created-${taskId}`, role: "system", content: `Created “${title}” — open it in Tasks`, taskId, createdAt: "" };
 }
 function hash(s: string): number {
   let h = 0;
-  for (let i = 0; i < s.length; i++) h = Math.abs((h * 31 + s.charCodeAt(i)) | 0);
+  for (let i = 0; i < s.length; i++) h = (h * 31 + s.charCodeAt(i)) | 0;
   return h;
 }
 function errMsg(e: unknown): string {

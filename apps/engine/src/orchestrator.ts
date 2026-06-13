@@ -1,11 +1,11 @@
-// Iris — the orchestrator the CEO talks to. Turns a chat message into a Task,
-// drives it through the core state machine, runs the edit capability in an
-// isolated worktree, parks the diff for human review, and — ONLY after
-// core.canPush() === true — pushes and opens the PR.
+// Iris — the orchestrator. The CEO and Iris work together: the chat is a
+// conversation (no diffs there); Iris proposes tasks; the CEO creates them, and
+// holds the decisive powers — START / STOP a task, and the final CONFIRM-MERGE.
 //
-// THE SECURITY WALL: push() and openPr() are called from exactly one place in
-// this file, inside an `if (canPush(task))` branch. canPush lives in @bureau/core
-// and is the sole gate; this is the only code path that reaches a real push/PR.
+// THE SECURITY WALL: push()/openPr()/mergePr() run from exactly one place
+// (confirmMerge), inside an `if (canPush(task))` branch. canPush lives in
+// @bureau/core and is the sole gate. startTask only commits locally — it never
+// pushes — so nothing reaches GitHub until the CEO confirms.
 
 import { transition, canPush } from "@bureau/core";
 import type {
@@ -13,19 +13,19 @@ import type {
   TaskId,
   StepId,
   GateId,
+  Step,
   Artifact,
   ArtifactId,
-  HumanDecision,
   TransitionEvent,
 } from "@bureau/core";
 import type { CapabilityRegistry } from "@bureau/capabilities";
-import type { Message } from "@bureau/contracts";
+import type { Provider } from "@bureau/providers";
+import type { Message, TaskProposal, ChatResponse } from "@bureau/contracts";
 import { join } from "node:path";
 
 import type { TaskStore, VcsPort, EventSink, MessageLog } from "./ports.js";
-import { prUrl } from "./summary.js";
+import { irisRespond } from "./iris.js";
 
-/** Carries an HTTP status so the API layer can map failures cleanly. */
 export class OrchestratorError extends Error {
   constructor(
     message: string,
@@ -46,6 +46,7 @@ export interface OrchestratorConfig {
 export interface OrchestratorDeps {
   readonly store: TaskStore;
   readonly capabilities: CapabilityRegistry;
+  readonly provider: Provider;
   readonly vcs: VcsPort;
   readonly events: EventSink;
   readonly messages: MessageLog;
@@ -57,35 +58,37 @@ export interface OrchestratorDeps {
 export class Orchestrator {
   constructor(private readonly d: OrchestratorDeps) {}
 
-  /** Chat → a Task driven all the way to "awaiting human review of the diff". */
-  async handleMessage(content: string): Promise<{ message: Message; task: Task }> {
+  /** A conversation turn with Iris. Returns her reply and, maybe, a task proposal. */
+  async chat(content: string): Promise<ChatResponse> {
     this.appendMessage("user", content);
+    const turn = await irisRespond(this.d.provider, this.d.messages.list());
+    const reply = this.appendMessage("iris", turn.reply);
+    return turn.proposal ? { reply, proposal: turn.proposal } : { reply };
+  }
 
-    const taskId = this.d.ids();
-    const stepId = this.d.ids();
-    const gateId = this.d.ids();
+  /** Materialize a proposal into a DRAFT task (created, not started). */
+  createTask(proposal: TaskProposal): Task {
     const now = this.d.clock();
-
-    let task: Task = {
+    const taskId = this.d.ids();
+    const gateId = this.d.ids();
+    const lastIdx = proposal.steps.length - 1;
+    const steps: Step[] = proposal.steps.map((s, i) => ({
+      id: this.d.ids() as StepId,
+      capability: s.capability,
+      description: s.description,
+      acceptanceCriteria: [],
+      status: "pending",
+      artifactIds: [],
+      ...(i === lastIdx ? { gateAfter: gateId as GateId } : {}),
+    }));
+    const task: Task = {
       id: taskId as TaskId,
-      goal: content,
+      goal: proposal.title,
       repoOwner: this.d.config.repoOwner,
       repoName: this.d.config.repoName,
       status: "created",
-      steps: [
-        {
-          id: stepId as StepId,
-          capability: "edit",
-          description: content,
-          acceptanceCriteria: [],
-          status: "pending",
-          gateAfter: gateId as GateId,
-          artifactIds: [],
-        },
-      ],
-      // The single human gate is a pr_approval gate — that is what canPush()
-      // requires to authorize the push. The human reviews the diff and, by
-      // approving, authorizes the PR.
+      steps,
+      // The single human gate is the pr_approval gate — the final confirm-merge.
       gates: [{ id: gateId as GateId, kind: "pr_approval", status: "pending" }],
       artifacts: [],
       decisionLog: [],
@@ -93,152 +96,117 @@ export class Orchestrator {
       updatedAt: now,
     };
     this.save(task);
+    this.emitTaskUpdated(task);
+    this.appendMessage("iris", `Created task "${proposal.title}". Open it in Tasks and press Start when you're ready.`);
+    return task;
+  }
+
+  /** Start a draft task: run the pipeline in an isolated worktree, commit locally
+   *  (NO push), and park it for the CEO's review. */
+  async startTask(taskId: string): Promise<Task> {
+    let task = this.requireTask(taskId);
+    if (task.status !== "created") {
+      throw new OrchestratorError(`Task ${taskId} is not startable (status ${task.status}).`, 409);
+    }
 
     task = this.drive(task, { type: "START_PLANNING" });
     task = this.drive(task, { type: "PLANNING_DONE" });
 
-    // Isolated worktree for this task.
     await this.d.vcs.ensureClone();
     const branch = this.branchFor(taskId);
     const worktreePath = join(this.d.config.worktreesDir, taskId);
     await this.d.vcs.setupWorktree(branch, worktreePath);
     task = this.setWorktree(task, worktreePath);
 
-    // Run the edit capability.
-    task = this.drive(task, { type: "START_STEP", stepId: stepId as StepId });
-    this.d.events.emit({ type: "step_started", taskId, stepId });
+    for (const planned of task.steps) {
+      task = this.drive(task, { type: "START_STEP", stepId: planned.id });
+      this.d.events.emit({ type: "step_started", taskId, stepId: planned.id });
 
-    const capability = this.d.capabilities.get("edit");
-    const output = await capability.execute({
-      step: task.steps[0]!,
-      worktreePath,
-      context: content,
-    });
+      const step = task.steps.find((s) => s.id === planned.id)!;
+      if (this.d.capabilities.has(step.capability)) {
+        const out = await this.d.capabilities.get(step.capability).execute({
+          step,
+          worktreePath,
+          context: task.goal,
+        });
+        if (out.artifacts.length > 0) task = this.addArtifacts(task, out.artifacts);
+      }
 
+      task = this.drive(task, { type: "COMPLETE_STEP", stepId: planned.id });
+      this.d.events.emit({ type: "step_completed", taskId, stepId: planned.id });
+    }
+
+    // Capture the diff (incl. new files), then commit it locally on the branch.
     const diff = await this.d.vcs.workingDiff(worktreePath);
-    const diffArtifact: Artifact = {
-      id: this.d.ids() as ArtifactId,
-      kind: "diff",
-      ref: diff,
-      producedByStep: stepId as StepId,
-      createdAt: this.d.clock(),
-    };
-    task = this.addArtifacts(task, [...output.artifacts, diffArtifact]);
+    await this.d.vcs.commitAll(worktreePath, `Bureau: ${truncate(task.goal)}`);
+    task = this.addArtifacts(task, [
+      {
+        id: this.d.ids() as ArtifactId,
+        kind: "diff",
+        ref: diff,
+        producedByStep: task.steps[task.steps.length - 1]!.id,
+        createdAt: this.d.clock(),
+      },
+    ]);
 
-    task = this.drive(task, { type: "COMPLETE_STEP", stepId: stepId as StepId });
-    this.d.events.emit({ type: "step_completed", taskId, stepId });
-
-    task = this.drive(task, { type: "OPEN_GATE", gateId: gateId as GateId });
-    this.d.events.emit({ type: "gate_opened", taskId, gateId, gateKind: "pr_approval" });
+    const gate = task.gates[0]!;
+    task = this.drive(task, { type: "OPEN_GATE", gateId: gate.id });
+    this.d.events.emit({ type: "gate_opened", taskId, gateId: gate.id, gateKind: "pr_approval" });
     this.emitTaskUpdated(task);
-
-    const message = this.appendMessage(
-      "iris",
-      `I prepared the change for "${truncate(content)}". Review the diff and approve to open the PR.`,
-      taskId
-    );
-    return { message, task };
+    return task;
   }
 
-  /** Human decision on a gate. Approval is the ONLY path to a real push/PR. */
-  async decideGate(gateId: string, decision: HumanDecision, notes?: string): Promise<Task> {
-    const found = this.findTaskByGate(gateId);
-    if (!found) throw new OrchestratorError(`No task found for gate ${gateId}.`, 404);
-
-    const gate = found.gates.find((g) => g.id === gateId);
-    if (gate === undefined || gate.status !== "open") {
-      // A re-decision / double-submit — a benign conflict, not a server crash.
-      throw new OrchestratorError(
-        `Gate ${gateId} is not open (already ${gate?.status ?? "absent"}).`,
-        409
-      );
-    }
-
-    const event: TransitionEvent = {
-      type: "DECIDE_GATE",
-      gateId: gateId as GateId,
-      decision,
-      ...(notes !== undefined ? { notes } : {}),
-    };
-    let task = this.drive(found, event);
+  /** Stop a task: abort and tear down its worktree. */
+  async stopTask(taskId: string): Promise<Task> {
+    let task = this.requireTask(taskId);
+    task = this.drive(task, { type: "ABORT_TASK", reason: "Stopped by the CEO." });
     this.emitTaskUpdated(task);
+    if (task.worktreePath !== undefined) {
+      await this.d.vcs.removeWorktree({ path: task.worktreePath, branch: this.branchFor(task.id) }, true);
+    }
+    return task;
+  }
 
-    if (decision !== "approved") {
-      this.appendMessage(
-        "iris",
-        decision === "rejected"
-          ? "You rejected the diff — nothing was pushed."
-          : "You requested changes — nothing was pushed.",
-        task.id
-      );
-      return task;
+  /** The CEO's final confirmation: push, open the PR, squash-merge to main, clean up.
+   *  This is the ONE code path that reaches GitHub, and only when canPush()===true. */
+  async confirmMerge(taskId: string): Promise<Task> {
+    let task = this.requireTask(taskId);
+    const gate = task.gates.find((g) => g.status === "open");
+    if (gate === undefined) {
+      throw new OrchestratorError(`Task ${taskId} has no open review gate.`, 409);
     }
 
-    // Approved → finish the task, then let the wall decide.
+    task = this.drive(task, { type: "DECIDE_GATE", gateId: gate.id, decision: "approved" });
     task = this.drive(task, { type: "COMPLETE_TASK" });
     this.emitTaskUpdated(task);
 
     // ── THE SECURITY WALL ──────────────────────────────────────────────────
     if (!canPush(task)) {
-      this.appendMessage("iris", "Approved, but the push gate isn't satisfied — nothing was pushed.", task.id);
+      this.appendMessage("iris", "Approved, but the push gate isn't satisfied — nothing was merged.", task.id);
       return task;
     }
-    // canPush() === true: the one and only path to push/openPr.
     const worktreePath = requireWorktree(task);
-    const committed = await this.d.vcs.commitAll(worktreePath, `Bureau: ${truncate(task.goal)}`);
-    if (!committed) {
-      this.appendMessage("iris", "Approved, but the edit produced no changes — nothing to push.", task.id);
-      return task;
-    }
-    return this.publish(task, worktreePath);
-  }
-
-  /**
-   * Retry opening the PR for a task whose commit was pushed but whose PR failed
-   * to open (partial failure recovery). Idempotent: a no-op if the PR exists,
-   * and still gated by canPush().
-   */
-  async retryPr(taskId: string): Promise<Task> {
-    const task = this.d.store.load(taskId as TaskId);
-    if (!task) throw new OrchestratorError(`No task found: ${taskId}.`, 404);
-    if (prUrl(task) !== null) return task; // already opened — nothing to do
-    if (!canPush(task)) {
-      throw new OrchestratorError(`Task ${taskId} is not in a pushable state.`, 409);
-    }
-    return this.publish(task, requireWorktree(task));
-  }
-
-  /**
-   * Push the branch and open the PR. Reached ONLY after canPush()===true. If the
-   * PR step fails, the (already-pushed) branch is recorded in an iris message and
-   * the task is returned WITHOUT throwing, so the slice stays recoverable via
-   * retryPr() — git push is a fast-forward no-op on retry, so no double push.
-   */
-  private async publish(task: Task, worktreePath: string): Promise<Task> {
     const branch = this.branchFor(task.id);
     const title = `Bureau: ${truncate(task.goal)}`;
     try {
       await this.d.vcs.push(worktreePath, branch);
       const url = await this.d.vcs.openPr(branch, title, prBody(task.goal));
-      const withPr = this.addArtifacts(task, [
+      await this.d.vcs.mergePr(branch);
+      task = this.addArtifacts(task, [
         {
           id: this.d.ids() as ArtifactId,
           kind: "pr_url",
           ref: url,
-          producedByStep: task.steps[0]!.id,
+          producedByStep: task.steps[task.steps.length - 1]!.id,
           createdAt: this.d.clock(),
         },
       ]);
-      this.appendMessage("iris", `Done — opened PR: ${url}`, task.id);
-      return withPr;
+      this.appendMessage("iris", `Merged to main — ${url}. Branch deleted, repo clean.`, task.id);
+      await this.d.vcs.removeWorktree({ path: worktreePath, branch }, true);
     } catch (err) {
-      this.appendMessage(
-        "iris",
-        `Pushed branch ${branch}, but opening the PR failed: ${errMessage(err)}. You can retry.`,
-        task.id
-      );
-      return task;
+      this.appendMessage("iris", `The merge failed: ${errMessage(err)}. The branch ${branch} may be pushed — check GitHub.`, task.id);
     }
+    return task;
   }
 
   // ── helpers ───────────────────────────────────────────────────────────────
@@ -253,6 +221,12 @@ export class Orchestrator {
     this.d.store.save(task);
   }
 
+  private requireTask(taskId: string): Task {
+    const task = this.d.store.load(taskId as TaskId);
+    if (!task) throw new OrchestratorError(`No task found: ${taskId}.`, 404);
+    return task;
+  }
+
   private setWorktree(task: Task, worktreePath: string): Task {
     const next: Task = { ...task, worktreePath, updatedAt: this.d.clock() };
     this.save(next);
@@ -260,11 +234,7 @@ export class Orchestrator {
   }
 
   private addArtifacts(task: Task, artifacts: readonly Artifact[]): Task {
-    const next: Task = {
-      ...task,
-      artifacts: [...task.artifacts, ...artifacts],
-      updatedAt: this.d.clock(),
-    };
+    const next: Task = { ...task, artifacts: [...task.artifacts, ...artifacts], updatedAt: this.d.clock() };
     this.save(next);
     return next;
   }
@@ -291,15 +261,11 @@ export class Orchestrator {
   private branchFor(taskId: string): string {
     return `bureau/task-${taskId}`;
   }
-
-  private findTaskByGate(gateId: string): Task | null {
-    return this.d.store.list().find((t) => t.gates.some((g) => g.id === gateId)) ?? null;
-  }
 }
 
 function requireWorktree(task: Task): string {
   if (task.worktreePath === undefined) {
-    throw new OrchestratorError(`Task ${task.id} has no worktree set.`);
+    throw new OrchestratorError(`Task ${task.id} has no worktree set.`, 500);
   }
   return task.worktreePath;
 }

@@ -1,6 +1,7 @@
 "use client";
 
 import { useEffect, useState } from "react";
+import { useRouter } from "next/navigation";
 import { RefreshCw, ListTodo } from "lucide-react";
 import type { TaskSummary } from "@bureau/contracts";
 import { listTasks } from "../../lib/api";
@@ -16,6 +17,7 @@ const STATUS_COLOR: Record<string, string> = {
 };
 
 export default function TasksPage() {
+  const router = useRouter();
   const [tasks, setTasks] = useState<TaskSummary[] | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [spin, setSpin] = useState(false);
@@ -87,7 +89,11 @@ export default function TasksPage() {
               </tr>
             )}
             {tasks?.map((t) => (
-              <tr key={t.id} className="border-b transition-colors last:border-0 hover:bg-muted/50">
+              <tr
+                key={t.id}
+                onClick={() => router.push(`/tasks/${t.id}`)}
+                className="cursor-pointer border-b transition-colors last:border-0 hover:bg-muted/50"
+              >
                 <td className="max-w-md truncate px-4 py-3 align-middle">{t.goal}</td>
                 <td className="px-4 py-3 align-middle">
                   <span
