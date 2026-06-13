@@ -111,6 +111,22 @@ function main(): void {
     console.log(`Bureau engine listening on http://localhost:${port} (ws: /ws)`);
     console.log(`Repo: ${config.repoOwner}/${config.repoName} · worktrees: ${config.worktreesDir}`);
   });
+
+  // Graceful shutdown: drain in-flight pipelines so a restart never abandons a
+  // half-run task mid-commit, then close the socket server and HTTP server.
+  let shuttingDown = false;
+  const shutdown = (signal: string): void => {
+    if (shuttingDown) return;
+    shuttingDown = true;
+    console.log(`\n[engine] ${signal} — draining in-flight pipelines…`);
+    void orchestrator.settleAll().finally(() => {
+      hub?.close();
+      server.close(() => process.exit(0));
+      setTimeout(() => process.exit(0), 5000).unref(); // hard stop if something hangs
+    });
+  };
+  process.on("SIGINT", () => shutdown("SIGINT"));
+  process.on("SIGTERM", () => shutdown("SIGTERM"));
 }
 
 main();

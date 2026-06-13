@@ -1,10 +1,11 @@
 "use client";
 
-import { useEffect, useState } from "react";
+import { useCallback, useEffect, useState } from "react";
 import { useRouter } from "next/navigation";
 import { RefreshCw, ListTodo } from "lucide-react";
 import type { TaskSummary } from "@bureau/contracts";
 import { listTasks } from "../../lib/api";
+import { useEngineEvents } from "../../lib/useEngineEvents";
 import { cn } from "../../lib/utils";
 
 const STATUS_COLOR: Record<string, string> = {
@@ -22,7 +23,7 @@ export default function TasksPage() {
   const [error, setError] = useState<string | null>(null);
   const [spin, setSpin] = useState(false);
 
-  async function load() {
+  const load = useCallback(async () => {
     setError(null);
     setSpin(true);
     try {
@@ -33,11 +34,16 @@ export default function TasksPage() {
     } finally {
       setSpin(false);
     }
-  }
+  }, []);
 
   useEffect(() => {
     void load();
-  }, []);
+  }, [load]);
+
+  // Live: refresh the list whenever a task changes state.
+  useEngineEvents((e) => {
+    if (e.type === "task_updated") void load();
+  });
 
   return (
     <div className="h-full overflow-y-auto p-6">

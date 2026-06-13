@@ -56,6 +56,8 @@ export const PipelineStepDto = z.object({
 export const TaskDetailDto = TaskSummaryDto.extend({
   diff: z.string().nullable(),
   prUrl: z.string().nullable(),
+  /** A human-readable note when the task stopped (abort reason / failed step). */
+  statusNote: z.string().nullable(),
   worktreePath: z.string().optional(),
   steps: z.array(PipelineStepDto),
   gates: z.array(GateViewDto),
