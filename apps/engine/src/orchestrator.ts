@@ -56,6 +56,9 @@ export interface OrchestratorDeps {
 }
 
 export class Orchestrator {
+  /** In-flight background pipelines, keyed by task id (for settle / graceful drain). */
+  private readonly running = new Map<string, Promise<void>>();
+
   constructor(private readonly d: OrchestratorDeps) {}
 
   /** A conversation turn with Iris. Returns her reply and, maybe, a task proposal. */
@@ -64,6 +67,16 @@ export class Orchestrator {
     const turn = await irisRespond(this.d.provider, this.d.messages.list());
     const reply = this.appendMessage("iris", turn.reply);
     return turn.proposal ? { reply, proposal: turn.proposal } : { reply };
+  }
+
+  /** Await the in-flight pipeline for a task (no-op if none). Used by tests and shutdown. */
+  async settle(taskId: string): Promise<void> {
+    await this.running.get(taskId);
+  }
+
+  /** Await every in-flight pipeline (graceful shutdown drain). */
+  async settleAll(): Promise<void> {
+    await Promise.allSettled([...this.running.values()]);
   }
 
   /** Materialize a proposal into a DRAFT task (created, not started). */
@@ -101,8 +114,10 @@ export class Orchestrator {
     return task;
   }
 
-  /** Start a draft task: run the pipeline in an isolated worktree, commit locally
-   *  (NO push), and park it for the CEO's review. */
+  /** Start a draft task. Returns immediately (status `planning`) and runs the
+   *  pipeline in the BACKGROUND so the panel can show live progress instead of
+   *  blocking on one long request. The pipeline commits locally (NO push) and
+   *  parks the task at the review gate for the CEO. */
   async startTask(taskId: string): Promise<Task> {
     let task = this.requireTask(taskId);
     if (task.status !== "created") {
@@ -110,59 +125,122 @@ export class Orchestrator {
     }
 
     task = this.drive(task, { type: "START_PLANNING" });
-    task = this.drive(task, { type: "PLANNING_DONE" });
-
-    await this.d.vcs.ensureClone();
-    const branch = this.branchFor(taskId);
-    const worktreePath = join(this.d.config.worktreesDir, taskId);
-    await this.d.vcs.setupWorktree(branch, worktreePath);
-    task = this.setWorktree(task, worktreePath);
-
-    for (const planned of task.steps) {
-      task = this.drive(task, { type: "START_STEP", stepId: planned.id });
-      this.d.events.emit({ type: "step_started", taskId, stepId: planned.id });
-
-      const step = task.steps.find((s) => s.id === planned.id)!;
-      if (this.d.capabilities.has(step.capability)) {
-        const out = await this.d.capabilities.get(step.capability).execute({
-          step,
-          worktreePath,
-          context: task.goal,
-        });
-        if (out.artifacts.length > 0) task = this.addArtifacts(task, out.artifacts);
-      }
-
-      task = this.drive(task, { type: "COMPLETE_STEP", stepId: planned.id });
-      this.d.events.emit({ type: "step_completed", taskId, stepId: planned.id });
-    }
-
-    // Capture the diff (incl. new files), then commit it locally on the branch.
-    const diff = await this.d.vcs.workingDiff(worktreePath);
-    await this.d.vcs.commitAll(worktreePath, `Bureau: ${truncate(task.goal)}`);
-    task = this.addArtifacts(task, [
-      {
-        id: this.d.ids() as ArtifactId,
-        kind: "diff",
-        ref: diff,
-        producedByStep: task.steps[task.steps.length - 1]!.id,
-        createdAt: this.d.clock(),
-      },
-    ]);
-
-    const gate = task.gates[0]!;
-    task = this.drive(task, { type: "OPEN_GATE", gateId: gate.id });
-    this.d.events.emit({ type: "gate_opened", taskId, gateId: gate.id, gateKind: "pr_approval" });
     this.emitTaskUpdated(task);
+    this.appendMessage("iris", `On it — setting up an isolated workspace and starting the pipeline for "${task.goal}".`, taskId);
+
+    const promise = this.runPipeline(taskId);
+    this.running.set(taskId, promise);
+    void promise.finally(() => this.running.delete(taskId));
     return task;
   }
 
-  /** Stop a task: abort and tear down its worktree. */
+  /** The background pipeline. Race-safe against a concurrent stop: it reloads the
+   *  task before every transition and bails the moment it's no longer running. */
+  private async runPipeline(taskId: string): Promise<void> {
+    const branch = this.branchFor(taskId);
+    const worktreePath = join(this.d.config.worktreesDir, taskId);
+    let currentStepId: StepId | undefined;
+    try {
+      await this.d.vcs.ensureClone();
+      await this.d.vcs.setupWorktree(branch, worktreePath);
+
+      let task = this.requireTask(taskId);
+      if (task.status !== "planning") {
+        // Stopped during setup — clean up the worktree we just made and bail.
+        await this.d.vcs.removeWorktree({ path: worktreePath, branch }, true).catch(() => {});
+        return;
+      }
+      task = this.setWorktree(task, worktreePath);
+      task = this.drive(task, { type: "PLANNING_DONE" });
+      this.emitTaskUpdated(task);
+
+      for (const planned of task.steps) {
+        if (this.requireTask(taskId).status !== "executing") return; // stopped between steps
+        currentStepId = planned.id;
+        task = this.drive(this.requireTask(taskId), { type: "START_STEP", stepId: planned.id });
+        this.d.events.emit({ type: "step_started", taskId, stepId: planned.id });
+
+        const step = task.steps.find((s) => s.id === planned.id)!;
+        if (this.d.capabilities.has(step.capability)) {
+          const out = await this.d.capabilities.get(step.capability).execute({
+            step,
+            worktreePath,
+            context: task.goal,
+          });
+          if (this.requireTask(taskId).status !== "executing") return; // stopped during the step
+          if (out.artifacts.length > 0) this.addArtifacts(this.requireTask(taskId), out.artifacts);
+        }
+
+        this.drive(this.requireTask(taskId), { type: "COMPLETE_STEP", stepId: planned.id });
+        currentStepId = undefined;
+        this.d.events.emit({ type: "step_completed", taskId, stepId: planned.id });
+      }
+
+      // Capture the diff (incl. new files), then commit it locally on the branch.
+      const diff = await this.d.vcs.workingDiff(worktreePath);
+      await this.d.vcs.commitAll(worktreePath, `Bureau: ${truncate(this.requireTask(taskId).goal)}`);
+      task = this.requireTask(taskId);
+      if (task.status !== "executing") return; // stopped during commit
+      task = this.addArtifacts(task, [
+        {
+          id: this.d.ids() as ArtifactId,
+          kind: "diff",
+          ref: diff,
+          producedByStep: task.steps[task.steps.length - 1]!.id,
+          createdAt: this.d.clock(),
+        },
+      ]);
+
+      const gate = task.gates[0]!;
+      task = this.drive(task, { type: "OPEN_GATE", gateId: gate.id });
+      this.d.events.emit({ type: "gate_opened", taskId, gateId: gate.id, gateKind: "pr_approval" });
+      this.emitTaskUpdated(task);
+      this.appendMessage("iris", `Done — the branch for "${task.goal}" is ready for your review.`, taskId);
+    } catch (err) {
+      this.failPipeline(taskId, currentStepId, err);
+    }
+  }
+
+  /** A pipeline error: mark the running step failed (if any), abort the task, and
+   *  clean up — best-effort, never throws (it runs in a floating background promise). */
+  private failPipeline(taskId: string, stepId: StepId | undefined, err: unknown): void {
+    let task: Task;
+    try {
+      task = this.requireTask(taskId);
+    } catch {
+      return;
+    }
+    if (task.status === "aborted" || task.status === "completed") return; // already resolved (e.g. stopped)
+    try {
+      if (stepId !== undefined && task.steps.find((s) => s.id === stepId)?.status === "running") {
+        task = this.drive(task, { type: "FAIL_STEP", stepId, reason: errMessage(err) });
+      }
+      task = this.drive(task, { type: "ABORT_TASK", reason: errMessage(err) });
+      this.emitTaskUpdated(task);
+      this.appendMessage("iris", `"${task.goal}" hit a problem and stopped: ${errMessage(err)}.`, taskId);
+      if (task.worktreePath !== undefined) {
+        void this.d.vcs
+          .removeWorktree({ path: task.worktreePath, branch: this.branchFor(taskId) }, true)
+          .catch(() => {});
+      }
+    } catch {
+      /* best-effort: a concurrent stop may have already aborted it */
+    }
+  }
+
+  /** Stop a task: abort and tear down its worktree. Idempotent on terminal tasks. */
   async stopTask(taskId: string): Promise<Task> {
     let task = this.requireTask(taskId);
+    if (task.status === "completed" || task.status === "aborted") return task; // already resolved
     task = this.drive(task, { type: "ABORT_TASK", reason: "Stopped by the CEO." });
     this.emitTaskUpdated(task);
+    this.appendMessage("iris", `Stopped "${task.goal}" and cleaned up its workspace.`, taskId);
     if (task.worktreePath !== undefined) {
-      await this.d.vcs.removeWorktree({ path: task.worktreePath, branch: this.branchFor(task.id) }, true);
+      try {
+        await this.d.vcs.removeWorktree({ path: task.worktreePath, branch: this.branchFor(task.id) }, true);
+      } catch {
+        /* best-effort: a background step may still hold a file; the worktree is orphaned but safe */
+      }
     }
     return task;
   }

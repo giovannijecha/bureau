@@ -104,6 +104,18 @@ let captured: CapabilityInput | null;
 let events: WsEvent[];
 let messages: Message[];
 let orch: Orchestrator;
+/** When set, the fake edit capability blocks on this until released — lets a test
+ *  freeze the pipeline mid-step to exercise the stop-while-running race. */
+let editGate: Promise<void> | null;
+
+/** Poll until `pred` holds (the pipeline runs in the background). */
+async function until(pred: () => boolean, ms = 1000): Promise<void> {
+  const start = Date.now();
+  while (!pred()) {
+    if (Date.now() - start > ms) throw new Error("timeout waiting for condition");
+    await new Promise((r) => setTimeout(r, 5));
+  }
+}
 
 beforeEach(() => {
   store = fakeStore().store;
@@ -111,10 +123,12 @@ beforeEach(() => {
   prov = fakeProvider(JSON.stringify({ reply: "Sure!", proposal: PROPOSAL }));
   const registry = new CapabilityRegistry();
   captured = null;
+  editGate = null;
   registry.register({
     kind: "edit",
     async execute(input) {
       captured = input;
+      if (editGate) await editGate;
       return { artifacts: [], summary: "edited" };
     },
   });
@@ -172,9 +186,13 @@ describe("createTask", () => {
 // ── startTask ──────────────────────────────────────────────────────────────
 
 describe("startTask", () => {
-  it("runs the pipeline and commits LOCALLY without pushing", async () => {
+  it("returns immediately (planning), then runs the pipeline and commits LOCALLY without pushing", async () => {
     const draft = orch.createTask(PROPOSAL);
-    const task = await orch.startTask(draft.id);
+    const immediate = await orch.startTask(draft.id);
+    expect(immediate.status).toBe("planning"); // returns before the pipeline runs
+
+    await orch.settle(draft.id);
+    const task = store.load(draft.id)!;
 
     expect(task.status).toBe("awaiting_human");
     expect(captured?.step.capability).toBe("edit");
@@ -187,10 +205,21 @@ describe("startTask", () => {
     expect(toTaskDetail(task).diff).toBe("DIFF-CONTENT");
   });
 
+  it("emits step + gate events as the pipeline runs", async () => {
+    const draft = orch.createTask(PROPOSAL);
+    await orch.startTask(draft.id);
+    await orch.settle(draft.id);
+    const types = events.map((e) => e.type);
+    expect(types).toContain("step_started");
+    expect(types).toContain("step_completed");
+    expect(types).toContain("gate_opened");
+  });
+
   it("rejects starting a task that isn't a draft", async () => {
     const draft = orch.createTask(PROPOSAL);
     await orch.startTask(draft.id);
     await expect(orch.startTask(draft.id)).rejects.toMatchObject({ status: 409 });
+    await orch.settle(draft.id);
   });
 });
 
@@ -199,8 +228,9 @@ describe("startTask", () => {
 describe("confirmMerge", () => {
   it("pushes, opens the PR, and squash-merges exactly once — only after canPush", async () => {
     const draft = orch.createTask(PROPOSAL);
-    const started = await orch.startTask(draft.id);
-    expect(canPush(started)).toBe(false);
+    await orch.startTask(draft.id);
+    await orch.settle(draft.id);
+    expect(canPush(store.load(draft.id)!)).toBe(false); // parked at an OPEN gate
 
     const merged = await orch.confirmMerge(draft.id);
 
@@ -223,9 +253,10 @@ describe("confirmMerge", () => {
 // ── stopTask ─────────────────────────────────────────────────────────────────
 
 describe("stopTask", () => {
-  it("aborts the task and force-removes its worktree, never pushing", async () => {
+  it("aborts a parked task and force-removes its worktree, never pushing", async () => {
     const draft = orch.createTask(PROPOSAL);
     await orch.startTask(draft.id);
+    await orch.settle(draft.id); // parked at review, worktree set
 
     const stopped = await orch.stopTask(draft.id);
 
@@ -233,6 +264,35 @@ describe("stopTask", () => {
     expect(vcs.calls.removeWorktree.some((c) => c.force)).toBe(true);
     expect(vcs.calls.push).toHaveLength(0);
     expect(vcs.calls.mergePr).toHaveLength(0);
+  });
+
+  it("a stop while a step is running aborts the task and never commits or pushes", async () => {
+    let release!: () => void;
+    editGate = new Promise<void>((r) => (release = r));
+
+    const draft = orch.createTask(PROPOSAL);
+    await orch.startTask(draft.id);
+    await until(() => store.load(draft.id)!.status === "executing"); // pipeline is mid-step
+
+    const stopped = await orch.stopTask(draft.id);
+    expect(stopped.status).toBe("aborted");
+
+    release(); // unblock the capability — the runner must notice the abort and bail
+    await orch.settle(draft.id);
+
+    expect(store.load(draft.id)!.status).toBe("aborted");
+    expect(vcs.calls.commitAll).toHaveLength(0); // never reached the commit
+    expect(vcs.calls.push).toHaveLength(0);
+    expect(vcs.calls.mergePr).toHaveLength(0);
+  });
+
+  it("is idempotent — stopping a completed task leaves it completed", async () => {
+    const draft = orch.createTask(PROPOSAL);
+    await orch.startTask(draft.id);
+    await orch.settle(draft.id);
+    await orch.confirmMerge(draft.id); // → completed
+    const stopped = await orch.stopTask(draft.id);
+    expect(stopped.status).toBe("completed");
   });
 
   it("throws 404 for an unknown task", async () => {

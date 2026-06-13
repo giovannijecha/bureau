@@ -45,11 +45,24 @@ export function prUrl(task: Task): string | null {
   return null;
 }
 
+/** Why a task stopped — a failed step's reason or the abort reason. Null unless aborted. */
+export function statusNote(task: Task): string | null {
+  if (task.status !== "aborted") return null;
+  const failed = task.steps.find((s) => s.status === "failed" && s.failureReason);
+  if (failed?.failureReason) return failed.failureReason;
+  for (let i = task.decisionLog.length - 1; i >= 0; i--) {
+    const e = task.decisionLog[i]!;
+    if (e.type === "task_aborted") return e.reason;
+  }
+  return null;
+}
+
 export function toTaskDetail(task: Task): TaskDetail {
   return {
     ...toTaskSummary(task),
     diff: latestDiff(task),
     prUrl: prUrl(task),
+    statusNote: statusNote(task),
     ...(task.worktreePath !== undefined ? { worktreePath: task.worktreePath } : {}),
     steps: task.steps.map((s) => ({
       id: s.id,
