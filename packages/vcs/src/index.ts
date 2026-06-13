@@ -2,5 +2,14 @@
 // Imports @bureau/core only.
 // Each repo gets one canonical clone; tasks get isolated git worktrees under it.
 
+export {
+  defaultRunner,
+  makeRunner,
+  run,
+  assertSafeRef,
+  VcsError,
+  type Runner,
+  type ExecResult,
+} from "./exec.js";
 export * from "./worktree.js";
 export * from "./git.js";

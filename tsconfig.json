@@ -8,7 +8,6 @@
     { "path": "./packages/vcs" },
     { "path": "./packages/mind" },
     { "path": "./packages/capabilities" },
-    { "path": "./apps/engine" },
-    { "path": "./apps/panel" }
+    { "path": "./apps/engine" }
   ]
 }
