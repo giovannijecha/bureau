@@ -1,6 +1,6 @@
 // Typed client for the Bureau engine API. The panel imports ONLY @bureau/contracts.
 
-import type { TaskDetail, TaskSummary, ChatResponse, TaskProposal } from "@bureau/contracts";
+import type { TaskDetail, TaskSummary, ChatResponse, TaskProposal, Project } from "@bureau/contracts";
 
 const BASE = process.env.NEXT_PUBLIC_ENGINE_URL ?? "http://localhost:4319";
 
@@ -19,14 +19,19 @@ const postJson = (path: string, body?: unknown) =>
     body: JSON.stringify(body ?? {}),
   });
 
-/** A conversation turn with Iris. */
-export async function chat(content: string): Promise<ChatResponse> {
-  return json(await postJson("/api/chat", { content }));
+/** The repositories Bureau works on. */
+export async function listProjects(): Promise<Project[]> {
+  return json(await fetch(`${BASE}/api/projects`));
 }
 
-/** Materialize a proposal into a draft task. */
-export async function createTask(proposal: TaskProposal): Promise<TaskDetail> {
-  return json(await postJson("/api/tasks", { proposal }));
+/** A conversation turn with Iris, scoped to the active project. */
+export async function chat(content: string, projectId?: string): Promise<ChatResponse> {
+  return json(await postJson("/api/chat", { content, projectId }));
+}
+
+/** Materialize a proposal into a draft task in the active project. */
+export async function createTask(proposal: TaskProposal, projectId?: string): Promise<TaskDetail> {
+  return json(await postJson("/api/tasks", { proposal, projectId }));
 }
 
 export async function listTasks(): Promise<TaskSummary[]> {

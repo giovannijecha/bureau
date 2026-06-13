@@ -6,51 +6,42 @@
 // (confirmMerge), inside an `if (canPush(task))` branch. canPush lives in
 // @bureau/core and is the sole gate. startTask only commits locally — it never
 // pushes — so nothing reaches GitHub until the CEO confirms.
+//
+// Each task belongs to a PROJECT (a GitHub repo). The orchestrator resolves the
+// task's project and a VCS port bound to it, so one engine serves many repos.
 
 import { transition, canPush } from "@bureau/core";
 import type {
   Task,
   TaskId,
   StepId,
-  GateId,
   Step,
+  GateId,
   Artifact,
   ArtifactId,
   TransitionEvent,
 } from "@bureau/core";
 import type { CapabilityRegistry } from "@bureau/capabilities";
 import type { Provider } from "@bureau/providers";
-import type { Message, TaskProposal, ChatResponse } from "@bureau/contracts";
+import type { Message, TaskProposal, ChatResponse, Project } from "@bureau/contracts";
 import { join } from "node:path";
 
 import type { TaskStore, VcsPort, EventSink, MessageLog } from "./ports.js";
+import { ProjectRegistry, toProjectDto, type ProjectConfig } from "./projects.js";
+import { OrchestratorError } from "./errors.js";
 import { irisRespond } from "./iris.js";
 
-export class OrchestratorError extends Error {
-  constructor(
-    message: string,
-    readonly status = 500
-  ) {
-    super(message);
-    this.name = "OrchestratorError";
-  }
-}
-
-export interface OrchestratorConfig {
-  readonly repoOwner: string;
-  readonly repoName: string;
-  readonly baseBranch: string;
-  readonly worktreesDir: string;
-}
+export { OrchestratorError };
 
 export interface OrchestratorDeps {
   readonly store: TaskStore;
   readonly capabilities: CapabilityRegistry;
   readonly provider: Provider;
-  readonly vcs: VcsPort;
+  readonly projects: ProjectRegistry;
+  /** Build a VCS port bound to a given project (clone path, owner/repo, author). */
+  readonly vcs: (project: ProjectConfig) => VcsPort;
   readonly events: EventSink;
   readonly messages: MessageLog;
-  readonly config: OrchestratorConfig;
   readonly ids: () => string;
   readonly clock: () => string;
 }
@@ -61,10 +52,17 @@ export class Orchestrator {
 
   constructor(private readonly d: OrchestratorDeps) {}
 
-  /** A conversation turn with Iris. Returns her reply and, maybe, a task proposal. */
-  async chat(content: string): Promise<ChatResponse> {
+  /** The projects the CEO can work on. */
+  listProjects(): Project[] {
+    return this.d.projects.list().map(toProjectDto);
+  }
+
+  /** A conversation turn with Iris, scoped to a project. Returns her reply and,
+   *  maybe, a task proposal. */
+  async chat(content: string, projectId?: string): Promise<ChatResponse> {
+    const project = this.d.projects.resolve(projectId);
     this.appendMessage("user", content);
-    const turn = await irisRespond(this.d.provider, this.d.messages.list());
+    const turn = await irisRespond(this.d.provider, this.d.messages.list(), project);
     const reply = this.appendMessage("iris", turn.reply);
     return turn.proposal ? { reply, proposal: turn.proposal } : { reply };
   }
@@ -79,8 +77,9 @@ export class Orchestrator {
     await Promise.allSettled([...this.running.values()]);
   }
 
-  /** Materialize a proposal into a DRAFT task (created, not started). */
-  createTask(proposal: TaskProposal): Task {
+  /** Materialize a proposal into a DRAFT task (created, not started) in a project. */
+  createTask(proposal: TaskProposal, projectId?: string): Task {
+    const project = this.d.projects.resolve(projectId);
     const now = this.d.clock();
     const taskId = this.d.ids();
     const gateId = this.d.ids();
@@ -97,8 +96,8 @@ export class Orchestrator {
     const task: Task = {
       id: taskId as TaskId,
       goal: proposal.title,
-      repoOwner: this.d.config.repoOwner,
-      repoName: this.d.config.repoName,
+      repoOwner: project.owner,
+      repoName: project.name,
       status: "created",
       steps,
       // The single human gate is the pr_approval gate — the final confirm-merge.
@@ -110,7 +109,7 @@ export class Orchestrator {
     };
     this.save(task);
     this.emitTaskUpdated(task);
-    this.appendMessage("iris", `Created task "${proposal.title}". Open it in Tasks and press Start when you're ready.`);
+    this.appendMessage("iris", `Created task "${proposal.title}" in ${project.owner}/${project.name}. Open it in Tasks and press Start when you're ready.`, task.id);
     return task;
   }
 
@@ -138,16 +137,19 @@ export class Orchestrator {
    *  task before every transition and bails the moment it's no longer running. */
   private async runPipeline(taskId: string): Promise<void> {
     const branch = this.branchFor(taskId);
-    const worktreePath = join(this.d.config.worktreesDir, taskId);
     let currentStepId: StepId | undefined;
     try {
-      await this.d.vcs.ensureClone();
-      await this.d.vcs.setupWorktree(branch, worktreePath);
+      const project = this.d.projects.find(this.requireTask(taskId).repoOwner, this.requireTask(taskId).repoName);
+      const vcs = this.d.vcs(project);
+      const worktreePath = join(project.worktreesDir, taskId);
+
+      await vcs.ensureClone();
+      await vcs.setupWorktree(branch, worktreePath);
 
       let task = this.requireTask(taskId);
       if (task.status !== "planning") {
         // Stopped during setup — clean up the worktree we just made and bail.
-        await this.d.vcs.removeWorktree({ path: worktreePath, branch }, true).catch(() => {});
+        await vcs.removeWorktree({ path: worktreePath, branch }, true).catch(() => {});
         return;
       }
       task = this.setWorktree(task, worktreePath);
@@ -177,8 +179,8 @@ export class Orchestrator {
       }
 
       // Capture the diff (incl. new files), then commit it locally on the branch.
-      const diff = await this.d.vcs.workingDiff(worktreePath);
-      await this.d.vcs.commitAll(worktreePath, `Bureau: ${truncate(this.requireTask(taskId).goal)}`);
+      const diff = await vcs.workingDiff(worktreePath);
+      await vcs.commitAll(worktreePath, `Bureau: ${truncate(this.requireTask(taskId).goal)}`);
       task = this.requireTask(taskId);
       if (task.status !== "executing") return; // stopped during commit
       task = this.addArtifacts(task, [
@@ -219,9 +221,8 @@ export class Orchestrator {
       this.emitTaskUpdated(task);
       this.appendMessage("iris", `"${task.goal}" hit a problem and stopped: ${errMessage(err)}.`, taskId);
       if (task.worktreePath !== undefined) {
-        void this.d.vcs
-          .removeWorktree({ path: task.worktreePath, branch: this.branchFor(taskId) }, true)
-          .catch(() => {});
+        const vcs = this.vcsForTask(task);
+        if (vcs) void vcs.removeWorktree({ path: task.worktreePath, branch: this.branchFor(taskId) }, true).catch(() => {});
       }
     } catch {
       /* best-effort: a concurrent stop may have already aborted it */
@@ -236,10 +237,13 @@ export class Orchestrator {
     this.emitTaskUpdated(task);
     this.appendMessage("iris", `Stopped "${task.goal}" and cleaned up its workspace.`, taskId);
     if (task.worktreePath !== undefined) {
-      try {
-        await this.d.vcs.removeWorktree({ path: task.worktreePath, branch: this.branchFor(task.id) }, true);
-      } catch {
-        /* best-effort: a background step may still hold a file; the worktree is orphaned but safe */
+      const vcs = this.vcsForTask(task);
+      if (vcs) {
+        try {
+          await vcs.removeWorktree({ path: task.worktreePath, branch: this.branchFor(task.id) }, true);
+        } catch {
+          /* best-effort: a background step may still hold a file; the worktree is orphaned but safe */
+        }
       }
     }
     return task;
@@ -263,13 +267,15 @@ export class Orchestrator {
       this.appendMessage("iris", "Approved, but the push gate isn't satisfied — nothing was merged.", task.id);
       return task;
     }
+    const project = this.d.projects.find(task.repoOwner, task.repoName);
+    const vcs = this.d.vcs(project);
     const worktreePath = requireWorktree(task);
     const branch = this.branchFor(task.id);
     const title = `Bureau: ${truncate(task.goal)}`;
     try {
-      await this.d.vcs.push(worktreePath, branch);
-      const url = await this.d.vcs.openPr(branch, title, prBody(task.goal));
-      await this.d.vcs.mergePr(branch);
+      await vcs.push(worktreePath, branch);
+      const url = await vcs.openPr(branch, title, prBody(task.goal));
+      await vcs.mergePr(branch);
       task = this.addArtifacts(task, [
         {
           id: this.d.ids() as ArtifactId,
@@ -280,7 +286,7 @@ export class Orchestrator {
         },
       ]);
       this.appendMessage("iris", `Merged to main — ${url}. Branch deleted, repo clean.`, task.id);
-      await this.d.vcs.removeWorktree({ path: worktreePath, branch }, true);
+      await vcs.removeWorktree({ path: worktreePath, branch }, true);
     } catch (err) {
       this.appendMessage("iris", `The merge failed: ${errMessage(err)}. The branch ${branch} may be pushed — check GitHub.`, task.id);
     }
@@ -288,6 +294,15 @@ export class Orchestrator {
   }
 
   // ── helpers ───────────────────────────────────────────────────────────────
+
+  /** A VCS port bound to a task's project, or null if its project is gone. */
+  private vcsForTask(task: Task): VcsPort | null {
+    try {
+      return this.d.vcs(this.d.projects.find(task.repoOwner, task.repoName));
+    } catch {
+      return null;
+    }
+  }
 
   private drive(task: Task, event: TransitionEvent): Task {
     const next = transition(task, event);

@@ -12,9 +12,12 @@ import {
   MessageSquare,
   ArrowRight,
   CheckCircle2,
+  FolderGit2,
 } from "lucide-react";
 import type { Message, TaskProposal } from "@bureau/contracts";
 import { chat, createTask } from "../lib/api";
+import { useProjects } from "../lib/useProjects";
+import { ProjectPicker } from "../components/ProjectPicker";
 import { cn } from "../lib/utils";
 
 const ASSIGNEE: Record<string, string> = {
@@ -26,6 +29,7 @@ const ASSIGNEE: Record<string, string> = {
 };
 
 export default function AssistantPage() {
+  const { projects, active, activeId, setActiveId } = useProjects();
   const [input, setInput] = useState("");
   const [log, setLog] = useState<Message[]>([]);
   const [proposal, setProposal] = useState<TaskProposal | null>(null);
@@ -42,7 +46,7 @@ export default function AssistantPage() {
     setLog((l) => [...l, local("user", content)]);
     setInput("");
     try {
-      const res = await chat(content);
+      const res = await chat(content, activeId ?? undefined);
       setLog((l) => [...l, res.reply]);
       if (res.proposal) setProposal(res.proposal);
     } catch (e) {
@@ -63,7 +67,7 @@ export default function AssistantPage() {
     setBusy(true);
     setError(null);
     try {
-      const task = await createTask(proposal);
+      const task = await createTask(proposal, activeId ?? undefined);
       setProposal(null);
       setLog((l) => [...l, createdNote(task.id, proposal.title)]);
     } catch (e) {
@@ -85,6 +89,9 @@ export default function AssistantPage() {
             Talk with Iris. When you&apos;re aligned, she proposes a task you can create and run.
           </p>
         </div>
+        <div className="ml-auto">
+          <ProjectPicker projects={projects} active={active} onChange={setActiveId} />
+        </div>
       </div>
 
       <div className="flex-1 overflow-y-auto">
@@ -98,6 +105,12 @@ export default function AssistantPage() {
               Tell Iris what you need or where you are. She&apos;ll talk it through and, when it&apos;s clear, propose a
               task — a pipeline you can create, review, and run.
             </p>
+            {active && (
+              <span className="mt-1 inline-flex items-center gap-1.5 rounded-full border bg-card px-2.5 py-1 text-xs text-muted-foreground">
+                <FolderGit2 className="h-3.5 w-3.5 text-primary" />
+                {active.owner}/{active.name}
+              </span>
+            )}
           </div>
         ) : (
           <div className="mx-auto w-full max-w-3xl space-y-4 px-6 py-6">

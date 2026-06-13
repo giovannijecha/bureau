@@ -6,6 +6,7 @@ import {
   LayoutDashboard,
   Sparkles,
   ListTodo,
+  FolderGit2,
   GitBranch,
   Bot,
   Settings,
@@ -21,8 +22,9 @@ interface NavItem {
 }
 
 const NAV: NavItem[] = [
-  { title: "Overview", href: "/overview", icon: LayoutDashboard, soon: true },
+  { title: "Overview", href: "/overview", icon: LayoutDashboard },
   { title: "Assistant", href: "/", icon: Sparkles },
+  { title: "Projects", href: "/projects", icon: FolderGit2 },
   { title: "Tasks", href: "/tasks", icon: ListTodo },
   { title: "Git", href: "/git", icon: GitBranch, soon: true },
   { title: "Agents", href: "/agents", icon: Bot, soon: true },
