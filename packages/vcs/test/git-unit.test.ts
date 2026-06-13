@@ -98,6 +98,19 @@ describe("commitAll", () => {
       ["-C", "/wt", "diff", "--cached", "--quiet"],
     ]);
   });
+
+  it("passes an explicit author identity via -c flags when provided", async () => {
+    const { run: r, calls } = makeRunner((_c, args) =>
+      args.includes("--quiet") ? { stdout: "", stderr: "", code: 1 } : ok()
+    );
+    await commitAll("/wt", "msg", r, { name: "Bureau", email: "bureau@local" });
+    expect(calls.at(-1)!.args).toEqual([
+      "-C", "/wt",
+      "-c", "user.name=Bureau",
+      "-c", "user.email=bureau@local",
+      "commit", "-m", "msg",
+    ]);
+  });
 });
 
 describe("getDiff", () => {

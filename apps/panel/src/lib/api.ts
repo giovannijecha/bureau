@@ -1,7 +1,7 @@
 // Typed client for the Bureau engine API. The panel imports ONLY @bureau/contracts
 // (lint-enforced), so these helpers speak the shared DTOs.
 
-import type { TaskDetail, Message, GateDecisionRequest } from "@bureau/contracts";
+import type { TaskDetail, TaskSummary, Message, GateDecisionRequest } from "@bureau/contracts";
 
 const BASE = process.env.NEXT_PUBLIC_ENGINE_URL ?? "http://localhost:4319";
 
@@ -50,4 +50,17 @@ export async function retryPr(id: string): Promise<TaskDetail> {
   return json(
     await fetch(`${BASE}/api/tasks/${encodeURIComponent(id)}/retry-pr`, { method: "POST" })
   );
+}
+
+export async function listTasks(): Promise<TaskSummary[]> {
+  return json(await fetch(`${BASE}/api/tasks`));
+}
+
+/** Lightweight reachability check for the connection badge. */
+export async function ping(): Promise<boolean> {
+  try {
+    return (await fetch(`${BASE}/api/tasks`)).ok;
+  } catch {
+    return false;
+  }
 }

@@ -13,6 +13,7 @@ import {
   removeWorktree,
   defaultRunner,
   type Runner,
+  type CommitAuthor,
 } from "@bureau/vcs";
 import type { Message } from "@bureau/contracts";
 import type { VcsPort, WorktreeRef, MessageLog } from "./ports.js";
@@ -23,6 +24,8 @@ export interface RealVcsConfig {
   /** A `git clone`-able source for the canonical clone (https/ssh/local path). */
   readonly repoUrl: string;
   readonly canonicalPath: string;
+  /** Author identity for commits (so commits don't depend on global git config). */
+  readonly author: CommitAuthor;
   readonly runner?: Runner;
 }
 
@@ -52,7 +55,7 @@ export class RealVcs implements VcsPort {
   }
 
   commitAll(worktreePath: string, message: string): Promise<boolean> {
-    return commitAll(worktreePath, message, this.runner);
+    return commitAll(worktreePath, message, this.runner, this.cfg.author);
   }
 
   push(worktreePath: string, branch: string): Promise<void> {

@@ -30,15 +30,23 @@ export async function cloneRepo(
   await run(runner, "git", ["clone", "--", source, destPath]);
 }
 
+export interface CommitAuthor {
+  readonly name: string;
+  readonly email: string;
+}
+
 /**
  * Stage everything and commit on the worktree's current branch. Returns true if
  * a commit was made, false if there was nothing to commit (a no-op edit) — the
- * empty-changeset case is benign, not an error.
+ * empty-changeset case is benign, not an error. When `author` is given, the
+ * identity is passed explicitly so the commit never depends on the machine's
+ * global git config (which is absent on a fresh clone).
  */
 export async function commitAll(
   worktreePath: string,
   message: string,
-  runner: Runner = defaultRunner
+  runner: Runner = defaultRunner,
+  author?: CommitAuthor
 ): Promise<boolean> {
   await run(runner, "git", ["-C", worktreePath, "add", "-A"]);
   // `diff --cached --quiet` exits 0 when nothing is staged, 1 when there are
@@ -48,7 +56,10 @@ export async function commitAll(
   if (staged.code !== 1) {
     throw new VcsError(`\`git diff --cached --quiet\` failed (exit ${staged.code}): ${staged.stderr.trim()}`);
   }
-  await run(runner, "git", ["-C", worktreePath, "commit", "-m", message]);
+  const identity = author
+    ? ["-c", `user.name=${author.name}`, "-c", `user.email=${author.email}`]
+    : [];
+  await run(runner, "git", ["-C", worktreePath, ...identity, "commit", "-m", message]);
   return true;
 }
 

@@ -55,6 +55,12 @@ async function handle(deps: HttpDeps, req: IncomingMessage, res: ServerResponse)
   const path = url.pathname;
   const method = req.method ?? "GET";
 
+  // GET /health  (liveness probe)
+  if (method === "GET" && path === "/health") {
+    sendJson(res, 200, { status: "ok" });
+    return;
+  }
+
   // POST /api/messages
   if (method === "POST" && path === "/api/messages") {
     const body = SendMessageRequestDto.parse(await readJson(req));
