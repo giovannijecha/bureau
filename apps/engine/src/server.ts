@@ -76,6 +76,10 @@ function main(): void {
     repoName: config.repoName,
     repoUrl: env("BUREAU_REPO_URL"),
     canonicalPath: env("BUREAU_CANONICAL"),
+    author: {
+      name: env("BUREAU_AUTHOR_NAME", "Bureau"),
+      email: env("BUREAU_AUTHOR_EMAIL", "bureau@localhost"),
+    },
     runner,
   });
 
