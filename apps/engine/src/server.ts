@@ -13,7 +13,7 @@
 
 import { randomUUID } from "node:crypto";
 import Anthropic from "@anthropic-ai/sdk";
-import { createDb, runMigrations, TaskRepo } from "@bureau/db";
+import { createDb, runMigrations, TaskRepo, MessageRepo } from "@bureau/db";
 import { CapabilityRegistry, EditCapability } from "@bureau/capabilities";
 import {
   AnthropicProvider,
@@ -27,7 +27,7 @@ import type { WsEvent } from "@bureau/contracts";
 
 import { Orchestrator } from "./orchestrator.js";
 import { ProjectRegistry, projectsFromJson, slug, type ProjectConfig } from "./projects.js";
-import { RealVcs, InMemoryMessageLog } from "./adapters.js";
+import { RealVcs, DbMessageLog } from "./adapters.js";
 import { WsHub } from "./ws.js";
 import { createHttpServer } from "./http.js";
 import type { EventSink, VcsPort } from "./ports.js";
@@ -109,7 +109,7 @@ function main(): void {
       runner,
     });
 
-  const messages = new InMemoryMessageLog();
+  const messages = new DbMessageLog(new MessageRepo(db));
 
   // The orchestrator needs an EventSink, the WsHub needs the http server, and the
   // http server needs the orchestrator — so the sink forwards to the hub once it

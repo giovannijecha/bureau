@@ -1,6 +1,6 @@
 "use client";
 
-import { useRef, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import Link from "next/link";
 import {
   Sparkles,
@@ -15,7 +15,7 @@ import {
   FolderGit2,
 } from "lucide-react";
 import type { Message, TaskProposal } from "@bureau/contracts";
-import { chat, createTask } from "../lib/api";
+import { chat, createTask, listMessages } from "../lib/api";
 import { useProjects } from "../lib/useProjects";
 import { ProjectPicker } from "../components/ProjectPicker";
 import { cn } from "../lib/utils";
@@ -36,6 +36,17 @@ export default function AssistantPage() {
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const inputRef = useRef<HTMLTextAreaElement>(null);
+
+  // Load the persisted conversation on mount so the chat survives reloads/restarts.
+  useEffect(() => {
+    let alive = true;
+    listMessages()
+      .then((ms) => {
+        if (alive && ms.length > 0) setLog(ms);
+      })
+      .catch(() => {});
+    return () => void (alive = false);
+  }, []);
 
   async function onSend() {
     const content = input.trim();
