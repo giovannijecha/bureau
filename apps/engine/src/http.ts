@@ -1,14 +1,18 @@
 // HTTP API for the panel. Plain node:http (no framework) — localhost only.
 // Routes:
-//   POST /api/messages            chat → Iris; returns { message, task: TaskDetail }
+//   GET  /health                  liveness
+//   POST /api/chat                converse with Iris → { reply, proposal? }
 //   GET  /api/messages            the chat log
 //   GET  /api/tasks               TaskSummary[]
+//   POST /api/tasks               create a draft task from a proposal → TaskDetail
 //   GET  /api/tasks/:id           TaskDetail
 //   GET  /api/tasks/:id/diff      { diff }
-//   POST /api/gates/:id/decide    human gate decision → TaskDetail
+//   POST /api/tasks/:id/start     run the pipeline (local commit, no push)
+//   POST /api/tasks/:id/stop      abort + clean up
+//   POST /api/tasks/:id/merge     the final confirm: push → PR → squash-merge
 
 import { createServer, type IncomingMessage, type ServerResponse, type Server } from "node:http";
-import { SendMessageRequestDto, GateDecisionRequestDto } from "@bureau/contracts";
+import { SendMessageRequestDto, CreateTaskRequestDto } from "@bureau/contracts";
 import type { TaskId } from "@bureau/core";
 import { Orchestrator, OrchestratorError } from "./orchestrator.js";
 import type { TaskStore, MessageLog } from "./ports.js";
@@ -26,7 +30,6 @@ export function createHttpServer(deps: HttpDeps): Server {
   });
 }
 
-/** Map errors to clean statuses; never leak parser/subprocess internals on 500. */
 function respondError(res: ServerResponse, err: unknown): void {
   if (err instanceof SyntaxError || isZodError(err)) {
     sendJson(res, 400, { error: "invalid request body" });
@@ -55,21 +58,19 @@ async function handle(deps: HttpDeps, req: IncomingMessage, res: ServerResponse)
   const path = url.pathname;
   const method = req.method ?? "GET";
 
-  // GET /health  (liveness probe)
   if (method === "GET" && path === "/health") {
     sendJson(res, 200, { status: "ok" });
     return;
   }
 
-  // POST /api/messages
-  if (method === "POST" && path === "/api/messages") {
+  // POST /api/chat — a conversation turn with Iris.
+  if (method === "POST" && path === "/api/chat") {
     const body = SendMessageRequestDto.parse(await readJson(req));
-    const { message, task } = await deps.orchestrator.handleMessage(body.content);
-    sendJson(res, 201, { message, task: toTaskDetail(task) });
+    sendJson(res, 200, await deps.orchestrator.chat(body.content));
     return;
   }
 
-  // GET /api/messages
+  // GET /api/messages — the chat log.
   if (method === "GET" && path === "/api/messages") {
     sendJson(res, 200, deps.messages.list());
     return;
@@ -78,6 +79,13 @@ async function handle(deps: HttpDeps, req: IncomingMessage, res: ServerResponse)
   // GET /api/tasks
   if (method === "GET" && path === "/api/tasks") {
     sendJson(res, 200, deps.store.list().map(toTaskSummary));
+    return;
+  }
+
+  // POST /api/tasks — create a draft task from a proposal.
+  if (method === "POST" && path === "/api/tasks") {
+    const body = CreateTaskRequestDto.parse(await readJson(req));
+    sendJson(res, 201, toTaskDetail(deps.orchestrator.createTask(body.proposal)));
     return;
   }
 
@@ -93,23 +101,17 @@ async function handle(deps: HttpDeps, req: IncomingMessage, res: ServerResponse)
     return;
   }
 
-  // POST /api/tasks/:id/retry-pr  (recover a pushed-but-PR-failed task)
-  const retryMatch = /^\/api\/tasks\/([^/]+)\/retry-pr$/.exec(path);
-  if (method === "POST" && retryMatch) {
-    const task = await deps.orchestrator.retryPr(decodeURIComponent(retryMatch[1]!));
-    sendJson(res, 200, toTaskDetail(task));
-    return;
-  }
-
-  // POST /api/gates/:id/decide
-  const gateMatch = /^\/api\/gates\/([^/]+)\/decide$/.exec(path);
-  if (method === "POST" && gateMatch) {
-    const body = GateDecisionRequestDto.parse(await readJson(req));
-    const task = await deps.orchestrator.decideGate(
-      decodeURIComponent(gateMatch[1]!),
-      body.decision,
-      body.notes
-    );
+  // POST /api/tasks/:id/(start|stop|merge)
+  const actionMatch = /^\/api\/tasks\/([^/]+)\/(start|stop|merge)$/.exec(path);
+  if (method === "POST" && actionMatch) {
+    const id = decodeURIComponent(actionMatch[1]!);
+    const action = actionMatch[2];
+    const task =
+      action === "start"
+        ? await deps.orchestrator.startTask(id)
+        : action === "stop"
+          ? await deps.orchestrator.stopTask(id)
+          : await deps.orchestrator.confirmMerge(id);
     sendJson(res, 200, toTaskDetail(task));
     return;
   }

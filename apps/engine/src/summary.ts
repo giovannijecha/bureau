@@ -1,7 +1,16 @@
 // Map a domain Task to the panel-facing TaskSummary DTO (contracts).
 
-import type { Task } from "@bureau/core";
+import type { Task, CapabilityKind } from "@bureau/core";
 import type { TaskSummary, TaskDetail } from "@bureau/contracts";
+
+/** Each capability maps to a worker persona — who Iris hands that piece to. */
+const ASSIGNEE: Record<CapabilityKind, string> = {
+  plan: "Planner",
+  edit: "Editor",
+  test: "Tester",
+  review: "Reviewer",
+  document: "Scribe",
+};
 
 export function toTaskSummary(task: Task): TaskSummary {
   return {
@@ -42,6 +51,13 @@ export function toTaskDetail(task: Task): TaskDetail {
     diff: latestDiff(task),
     prUrl: prUrl(task),
     ...(task.worktreePath !== undefined ? { worktreePath: task.worktreePath } : {}),
+    steps: task.steps.map((s) => ({
+      id: s.id,
+      capability: s.capability,
+      assignee: ASSIGNEE[s.capability],
+      description: s.description,
+      status: s.status,
+    })),
     gates: task.gates.map((g) => ({
       id: g.id,
       kind: g.kind,

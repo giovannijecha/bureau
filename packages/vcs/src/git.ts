@@ -139,3 +139,25 @@ export async function openPr(
   ]);
   return out.trim(); // gh prints the new PR URL on stdout
 }
+
+/**
+ * Squash-merge the branch's PR into the base and delete the branch — the final,
+ * human-confirmed step that lands the work on main and keeps the repo clean.
+ * Call ONLY after canPush() === true (engine-gated). `ownerRepo` is "owner/repo".
+ */
+export async function mergePr(
+  ownerRepo: string,
+  branch: string,
+  runner: Runner = defaultRunner
+): Promise<void> {
+  assertSafeRef(branch, "merge branch");
+  await run(runner, "gh", [
+    "pr",
+    "merge",
+    branch,
+    "--repo",
+    ownerRepo,
+    "--squash",
+    "--delete-branch",
+  ]);
+}

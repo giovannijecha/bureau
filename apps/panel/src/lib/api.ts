@@ -1,7 +1,6 @@
-// Typed client for the Bureau engine API. The panel imports ONLY @bureau/contracts
-// (lint-enforced), so these helpers speak the shared DTOs.
+// Typed client for the Bureau engine API. The panel imports ONLY @bureau/contracts.
 
-import type { TaskDetail, TaskSummary, Message, GateDecisionRequest } from "@bureau/contracts";
+import type { TaskDetail, TaskSummary, ChatResponse, TaskProposal } from "@bureau/contracts";
 
 const BASE = process.env.NEXT_PUBLIC_ENGINE_URL ?? "http://localhost:4319";
 
@@ -13,53 +12,45 @@ async function json<T>(res: Response): Promise<T> {
   return res.json() as Promise<T>;
 }
 
-export interface SendMessageResult {
-  message: Message;
-  task: TaskDetail;
+const postJson = (path: string, body?: unknown) =>
+  fetch(`${BASE}${path}`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(body ?? {}),
+  });
+
+/** A conversation turn with Iris. */
+export async function chat(content: string): Promise<ChatResponse> {
+  return json(await postJson("/api/chat", { content }));
 }
 
-export async function sendMessage(content: string): Promise<SendMessageResult> {
-  return json(
-    await fetch(`${BASE}/api/messages`, {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ content }),
-    })
-  );
-}
-
-export async function decideGate(
-  gateId: string,
-  decision: GateDecisionRequest["decision"]
-): Promise<TaskDetail> {
-  return json(
-    await fetch(`${BASE}/api/gates/${encodeURIComponent(gateId)}/decide`, {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ decision }),
-    })
-  );
-}
-
-export async function getTask(id: string): Promise<TaskDetail> {
-  return json(await fetch(`${BASE}/api/tasks/${encodeURIComponent(id)}`));
-}
-
-/** Retry opening the PR for a task whose push succeeded but PR creation failed. */
-export async function retryPr(id: string): Promise<TaskDetail> {
-  return json(
-    await fetch(`${BASE}/api/tasks/${encodeURIComponent(id)}/retry-pr`, { method: "POST" })
-  );
+/** Materialize a proposal into a draft task. */
+export async function createTask(proposal: TaskProposal): Promise<TaskDetail> {
+  return json(await postJson("/api/tasks", { proposal }));
 }
 
 export async function listTasks(): Promise<TaskSummary[]> {
   return json(await fetch(`${BASE}/api/tasks`));
 }
 
-/** Lightweight reachability check for the connection badge. */
+export async function getTask(id: string): Promise<TaskDetail> {
+  return json(await fetch(`${BASE}/api/tasks/${encodeURIComponent(id)}`));
+}
+
+export async function startTask(id: string): Promise<TaskDetail> {
+  return json(await postJson(`/api/tasks/${encodeURIComponent(id)}/start`));
+}
+export async function stopTask(id: string): Promise<TaskDetail> {
+  return json(await postJson(`/api/tasks/${encodeURIComponent(id)}/stop`));
+}
+export async function mergeTask(id: string): Promise<TaskDetail> {
+  return json(await postJson(`/api/tasks/${encodeURIComponent(id)}/merge`));
+}
+
+/** Lightweight reachability check for a connection indicator. */
 export async function ping(): Promise<boolean> {
   try {
-    return (await fetch(`${BASE}/api/tasks`)).ok;
+    return (await fetch(`${BASE}/health`)).ok;
   } catch {
     return false;
   }

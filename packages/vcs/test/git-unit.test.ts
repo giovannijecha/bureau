@@ -1,7 +1,7 @@
 import { describe, it, expect } from "vitest";
 
 import { run, assertSafeRef, VcsError, type Runner, type ExecResult } from "../src/exec.js";
-import { push, openPr, commitAll, getDiff, cloneRepo } from "../src/git.js";
+import { push, openPr, mergePr, commitAll, getDiff, cloneRepo } from "../src/git.js";
 import { createWorktree, removeWorktree } from "../src/worktree.js";
 
 const ok = (stdout = ""): ExecResult => ({ stdout, stderr: "", code: 0 });
@@ -74,6 +74,19 @@ describe("openPr", () => {
       "--title", "My title",
       "--body", "My body",
     ]);
+  });
+});
+
+describe("mergePr", () => {
+  it("squash-merges the branch's PR and deletes the branch", async () => {
+    const { run: r, calls } = makeRunner();
+    await mergePr("o/r", "bureau/task-1", r);
+    expect(calls[0]!.cmd).toBe("gh");
+    expect(calls[0]!.args).toEqual(["pr", "merge", "bureau/task-1", "--repo", "o/r", "--squash", "--delete-branch"]);
+  });
+
+  it("refuses an unsafe branch", async () => {
+    await expect(mergePr("o/r", "--force", makeRunner().run)).rejects.toThrow(/Unsafe merge branch/);
   });
 });
 

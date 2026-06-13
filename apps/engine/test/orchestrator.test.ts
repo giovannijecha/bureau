@@ -1,15 +1,15 @@
 import { describe, it, expect, beforeEach } from "vitest";
-import { join } from "node:path";
 
 import { canPush } from "@bureau/core";
 import type { Task } from "@bureau/core";
 import { CapabilityRegistry } from "@bureau/capabilities";
 import type { CapabilityInput } from "@bureau/capabilities";
-import type { WsEvent, Message } from "@bureau/contracts";
+import type { Provider } from "@bureau/providers";
+import type { WsEvent, Message, TaskProposal } from "@bureau/contracts";
 
 import { Orchestrator, type OrchestratorConfig } from "../src/orchestrator.js";
 import type { TaskStore, VcsPort } from "../src/ports.js";
-import { latestDiff, prUrl, toTaskSummary } from "../src/summary.js";
+import { toTaskDetail } from "../src/summary.js";
 
 // ── fakes ────────────────────────────────────────────────────────────────────
 
@@ -30,10 +30,11 @@ function fakeVcs() {
     setupWorktree: [] as { branch: string; path: string }[],
     commitAll: [] as { path: string; message: string }[],
     push: [] as { path: string; branch: string }[],
-    openPr: [] as { branch: string; title: string; body: string }[],
+    openPr: [] as { branch: string }[],
+    mergePr: [] as { branch: string }[],
+    removeWorktree: [] as { force: boolean }[],
   };
   let committed = true;
-  let openPrFails = false;
   const vcs: VcsPort = {
     async ensureClone() {
       calls.ensureClone++;
@@ -53,19 +54,40 @@ function fakeVcs() {
     async push(path, branch) {
       calls.push.push({ path, branch });
     },
-    async openPr(branch, title, body) {
-      calls.openPr.push({ branch, title, body });
-      if (openPrFails) throw new Error("gh: PR creation failed");
+    async openPr(branch) {
+      calls.openPr.push({ branch });
       return "https://github.com/acme/widget/pull/1";
     },
-    async removeWorktree() {},
+    async mergePr(branch) {
+      calls.mergePr.push({ branch });
+    },
+    async removeWorktree(_ref, force) {
+      calls.removeWorktree.push({ force });
+    },
   };
-  return {
-    vcs,
-    calls,
-    setCommitted: (v: boolean) => void (committed = v),
-    setOpenPrFails: (v: boolean) => void (openPrFails = v),
+  return { vcs, calls, setCommitted: (v: boolean) => void (committed = v) };
+}
+
+const PROPOSAL: TaskProposal = {
+  title: "Add a Quick Start to the README",
+  summary: "Document how to run the project",
+  steps: [{ capability: "edit", description: "Add a Quick Start section to README.md" }],
+};
+
+function fakeProvider(reply: string) {
+  let content = reply;
+  const provider: Provider = {
+    name: "fake",
+    authStrategy: { kind: "api-key", isAvailable: () => true },
+    async send() {
+      return { content, inputTokens: 0, outputTokens: 0 };
+    },
+    async stream(_m, onChunk) {
+      onChunk(content);
+      return { content, inputTokens: 0, outputTokens: 0 };
+    },
   };
+  return { provider, setReply: (r: string) => void (content = r) };
 }
 
 const CONFIG: OrchestratorConfig = {
@@ -77,17 +99,17 @@ const CONFIG: OrchestratorConfig = {
 
 let store: TaskStore;
 let vcs: ReturnType<typeof fakeVcs>;
-let registry: CapabilityRegistry;
+let prov: ReturnType<typeof fakeProvider>;
 let captured: CapabilityInput | null;
 let events: WsEvent[];
 let messages: Message[];
 let orch: Orchestrator;
 
 beforeEach(() => {
-  const s = fakeStore();
-  store = s.store;
+  store = fakeStore().store;
   vcs = fakeVcs();
-  registry = new CapabilityRegistry();
+  prov = fakeProvider(JSON.stringify({ reply: "Sure!", proposal: PROPOSAL }));
+  const registry = new CapabilityRegistry();
   captured = null;
   registry.register({
     kind: "edit",
@@ -102,6 +124,7 @@ beforeEach(() => {
   orch = new Orchestrator({
     store,
     capabilities: registry,
+    provider: prov.provider,
     vcs: vcs.vcs,
     events: { emit: (e) => void events.push(e) },
     messages: { append: (m) => void messages.push(m), list: () => messages },
@@ -111,160 +134,108 @@ beforeEach(() => {
   });
 });
 
-// ── tests ────────────────────────────────────────────────────────────────────
+// ── chat ─────────────────────────────────────────────────────────────────────
 
-describe("handleMessage", () => {
-  it("drives a task to awaiting_human with a diff, WITHOUT pushing", async () => {
-    const { task } = await orch.handleMessage("add a hello module");
+describe("chat", () => {
+  it("returns Iris's reply and a proposal, and never touches the repo", async () => {
+    const res = await orch.chat("add a quick start to the readme");
+    expect(res.reply.role).toBe("iris");
+    expect(res.reply.content).toBe("Sure!");
+    expect(res.proposal).toEqual(PROPOSAL);
+    expect(vcs.calls.ensureClone).toBe(0); // chatting creates nothing
+    expect(store.list()).toHaveLength(0);
+  });
+
+  it("returns just a reply when Iris is only chatting (no proposal)", async () => {
+    prov.setReply(JSON.stringify({ reply: "Tell me more." }));
+    const res = await orch.chat("hi");
+    expect(res.reply.content).toBe("Tell me more.");
+    expect(res.proposal).toBeUndefined();
+  });
+});
+
+// ── createTask ─────────────────────────────────────────────────────────────
+
+describe("createTask", () => {
+  it("materializes a DRAFT task (created, not started) with a pr_approval gate", () => {
+    const task = orch.createTask(PROPOSAL);
+    expect(task.status).toBe("created");
+    expect(task.goal).toBe(PROPOSAL.title);
+    expect(task.steps).toHaveLength(1);
+    expect(task.steps[0]!.gateAfter).toBe(task.gates[0]!.id);
+    expect(task.gates[0]!.kind).toBe("pr_approval");
+    expect(vcs.calls.ensureClone).toBe(0); // not started
+    expect(toTaskDetail(task).steps[0]!.assignee).toBe("Editor");
+  });
+});
+
+// ── startTask ──────────────────────────────────────────────────────────────
+
+describe("startTask", () => {
+  it("runs the pipeline and commits LOCALLY without pushing", async () => {
+    const draft = orch.createTask(PROPOSAL);
+    const task = await orch.startTask(draft.id);
 
     expect(task.status).toBe("awaiting_human");
-    expect(task.gates[0]!.kind).toBe("pr_approval");
-    expect(task.gates[0]!.status).toBe("open");
-    expect(latestDiff(task)).toBe("DIFF-CONTENT");
-
-    // The wall is closed: nothing pushed, canPush false.
-    expect(canPush(task)).toBe(false);
+    expect(captured?.step.capability).toBe("edit");
+    expect(vcs.calls.commitAll).toHaveLength(1);
+    // The wall is closed: nothing pushed/opened/merged before the CEO confirms.
     expect(vcs.calls.push).toHaveLength(0);
     expect(vcs.calls.openPr).toHaveLength(0);
-
-    // Worktree was set up on the task's branch.
-    expect(vcs.calls.ensureClone).toBe(1);
-    expect(vcs.calls.setupWorktree[0]!.branch).toBe(`bureau/task-${task.id}`);
-    expect(task.worktreePath).toBe(join("/tmp/wt", task.id));
+    expect(vcs.calls.mergePr).toHaveLength(0);
+    expect(canPush(task)).toBe(false);
+    expect(toTaskDetail(task).diff).toBe("DIFF-CONTENT");
   });
 
-  it("runs the edit capability with the running step, worktree, and goal as context", async () => {
-    await orch.handleMessage("the goal text");
-    expect(captured).not.toBeNull();
-    expect(captured!.step.capability).toBe("edit");
-    expect(captured!.step.status).toBe("running");
-    expect(captured!.worktreePath).toBe(join("/tmp/wt", store.list()[0]!.id));
-    expect(captured!.context).toBe("the goal text");
-  });
-
-  it("emits the lifecycle events the panel listens for", async () => {
-    await orch.handleMessage("x");
-    const types = events.map((e) => e.type);
-    expect(types).toContain("step_started");
-    expect(types).toContain("step_completed");
-    expect(types).toContain("gate_opened");
-    expect(types).toContain("task_updated");
-    expect(types).toContain("iris_message");
+  it("rejects starting a task that isn't a draft", async () => {
+    const draft = orch.createTask(PROPOSAL);
+    await orch.startTask(draft.id);
+    await expect(orch.startTask(draft.id)).rejects.toMatchObject({ status: 409 });
   });
 });
 
-describe("decideGate — the security wall", () => {
-  it("approval completes the task and opens a PR exactly once", async () => {
-    const { task } = await orch.handleMessage("add feature");
-    const gateId = task.gates[0]!.id;
+// ── confirmMerge — the security wall ─────────────────────────────────────────
 
-    const after = await orch.decideGate(gateId, "approved");
+describe("confirmMerge", () => {
+  it("pushes, opens the PR, and squash-merges exactly once — only after canPush", async () => {
+    const draft = orch.createTask(PROPOSAL);
+    const started = await orch.startTask(draft.id);
+    expect(canPush(started)).toBe(false);
 
-    expect(after.status).toBe("completed");
-    expect(canPush(after)).toBe(true);
-    expect(vcs.calls.commitAll).toHaveLength(1);
+    const merged = await orch.confirmMerge(draft.id);
+
+    expect(merged.status).toBe("completed");
+    expect(canPush(merged)).toBe(true);
     expect(vcs.calls.push).toHaveLength(1);
     expect(vcs.calls.openPr).toHaveLength(1);
-    expect(vcs.calls.push[0]!.branch).toBe(`bureau/task-${after.id}`);
-    expect(prUrl(after)).toBe("https://github.com/acme/widget/pull/1");
+    expect(vcs.calls.mergePr).toHaveLength(1);
+    expect(vcs.calls.mergePr[0]!.branch).toBe(`bureau/task-${draft.id}`);
+    expect(vcs.calls.removeWorktree.some((c) => c.force)).toBe(true); // cleaned up
   });
 
-  it("rejection never pushes and leaves canPush false", async () => {
-    const { task } = await orch.handleMessage("add feature");
-
-    const after = await orch.decideGate(task.gates[0]!.id, "rejected");
-
-    expect(after.status).toBe("awaiting_human");
-    expect(after.gates[0]!.status).toBe("rejected");
-    expect(canPush(after)).toBe(false);
-    expect(vcs.calls.push).toHaveLength(0);
-    expect(vcs.calls.openPr).toHaveLength(0);
-  });
-
-  it("request_changes never pushes", async () => {
-    const { task } = await orch.handleMessage("add feature");
-    const after = await orch.decideGate(task.gates[0]!.id, "request_changes");
-    expect(after.gates[0]!.status).toBe("rejected");
-    expect(vcs.calls.push).toHaveLength(0);
-    expect(vcs.calls.openPr).toHaveLength(0);
-  });
-
-  it("a no-op edit (nothing to commit) completes but does not push", async () => {
-    vcs.setCommitted(false);
-    const { task } = await orch.handleMessage("noop change");
-
-    const after = await orch.decideGate(task.gates[0]!.id, "approved");
-
-    expect(after.status).toBe("completed");
-    expect(vcs.calls.commitAll).toHaveLength(1);
-    expect(vcs.calls.push).toHaveLength(0); // nothing committed → nothing pushed
-    expect(vcs.calls.openPr).toHaveLength(0);
-  });
-
-  it("throws for an unknown gate id", async () => {
-    await expect(orch.decideGate("does-not-exist", "approved")).rejects.toThrow(/No task found/);
-  });
-});
-
-describe("decideGate — partial-failure recovery", () => {
-  it("an openPr failure after a successful push leaves the task recoverable, without throwing", async () => {
-    vcs.setOpenPrFails(true);
-    const { task } = await orch.handleMessage("add feature");
-
-    const after = await orch.decideGate(task.gates[0]!.id, "approved");
-
-    expect(after.status).toBe("completed");
-    expect(vcs.calls.push).toHaveLength(1); // branch pushed
-    expect(vcs.calls.openPr).toHaveLength(1); // PR attempted
-    expect(prUrl(after)).toBeNull(); // but no PR recorded
-    expect(messages.some((m) => m.role === "iris" && /retry/i.test(m.content))).toBe(true);
-
-    // Retry succeeds → PR opened, no double-push-then-throw.
-    vcs.setOpenPrFails(false);
-    const recovered = await orch.retryPr(after.id);
-    expect(prUrl(recovered)).toBe("https://github.com/acme/widget/pull/1");
-    expect(vcs.calls.openPr).toHaveLength(2);
-  });
-
-  it("retryPr is a no-op once the PR already exists", async () => {
-    const { task } = await orch.handleMessage("add feature");
-    const done = await orch.decideGate(task.gates[0]!.id, "approved");
-    const opens = vcs.calls.openPr.length;
-
-    const again = await orch.retryPr(done.id);
-    expect(prUrl(again)).toBe(prUrl(done));
-    expect(vcs.calls.openPr).toHaveLength(opens); // not opened a second time
-  });
-});
-
-describe("decideGate — conflicts", () => {
-  it("re-deciding an already-approved gate is a 409 and never double-pushes", async () => {
-    const { task } = await orch.handleMessage("add feature");
-    const gateId = task.gates[0]!.id;
-    await orch.decideGate(gateId, "approved");
-    const pushes = vcs.calls.push.length;
-
-    await expect(orch.decideGate(gateId, "approved")).rejects.toMatchObject({ status: 409 });
-    expect(vcs.calls.push).toHaveLength(pushes);
-  });
-
-  it("approving a gate that was already rejected is a 409 conflict", async () => {
-    const { task } = await orch.handleMessage("add feature");
-    const gateId = task.gates[0]!.id;
-    await orch.decideGate(gateId, "rejected");
-
-    await expect(orch.decideGate(gateId, "approved")).rejects.toMatchObject({ status: 409 });
+  it("throws 409 when there is no open review gate", async () => {
+    const draft = orch.createTask(PROPOSAL);
+    await expect(orch.confirmMerge(draft.id)).rejects.toMatchObject({ status: 409 });
     expect(vcs.calls.push).toHaveLength(0);
   });
 });
 
-describe("toTaskSummary", () => {
-  it("summarizes counts for the panel", async () => {
-    const { task } = await orch.handleMessage("x");
-    const summary = toTaskSummary(task);
-    expect(summary.status).toBe("awaiting_human");
-    expect(summary.stepCount).toBe(1);
-    expect(summary.pendingGates).toBe(1); // the open gate
-    expect(summary.repoOwner).toBe("acme");
+// ── stopTask ─────────────────────────────────────────────────────────────────
+
+describe("stopTask", () => {
+  it("aborts the task and force-removes its worktree, never pushing", async () => {
+    const draft = orch.createTask(PROPOSAL);
+    await orch.startTask(draft.id);
+
+    const stopped = await orch.stopTask(draft.id);
+
+    expect(stopped.status).toBe("aborted");
+    expect(vcs.calls.removeWorktree.some((c) => c.force)).toBe(true);
+    expect(vcs.calls.push).toHaveLength(0);
+    expect(vcs.calls.mergePr).toHaveLength(0);
+  });
+
+  it("throws 404 for an unknown task", async () => {
+    await expect(orch.stopTask("nope")).rejects.toMatchObject({ status: 404 });
   });
 });

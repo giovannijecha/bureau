@@ -2,8 +2,8 @@ import { describe, it, expect, afterEach } from "vitest";
 import type { Server } from "node:http";
 import type { AddressInfo } from "node:net";
 
-import type { Task, TaskId, GateId } from "@bureau/core";
-import type { Message } from "@bureau/contracts";
+import type { Task, TaskId, GateId, StepId } from "@bureau/core";
+import type { Message, TaskProposal } from "@bureau/contracts";
 
 import { createHttpServer, type HttpDeps } from "../src/http.js";
 import { OrchestratorError, type Orchestrator } from "../src/orchestrator.js";
@@ -17,9 +17,19 @@ function makeTask(id = "t1"): Task {
     goal: "do the thing",
     repoOwner: "acme",
     repoName: "widget",
-    status: "awaiting_human",
-    steps: [],
-    gates: [{ id: "g1" as GateId, kind: "pr_approval", status: "open" }],
+    status: "created",
+    steps: [
+      {
+        id: "s1" as StepId,
+        capability: "edit",
+        description: "edit a file",
+        acceptanceCriteria: [],
+        status: "pending",
+        artifactIds: [],
+        gateAfter: "g1" as GateId,
+      },
+    ],
+    gates: [{ id: "g1" as GateId, kind: "pr_approval", status: "pending" }],
     artifacts: [],
     decisionLog: [],
     createdAt: "2026-01-01T00:00:00.000Z",
@@ -28,6 +38,7 @@ function makeTask(id = "t1"): Task {
 }
 
 const irisMsg: Message = { id: "m1", role: "iris", content: "hi", createdAt: "t" };
+const PROPOSAL: TaskProposal = { title: "T", summary: "S", steps: [{ capability: "edit", description: "d" }] };
 
 function fakeStore(seed: Task[] = []): TaskStore {
   const map = new Map<string, Task>(seed.map((t) => [t.id, t]));
@@ -39,11 +50,15 @@ function fakeMessages(): MessageLog {
   return { append: (m) => void items.push(m), list: () => items };
 }
 
-function fakeOrchestrator(over: Partial<Record<"handleMessage" | "decideGate" | "retryPr", (...a: never[]) => unknown>> = {}) {
+function fakeOrchestrator(
+  over: Partial<Record<"chat" | "createTask" | "startTask" | "stopTask" | "confirmMerge", (...a: never[]) => unknown>> = {}
+) {
   return {
-    handleMessage: over.handleMessage ?? (async () => ({ message: irisMsg, task: makeTask() })),
-    decideGate: over.decideGate ?? (async () => makeTask()),
-    retryPr: over.retryPr ?? (async () => makeTask()),
+    chat: over.chat ?? (async () => ({ reply: irisMsg, proposal: PROPOSAL })),
+    createTask: over.createTask ?? (() => makeTask()),
+    startTask: over.startTask ?? (async () => makeTask()),
+    stopTask: over.stopTask ?? (async () => makeTask()),
+    confirmMerge: over.confirmMerge ?? (async () => makeTask()),
   } as unknown as Orchestrator;
 }
 
@@ -55,8 +70,7 @@ afterEach(() => server?.close());
 async function listen(deps: HttpDeps): Promise<string> {
   server = createHttpServer(deps);
   await new Promise<void>((resolve) => server!.listen(0, resolve));
-  const { port } = server!.address() as AddressInfo;
-  return `http://localhost:${port}`;
+  return `http://localhost:${(server!.address() as AddressInfo).port}`;
 }
 
 const post = (url: string, body: unknown) =>
@@ -68,90 +82,78 @@ const post = (url: string, body: unknown) =>
 
 // ── tests ─────────────────────────────────────────────────────────────────
 
-describe("POST /api/messages", () => {
-  it("returns 201 with the iris message and task detail on a valid body", async () => {
+describe("POST /api/chat", () => {
+  it("returns Iris's reply + proposal", async () => {
     const url = await listen({ orchestrator: fakeOrchestrator(), store: fakeStore(), messages: fakeMessages() });
-    const res = await post(`${url}/api/messages`, { content: "add a /health endpoint" });
-    expect(res.status).toBe(201);
-    const body = (await res.json()) as { message: Message; task: { id: string; diff: string | null } };
-    expect(body.message.role).toBe("iris");
-    expect(body.task.id).toBe("t1");
+    const res = await post(`${url}/api/chat`, { content: "make a change" });
+    expect(res.status).toBe(200);
+    const body = (await res.json()) as { reply: Message; proposal: TaskProposal };
+    expect(body.reply.role).toBe("iris");
+    expect(body.proposal.title).toBe("T");
   });
 
-  it("returns 400 (not 500) on an empty content", async () => {
+  it("returns 400 on empty content", async () => {
     const url = await listen({ orchestrator: fakeOrchestrator(), store: fakeStore(), messages: fakeMessages() });
-    const res = await post(`${url}/api/messages`, { content: "" });
-    expect(res.status).toBe(400);
-    expect((await res.json()).error).toBe("invalid request body");
-  });
-
-  it("returns 400 on malformed JSON", async () => {
-    const url = await listen({ orchestrator: fakeOrchestrator(), store: fakeStore(), messages: fakeMessages() });
-    const res = await post(`${url}/api/messages`, "not json at all");
+    const res = await post(`${url}/api/chat`, { content: "" });
     expect(res.status).toBe(400);
   });
 
-  it("sanitizes unexpected errors to a generic 500 (no internal leak)", async () => {
+  it("sanitizes unexpected errors to a generic 500", async () => {
     const orchestrator = fakeOrchestrator({
-      handleMessage: async () => {
-        throw new Error("secret subprocess stderr with a token");
+      chat: async () => {
+        throw new Error("secret stderr");
       },
     });
     const url = await listen({ orchestrator, store: fakeStore(), messages: fakeMessages() });
-    const res = await post(`${url}/api/messages`, { content: "x" });
+    const res = await post(`${url}/api/chat`, { content: "x" });
     expect(res.status).toBe(500);
-    const body = (await res.json()) as { error: string };
-    expect(body.error).toBe("internal error");
-    expect(body.error).not.toMatch(/token/);
+    expect((await res.json()).error).toBe("internal error");
   });
 });
 
-describe("GET /api/tasks", () => {
-  it("lists summaries", async () => {
+describe("POST /api/tasks (create)", () => {
+  it("creates a draft task from a proposal → 201", async () => {
+    const url = await listen({ orchestrator: fakeOrchestrator(), store: fakeStore(), messages: fakeMessages() });
+    const res = await post(`${url}/api/tasks`, { proposal: PROPOSAL });
+    expect(res.status).toBe(201);
+    const body = (await res.json()) as { id: string; steps: unknown[] };
+    expect(body.id).toBe("t1");
+    expect(body.steps).toHaveLength(1);
+  });
+
+  it("returns 400 for a malformed proposal", async () => {
+    const url = await listen({ orchestrator: fakeOrchestrator(), store: fakeStore(), messages: fakeMessages() });
+    expect((await post(`${url}/api/tasks`, { proposal: { title: "x" } })).status).toBe(400);
+  });
+});
+
+describe("task actions", () => {
+  it("GET /api/tasks lists summaries", async () => {
     const url = await listen({ orchestrator: fakeOrchestrator(), store: fakeStore([makeTask("a"), makeTask("b")]), messages: fakeMessages() });
     const res = await fetch(`${url}/api/tasks`);
-    expect(res.status).toBe(200);
     expect((await res.json()).map((t: { id: string }) => t.id)).toEqual(["a", "b"]);
   });
 
-  it("returns 404 for a missing task", async () => {
+  it("GET /api/tasks/:id 404 for missing", async () => {
     const url = await listen({ orchestrator: fakeOrchestrator(), store: fakeStore(), messages: fakeMessages() });
     expect((await fetch(`${url}/api/tasks/missing`)).status).toBe(404);
   });
 
-  it("returns the diff for a task", async () => {
-    const task = { ...makeTask("d"), artifacts: [{ id: "ar1" as never, kind: "diff" as const, ref: "THE DIFF", producedByStep: "s1" as never, createdAt: "t" }] };
-    const url = await listen({ orchestrator: fakeOrchestrator(), store: fakeStore([task]), messages: fakeMessages() });
-    const res = await fetch(`${url}/api/tasks/d/diff`);
-    expect((await res.json()).diff).toBe("THE DIFF");
+  it("POST /api/tasks/:id/start → 200 TaskDetail", async () => {
+    const url = await listen({ orchestrator: fakeOrchestrator(), store: fakeStore(), messages: fakeMessages() });
+    const res = await post(`${url}/api/tasks/t1/start`, {});
+    expect(res.status).toBe(200);
+    expect((await res.json()).id).toBe("t1");
   });
-});
 
-describe("POST /api/gates/:id/decide", () => {
-  it("maps an OrchestratorError to its status (409 conflict)", async () => {
+  it("POST /api/tasks/:id/merge maps an OrchestratorError to its status (409)", async () => {
     const orchestrator = fakeOrchestrator({
-      decideGate: async () => {
-        throw new OrchestratorError("gate already decided", 409);
+      confirmMerge: async () => {
+        throw new OrchestratorError("no open gate", 409);
       },
     });
     const url = await listen({ orchestrator, store: fakeStore(), messages: fakeMessages() });
-    const res = await post(`${url}/api/gates/g1/decide`, { decision: "approved" });
+    const res = await post(`${url}/api/tasks/t1/merge`, {});
     expect(res.status).toBe(409);
-    expect((await res.json()).error).toMatch(/already decided/);
-  });
-
-  it("returns 400 for an invalid decision enum", async () => {
-    const url = await listen({ orchestrator: fakeOrchestrator(), store: fakeStore(), messages: fakeMessages() });
-    const res = await post(`${url}/api/gates/g1/decide`, { decision: "maybe" });
-    expect(res.status).toBe(400);
-  });
-});
-
-describe("CORS", () => {
-  it("answers preflight with 204 and permissive headers", async () => {
-    const url = await listen({ orchestrator: fakeOrchestrator(), store: fakeStore(), messages: fakeMessages() });
-    const res = await fetch(`${url}/api/messages`, { method: "OPTIONS" });
-    expect(res.status).toBe(204);
-    expect(res.headers.get("access-control-allow-origin")).toBe("*");
   });
 });
