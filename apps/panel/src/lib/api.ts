@@ -1,6 +1,6 @@
 // Typed client for the Bureau engine API. The panel imports ONLY @bureau/contracts.
 
-import type { TaskDetail, TaskSummary, ChatResponse, TaskProposal, Project } from "@bureau/contracts";
+import type { TaskDetail, TaskSummary, ChatResponse, TaskProposal, Project, Message } from "@bureau/contracts";
 
 const BASE = process.env.NEXT_PUBLIC_ENGINE_URL ?? "http://localhost:4319";
 
@@ -22,6 +22,11 @@ const postJson = (path: string, body?: unknown) =>
 /** The repositories Bureau works on. */
 export async function listProjects(): Promise<Project[]> {
   return json(await fetch(`${BASE}/api/projects`));
+}
+
+/** The persisted chat log (survives restarts). */
+export async function listMessages(): Promise<Message[]> {
+  return json(await fetch(`${BASE}/api/messages`));
 }
 
 /** A conversation turn with Iris, scoped to the active project. */

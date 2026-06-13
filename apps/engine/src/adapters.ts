@@ -16,6 +16,7 @@ import {
   type Runner,
   type CommitAuthor,
 } from "@bureau/vcs";
+import { MessageRepo } from "@bureau/db";
 import type { Message } from "@bureau/contracts";
 import type { VcsPort, WorktreeRef, MessageLog } from "./ports.js";
 
@@ -80,7 +81,7 @@ export class RealVcs implements VcsPort {
   }
 }
 
-/** In-memory chat log for the slice (no messages table in Phase 1). */
+/** In-memory chat log (tests / ephemeral runs). */
 export class InMemoryMessageLog implements MessageLog {
   private readonly items: Message[] = [];
   append(message: Message): void {
@@ -88,5 +89,31 @@ export class InMemoryMessageLog implements MessageLog {
   }
   list(): Message[] {
     return [...this.items];
+  }
+}
+
+/** Durable chat log backed by the SQLite messages table — survives restarts.
+ *  Maps the contracts Message ↔ the db MessageRow (taskId undefined ↔ null). */
+export class DbMessageLog implements MessageLog {
+  constructor(private readonly repo: MessageRepo) {}
+
+  append(message: Message): void {
+    this.repo.append({
+      id: message.id,
+      role: message.role,
+      content: message.content,
+      taskId: message.taskId ?? null,
+      createdAt: message.createdAt,
+    });
+  }
+
+  list(): Message[] {
+    return this.repo.list().map((r) => ({
+      id: r.id,
+      role: r.role,
+      content: r.content,
+      ...(r.taskId !== null ? { taskId: r.taskId } : {}),
+      createdAt: r.createdAt,
+    }));
   }
 }
