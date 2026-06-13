@@ -52,13 +52,14 @@ export const PipelineStepDto = z.object({
   status: StepStatusSchema,
 });
 
-/** Full task view for the Assistant panel: summary + pipeline + gates + diff + PR. */
+/** Full task view for the Assistant panel: summary + pipeline + gates + diff + PR.
+ *  Deliberately omits on-disk paths (e.g. worktreePath) — the panel never needs
+ *  them and they shouldn't leave the engine. */
 export const TaskDetailDto = TaskSummaryDto.extend({
   diff: z.string().nullable(),
   prUrl: z.string().nullable(),
   /** A human-readable note when the task stopped (abort reason / failed step). */
   statusNote: z.string().nullable(),
-  worktreePath: z.string().optional(),
   steps: z.array(PipelineStepDto),
   gates: z.array(GateViewDto),
 });

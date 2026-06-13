@@ -1,6 +1,6 @@
 "use client";
 
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { useRouter } from "next/navigation";
 import { RefreshCw, ListTodo } from "lucide-react";
 import type { TaskSummary } from "@bureau/contracts";
@@ -22,17 +22,22 @@ export default function TasksPage() {
   const [tasks, setTasks] = useState<TaskSummary[] | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [spin, setSpin] = useState(false);
+  const alive = useRef(true);
+  useEffect(() => () => void (alive.current = false), []);
 
   const load = useCallback(async () => {
     setError(null);
     setSpin(true);
     try {
-      setTasks(await listTasks());
+      const list = await listTasks();
+      if (alive.current) setTasks(list);
     } catch (e) {
-      setError(e instanceof Error ? e.message : String(e));
-      setTasks([]);
+      if (alive.current) {
+        setError(e instanceof Error ? e.message : String(e));
+        setTasks([]);
+      }
     } finally {
-      setSpin(false);
+      if (alive.current) setSpin(false);
     }
   }, []);
 

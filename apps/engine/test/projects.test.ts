@@ -24,17 +24,34 @@ describe("slug", () => {
 });
 
 describe("projectsFromJson", () => {
-  it("derives id + on-disk paths under the repos root", () => {
+  it("derives id from owner+name and on-disk paths under the repos root", () => {
     const cfgs = projectsFromJson(JSON.stringify([{ owner: "acme", name: "Widget", url: "https://x/widget.git" }]), "/repos");
     expect(cfgs).toHaveLength(1);
     const c = cfgs[0]!;
-    expect(c.id).toBe("widget");
+    expect(c.id).toBe("acme-widget"); // owner+name, so same-name repos under different owners don't collide
     expect(c.baseBranch).toBe("main");
-    expect(c.canonicalPath).toBe(join("/repos", "widget", "repo"));
-    expect(c.worktreesDir).toBe(join("/repos", "widget", "worktrees"));
+    expect(c.canonicalPath).toBe(join("/repos", "acme-widget", "repo"));
+    expect(c.worktreesDir).toBe(join("/repos", "acme-widget", "worktrees"));
   });
 
-  it("respects explicit id + baseBranch", () => {
+  it("keeps two same-name repos under different owners distinct", () => {
+    const cfgs = projectsFromJson(
+      JSON.stringify([
+        { owner: "acme", name: "api", url: "u1" },
+        { owner: "globex", name: "api", url: "u2" },
+      ]),
+      "/r"
+    );
+    expect(cfgs.map((c) => c.id)).toEqual(["acme-api", "globex-api"]);
+  });
+
+  it("slugs an explicit id so it cannot escape the repos root", () => {
+    const cfgs = projectsFromJson(JSON.stringify([{ id: "../../etc/passwd", owner: "a", name: "b", url: "u" }]), "/repos");
+    expect(cfgs[0]!.id).toBe("etc-passwd"); // no `..` or `/` survive the slug
+    expect(cfgs[0]!.canonicalPath).toBe(join("/repos", "etc-passwd", "repo"));
+  });
+
+  it("respects an explicit (safe) id + baseBranch", () => {
     const cfgs = projectsFromJson(JSON.stringify([{ id: "x", owner: "a", name: "b", url: "u", baseBranch: "dev" }]), "/r");
     expect(cfgs[0]!.id).toBe("x");
     expect(cfgs[0]!.baseBranch).toBe("dev");

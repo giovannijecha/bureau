@@ -54,6 +54,7 @@ export function taskToRows(task: Task): TaskRowBundle {
     task: {
       id: task.id,
       goal: task.goal,
+      projectId: task.projectId ?? null,
       repoOwner: task.repoOwner,
       repoName: task.repoName,
       worktreePath: task.worktreePath ?? null,
@@ -142,6 +143,7 @@ export function rowsToTask(b: TaskRowSelection): Task {
   return {
     id: b.task.id as TaskId,
     goal: b.task.goal,
+    ...(b.task.projectId !== null ? { projectId: b.task.projectId } : {}),
     repoOwner: b.task.repoOwner,
     repoName: b.task.repoName,
     ...(b.task.worktreePath !== null ? { worktreePath: b.task.worktreePath } : {}),

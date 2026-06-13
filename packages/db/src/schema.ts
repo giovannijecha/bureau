@@ -28,6 +28,7 @@ import type {
 export const tasks = sqliteTable("tasks", {
   id: text("id").primaryKey(),
   goal: text("goal").notNull(),
+  projectId: text("project_id"),
   repoOwner: text("repo_owner").notNull(),
   repoName: text("repo_name").notNull(),
   worktreePath: text("worktree_path"),
@@ -116,4 +117,22 @@ export const decisionLog = sqliteTable(
   (t) => [primaryKey({ columns: [t.taskId, t.orderIdx] })]
 );
 
-export const schema = { tasks, steps, gates, artifacts, decisionLog };
+// The chat log between the CEO and Iris. Not part of the Task aggregate — it's a
+// flat, append-only stream (a message may reference a task). `seq` is an
+// autoincrement insertion order so the log always reads back exactly as written,
+// even when several messages share a millisecond timestamp. The role union is
+// inlined (not imported from contracts) to keep db importing @bureau/core only.
+export const messages = sqliteTable(
+  "messages",
+  {
+    seq: integer("seq").primaryKey({ autoIncrement: true }),
+    id: text("id").notNull().unique(),
+    role: text("role").notNull().$type<"user" | "iris" | "system">(),
+    content: text("content").notNull(),
+    taskId: text("task_id"),
+    createdAt: text("created_at").notNull(),
+  },
+  (t) => [index("messages_by_seq").on(t.seq)]
+);
+
+export const schema = { tasks, steps, gates, artifacts, decisionLog, messages };

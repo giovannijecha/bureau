@@ -158,6 +158,38 @@ describe("projects", () => {
   it("lists projects as DTOs (no urls or on-disk paths leaked)", () => {
     expect(orch.listProjects()).toEqual([{ id: "widget", owner: "acme", name: "widget", baseBranch: "main" }]);
   });
+
+  it("resolves a task's project by its stable id, even when two projects share owner/name", async () => {
+    // A and B are distinct repos (different clones/urls) that happen to share
+    // owner/name — find(owner,name) would return the FIRST (A); resolution must
+    // use the task's projectId so the work + push target the project the CEO chose.
+    const A: ProjectConfig = { id: "a", owner: "acme", name: "widget", url: "u-a", baseBranch: "main", canonicalPath: "/a/repo", worktreesDir: "/a/wt" };
+    const B: ProjectConfig = { id: "b", owner: "acme", name: "widget", url: "u-b", baseBranch: "main", canonicalPath: "/b/repo", worktreesDir: "/b/wt" };
+    const seen: string[] = [];
+    let k = 0;
+    const o = new Orchestrator({
+      store,
+      capabilities: new CapabilityRegistry(),
+      provider: prov.provider,
+      projects: new ProjectRegistry([A, B]),
+      vcs: (p) => {
+        seen.push(p.id);
+        return vcs.vcs;
+      },
+      events: { emit: () => {} },
+      messages: { append: () => {}, list: () => [] },
+      ids: () => `r-${++k}`,
+      clock: () => "2026-06-13T00:00:00.000Z",
+    });
+
+    const draft = o.createTask(PROPOSAL, "b");
+    expect(draft.projectId).toBe("b");
+    await o.startTask(draft.id);
+    await o.settle(draft.id);
+
+    expect(seen.length).toBeGreaterThan(0);
+    expect(seen.every((id) => id === "b")).toBe(true); // never resolved to A, the first owner/name match
+  });
 });
 
 // ── chat ─────────────────────────────────────────────────────────────────────
@@ -187,6 +219,7 @@ describe("createTask", () => {
     const task = orch.createTask(PROPOSAL);
     expect(task.status).toBe("created");
     expect(task.goal).toBe(PROPOSAL.title);
+    expect(task.projectId).toBe("widget");
     expect(task.repoOwner).toBe("acme");
     expect(task.repoName).toBe("widget");
     expect(task.steps).toHaveLength(1);

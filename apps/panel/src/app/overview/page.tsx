@@ -1,6 +1,6 @@
 "use client";
 
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import Link from "next/link";
 import { ListTodo, CircleDot, Loader2, CheckCircle2, FolderGit2, ArrowRight, Sparkles } from "lucide-react";
 import type { TaskSummary } from "@bureau/contracts";
@@ -21,12 +21,15 @@ const STATUS_COLOR: Record<string, string> = {
 export default function OverviewPage() {
   const { active } = useProjects();
   const [tasks, setTasks] = useState<TaskSummary[] | null>(null);
+  const alive = useRef(true);
+  useEffect(() => () => void (alive.current = false), []);
 
   const load = useCallback(async () => {
     try {
-      setTasks(await listTasks());
+      const list = await listTasks();
+      if (alive.current) setTasks(list);
     } catch {
-      setTasks([]);
+      if (alive.current) setTasks([]);
     }
   }, []);
 

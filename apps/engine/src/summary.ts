@@ -63,7 +63,6 @@ export function toTaskDetail(task: Task): TaskDetail {
     diff: latestDiff(task),
     prUrl: prUrl(task),
     statusNote: statusNote(task),
-    ...(task.worktreePath !== undefined ? { worktreePath: task.worktreePath } : {}),
     steps: task.steps.map((s) => ({
       id: s.id,
       capability: s.capability,
