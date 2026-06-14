@@ -1,55 +1,35 @@
 // The `edit` capability — the one implemented worker for the Phase-4 slice.
-// It asks a Provider for a set of whole-file edits, then writes them into the
-// task's worktree. It is stateless and provider-agnostic (it only sees the
-// Provider interface). Computing the git diff is the engine's job, not the
-// capability's (capabilities never import @bureau/vcs).
+//
+// It is AGENTIC: the provider (the `claude` CLI) edits the files in the task's
+// worktree DIRECTLY with its tools, confined to that directory (cwd + acceptEdits).
+// Bureau captures the resulting diff (the engine's job) — so there's no fragile
+// "embed the whole new file in JSON" round-trip that truncates or mis-escapes on
+// large or multi-line content. The capability never imports @bureau/vcs.
 
-import { writeFile, mkdir } from "node:fs/promises";
-import { dirname, resolve, sep } from "node:path";
-import { randomUUID } from "node:crypto";
 import type { Provider, Message } from "@bureau/providers";
-import type { Artifact, ArtifactId, StepId } from "@bureau/core";
 import type { Capability, CapabilityInput, CapabilityOutput } from "./capability.js";
 
-export interface FileEdit {
-  readonly path: string; // relative to the worktree root
-  readonly content: string; // full new file contents
-}
+/** The tools the edit worker may use — read + file-edit, never Bash or anything
+ *  that could run arbitrary commands. Confined to the worktree by cwd/acceptEdits. */
+export const EDIT_TOOLS = ["Read", "Glob", "Grep", "Edit", "Write", "MultiEdit"] as const;
 
-export interface EditPlan {
-  readonly files: readonly FileEdit[];
-  readonly summary: string;
-}
+const EDIT_SYSTEM = `You are Bureau's "edit" worker. The repository is checked out in your working directory. Make the requested change by editing the files DIRECTLY with your tools — Read to inspect current contents, Edit/Write to change them.
+
+Rules:
+- Stay inside the working directory. Do NOT run git, do NOT commit or push — Bureau handles version control.
+- Keep the change minimal and focused on exactly what was asked; don't reformat or touch unrelated files.
+- When you are done, reply with ONE short line summarizing what you changed.`;
 
 export interface EditCapabilityDeps {
   readonly provider: Provider;
-  /** Injectable for tests; defaults to writing through node:fs. */
-  readonly writeFileFn?: (absPath: string, content: string) => Promise<void>;
-  readonly ids?: () => string;
-  readonly clock?: () => string;
 }
-
-const EDIT_SYSTEM = `You are Bureau's "edit" worker. You are given a change to make to a repository checked out in a worktree, which is your working directory. You can READ files in the worktree to see their current contents before deciding the new ones.
-
-Respond with ONLY a JSON object — your ENTIRE response must start with "{" and end with "}", with no prose, no reasoning, and no markdown fences — of the form:
-{"files":[{"path":"relative/path/from/repo/root.ext","content":"<full new file contents>"}],"summary":"one-line description of the change"}
-Rules:
-- "path" is relative to the repo root and uses forward slashes. Never use absolute paths or "..".
-- "content" is the COMPLETE new contents of the file (you are replacing it wholesale, not patching). Read the current file first so you preserve everything that should stay.
-- Include every file you change. Keep the change minimal and focused on what was asked.`;
 
 export class EditCapability implements Capability {
   readonly kind = "edit" as const;
   private readonly provider: Provider;
-  private readonly write: (absPath: string, content: string) => Promise<void>;
-  private readonly ids: () => string;
-  private readonly clock: () => string;
 
   constructor(deps: EditCapabilityDeps) {
     this.provider = deps.provider;
-    this.write = deps.writeFileFn ?? defaultWrite;
-    this.ids = deps.ids ?? (() => randomUUID());
-    this.clock = deps.clock ?? (() => new Date().toISOString());
   }
 
   async execute(input: CapabilityInput): Promise<CapabilityOutput> {
@@ -57,24 +37,15 @@ export class EditCapability implements Capability {
       { role: "system", content: EDIT_SYSTEM },
       { role: "user", content: buildEditPrompt(input) },
     ];
-    // cwd = the worktree: an agentic provider (claude CLI) reads files relative to
-    // it and can never reach outside it. Bureau still applies the plan itself.
-    const response = await this.provider.send(messages, { maxTokens: 16_000, cwd: input.worktreePath });
-    const plan = parseEditPlan(response.content);
-
-    const artifacts: Artifact[] = [];
-    for (const file of plan.files) {
-      const absPath = safeResolve(input.worktreePath, file.path);
-      await this.write(absPath, file.content);
-      artifacts.push({
-        id: this.ids() as unknown as ArtifactId,
-        kind: "file",
-        ref: file.path,
-        producedByStep: input.step.id as StepId,
-        createdAt: this.clock(),
-      });
-    }
-    return { artifacts, summary: plan.summary };
+    const response = await this.provider.send(messages, {
+      maxTokens: 8_000,
+      cwd: input.worktreePath,
+      tools: [...EDIT_TOOLS],
+      acceptEdits: true,
+    });
+    // The worktree now holds the change; the engine captures the diff. The model's
+    // final line is a human-readable summary of what it did.
+    return { artifacts: [], summary: summarize(response.content) };
   }
 }
 
@@ -93,53 +64,14 @@ export function buildEditPrompt(input: CapabilityInput): string {
     .join("\n");
 }
 
-/** Extract and validate the edit plan from a model response (tolerates code fences/prose). */
-export function parseEditPlan(raw: string): EditPlan {
-  const json = extractJsonObject(raw);
-  let parsed: unknown;
-  try {
-    parsed = JSON.parse(json);
-  } catch {
-    throw new Error(`EditCapability: model response was not valid JSON: ${raw.slice(0, 200)}`);
-  }
-  const obj = parsed as { files?: unknown; summary?: unknown };
-  if (!Array.isArray(obj.files)) {
-    throw new Error("EditCapability: edit plan is missing a `files` array.");
-  }
-  const files: FileEdit[] = obj.files.map((f, i) => {
-    const file = f as { path?: unknown; content?: unknown };
-    if (typeof file.path !== "string" || typeof file.content !== "string") {
-      throw new Error(`EditCapability: file[${i}] must have string \`path\` and \`content\`.`);
-    }
-    return { path: file.path, content: file.content };
-  });
-  return { files, summary: typeof obj.summary === "string" ? obj.summary : "" };
+/** The model's last non-empty line — a one-line summary of the change. */
+export function summarize(content: string): string {
+  const line = content
+    .trim()
+    .split("\n")
+    .map((l) => l.trim())
+    .filter(Boolean)
+    .pop();
+  if (!line) return "Applied the requested change.";
+  return line.length > 200 ? `${line.slice(0, 197)}...` : line;
 }
-
-function extractJsonObject(raw: string): string {
-  const start = raw.indexOf("{");
-  const end = raw.lastIndexOf("}");
-  if (start === -1 || end === -1 || end < start) {
-    throw new Error(`EditCapability: no JSON object found in model response: ${raw.slice(0, 200)}`);
-  }
-  return raw.slice(start, end + 1);
-}
-
-/**
- * Resolve a model-proposed relative path against the worktree, REFUSING any path
- * that escapes the worktree (path traversal). The model never gets to write
- * outside the task's isolated worktree.
- */
-export function safeResolve(worktreePath: string, relPath: string): string {
-  const root = resolve(worktreePath);
-  const target = resolve(root, relPath);
-  if (target !== root && !target.startsWith(root + sep)) {
-    throw new Error(`EditCapability: refusing to write outside the worktree: ${relPath}`);
-  }
-  return target;
-}
-
-const defaultWrite = async (absPath: string, content: string): Promise<void> => {
-  await mkdir(dirname(absPath), { recursive: true });
-  await writeFile(absPath, content, "utf8");
-};

@@ -69,6 +69,7 @@ export function toTaskDetail(task: Task): TaskDetail {
       assignee: ASSIGNEE[s.capability],
       description: s.description,
       status: s.status,
+      failureReason: s.failureReason ?? null,
     })),
     gates: task.gates.map((g) => ({
       id: g.id,

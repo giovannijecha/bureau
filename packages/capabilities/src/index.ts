@@ -4,12 +4,4 @@
 
 export type { Capability, CapabilityInput, CapabilityOutput } from "./capability.js";
 export { CapabilityRegistry } from "./registry.js";
-export {
-  EditCapability,
-  buildEditPrompt,
-  parseEditPlan,
-  safeResolve,
-  type FileEdit,
-  type EditPlan,
-  type EditCapabilityDeps,
-} from "./edit.js";
+export { EditCapability, buildEditPrompt, summarize, EDIT_TOOLS, type EditCapabilityDeps } from "./edit.js";

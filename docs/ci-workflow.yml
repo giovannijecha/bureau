@@ -1,0 +1,35 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  quality:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 9
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: pnpm
+
+      - run: pnpm install --frozen-lockfile
+
+      - name: Build (tsc project references)
+        run: pnpm build
+
+      - name: Boundaries (golden dependency rule)
+        run: pnpm lint:boundaries
+
+      - name: Tests
+        run: pnpm -r test
+
+      - name: Panel typecheck
+        run: pnpm --filter @bureau/panel typecheck

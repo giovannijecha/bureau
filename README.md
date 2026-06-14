@@ -32,10 +32,14 @@ pnpm install
 ### Build
 
 ```bash
-pnpm build          # tsc --build across all packages
-pnpm typecheck      # type-check without emitting
+pnpm build           # tsc --build across all packages
+pnpm typecheck       # type-check without emitting
 pnpm lint:boundaries # enforce the golden dependency rule
+pnpm test            # run every package's test suite
+pnpm quality         # build + boundaries + tests (the merge gate)
 ```
+
+**CI:** a ready GitHub Actions config lives at [`docs/ci-workflow.yml`](docs/ci-workflow.yml). Copy it to `.github/workflows/ci.yml` to run the quality gate on every push/PR. (Adding a workflow file needs a token with the `workflow` scope — `gh auth refresh -s workflow`.)
 
 ### Project layout
 
@@ -137,7 +141,9 @@ Imports only ever point inward. `core` and `contracts` depend on no other `@bure
 
 ## Security
 
-`canPush()` lives in `packages/core` and is the **only** gate before any `push`, `openPr`, or `mergePr`. These three run from exactly one place — the CEO's final confirm-merge — inside an `if (canPush(task))` branch; the background pipeline only ever commits locally. Human-review gates (`plan_review`, `diff_review`, `pr_approval`) accept only human decisions — the agent proposes, the human decides. Secrets are always encrypted at rest; the DB stores only a `secret_ref`, never plaintext.
+`canPush()` lives in `packages/core` and is the **only** gate before any `push`, `openPr`, or `mergePr`. These three run from exactly one place — the CEO's final confirm-merge — inside an `if (canPush(task))` branch; the background pipeline only ever commits locally. The human gate realized today is `pr_approval` (the diff-review-and-merge confirmation); `plan_review` and `diff_review` are defined in the type system and reserved for later phases. A gate only clears on an explicit human decision — the agent proposes, the human decides.
+
+**Secrets:** the Anthropic API key is supplied via `ANTHROPIC_API_KEY` at launch (or the local `claude` CLI is used instead); GitHub auth is held by `gh` itself. Bureau persists **no** secrets — the database stores tasks, conversations, and the chat, never credentials.
 
 ## Roadmap
 

@@ -45,7 +45,7 @@ Violations are CI failures, not suggestions.
 
 ## Security wall
 
-`canPush()` lives in `core` and is the **only** gate before any `push` or `openPr` call. `push`/`openPr` (via `gh`) are called only when `canPush() === true`. Human-review gates (`plan_review`, `diff_review`, `pr_approval`) accept only human decisions — the agent proposes, the human decides. Secrets (PAT, API keys) are always encrypted at rest; the DB stores only a `secret_ref`, never the plaintext.
+`canPush()` lives in `core` and is the **only** gate before any `push`, `openPr`, or `mergePr` call — all reached from exactly one place (the CEO's confirm-merge), only when `canPush() === true`. The realized human gate today is `pr_approval` (diff-review-and-merge); `plan_review`/`diff_review` are defined but reserved for later phases. A gate clears only on an explicit human decision. **Secrets:** the Anthropic key comes from `ANTHROPIC_API_KEY` at launch (or the local `claude` CLI); GitHub auth lives in `gh`. Bureau persists no secrets — the DB stores tasks, conversations, and chat, never credentials. <!-- 2026-06-14: corrected from an aspirational "encrypted secret_ref" claim that was never implemented; if a secrets store lands later (e.g. with OAuth), update this. -->`canPush()` is fail-closed and covered by exhaustive core tests.
 
 ## Confirmed simplifications (locked, do not re-open without explicit user decision)
 

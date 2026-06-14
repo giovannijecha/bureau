@@ -23,7 +23,7 @@ import type {
 } from "@bureau/core";
 import type { CapabilityRegistry } from "@bureau/capabilities";
 import type { Provider } from "@bureau/providers";
-import type { Message, TaskProposal, ChatResponse, Project, Conversation } from "@bureau/contracts";
+import type { Message, TaskProposal, ChatResponse, Project, Conversation, EngineInfo } from "@bureau/contracts";
 import { join } from "node:path";
 
 import type { TaskStore, VcsPort, EventSink, MessageLog, ConversationStore } from "./ports.js";
@@ -58,6 +58,15 @@ export class Orchestrator {
   /** The projects the CEO can work on. */
   listProjects(): Project[] {
     return this.d.projects.list().map(toProjectDto);
+  }
+
+  /** Engine status for the Settings panel. */
+  engineInfo(): EngineInfo {
+    return {
+      provider: { name: this.d.provider.name, available: this.d.provider.authStrategy.isAvailable() },
+      projectCount: this.d.projects.list().length,
+      inflightTasks: this.running.size,
+    };
   }
 
   /** A conversation turn with Iris, scoped to a project + conversation thread.

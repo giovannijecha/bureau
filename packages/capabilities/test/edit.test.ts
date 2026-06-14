@@ -1,31 +1,31 @@
 import { describe, it, expect } from "vitest";
 
-import { EditCapability, buildEditPrompt, parseEditPlan, safeResolve } from "../src/edit.js";
+import { EditCapability, buildEditPrompt, summarize, EDIT_TOOLS } from "../src/edit.js";
 import type { CapabilityInput } from "../src/capability.js";
 import type { Provider, Message, SendOptions } from "@bureau/providers";
 import type { Step, StepId } from "@bureau/core";
 
 const sid = (s: string) => s as unknown as StepId;
 
-function fakeProvider(content: string): { provider: Provider; sent: Message[][]; opts: (SendOptions | undefined)[] } {
-  const sent: Message[][] = [];
-  const opts: (SendOptions | undefined)[] = [];
+function fakeProvider(content: string): {
+  provider: Provider;
+  sent: { messages: Message[]; opts: SendOptions | undefined }[];
+} {
+  const sent: { messages: Message[]; opts: SendOptions | undefined }[] = [];
   const provider: Provider = {
     name: "fake",
-    authStrategy: { kind: "api-key", isAvailable: () => true },
-    async send(messages, options) {
-      sent.push(messages);
-      opts.push(options);
+    authStrategy: { kind: "cli-delegation", isAvailable: () => true },
+    async send(messages, opts) {
+      sent.push({ messages, opts });
       return { content, inputTokens: 0, outputTokens: 0 };
     },
-    async stream(messages, onChunk, options) {
-      sent.push(messages);
-      opts.push(options);
+    async stream(messages, onChunk, opts) {
+      sent.push({ messages, opts });
       onChunk(content);
       return { content, inputTokens: 0, outputTokens: 0 };
     },
   };
-  return { provider, sent, opts };
+  return { provider, sent };
 }
 
 const step = (overrides: Partial<Step> = {}): Step => ({
@@ -40,110 +40,33 @@ const step = (overrides: Partial<Step> = {}): Step => ({
 
 const input = (overrides: Partial<CapabilityInput> = {}): CapabilityInput => ({
   step: step(),
-  worktreePath: "/wt",
+  worktreePath: "/wt/task-1",
   context: "the goal",
   ...overrides,
 });
 
-describe("EditCapability.execute", () => {
-  it("writes the planned files into the worktree and returns file artifacts", async () => {
-    const plan = JSON.stringify({
-      files: [
-        { path: "src/hello.ts", content: "export const hello = () => 'hi';\n" },
-        { path: "README.md", content: "# Hi\n" },
-      ],
-      summary: "add hello module",
-    });
-    const { provider } = fakeProvider(plan);
-    const writes: { path: string; content: string }[] = [];
-
-    const cap = new EditCapability({
-      provider,
-      writeFileFn: async (p, c) => void writes.push({ path: p, content: c }),
-      ids: (() => {
-        let n = 0;
-        return () => `art-${++n}`;
-      })(),
-      clock: () => "2026-01-01T00:00:00.000Z",
-    });
+describe("EditCapability.execute (agentic)", () => {
+  it("runs the agent in the worktree with edit tools + acceptEdits, and returns a summary", async () => {
+    const { provider, sent } = fakeProvider("Read README, then edited it.\nAdded a Status section to README.md.");
+    const cap = new EditCapability({ provider });
 
     const out = await cap.execute(input());
 
-    expect(out.summary).toBe("add hello module");
-    expect(out.artifacts).toEqual([
-      { id: "art-1", kind: "file", ref: "src/hello.ts", producedByStep: "s1", createdAt: "2026-01-01T00:00:00.000Z" },
-      { id: "art-2", kind: "file", ref: "README.md", producedByStep: "s1", createdAt: "2026-01-01T00:00:00.000Z" },
-    ]);
-    // Files written under the worktree, with the model's content.
-    expect(writes.map((w) => w.path)).toEqual([safeResolve("/wt", "src/hello.ts"), safeResolve("/wt", "README.md")]);
-    expect(writes[0]!.content).toContain("export const hello");
-  });
+    expect(out.artifacts).toEqual([]); // Bureau captures the diff, not the capability
+    expect(out.summary).toBe("Added a Status section to README.md."); // last non-empty line
 
-  it("refuses a path that escapes the worktree (traversal)", async () => {
-    const plan = JSON.stringify({ files: [{ path: "../../etc/evil", content: "x" }], summary: "nope" });
-    const { provider } = fakeProvider(plan);
-    const cap = new EditCapability({ provider, writeFileFn: async () => {} });
+    const call = sent[0]!;
+    expect(call.opts?.cwd).toBe("/wt/task-1"); // confined to the worktree
+    expect(call.opts?.acceptEdits).toBe(true);
+    expect(call.opts?.tools).toEqual([...EDIT_TOOLS]);
+    expect(call.opts?.tools).toContain("Edit");
+    expect(call.opts?.tools).toContain("Write");
+    expect(call.opts?.tools).not.toContain("Bash"); // no arbitrary command execution
 
-    await expect(cap.execute(input())).rejects.toThrow(/outside the worktree/);
-  });
-
-  it("sends the change + context + criteria to the provider", async () => {
-    const { provider, sent } = fakeProvider(JSON.stringify({ files: [], summary: "" }));
-    const cap = new EditCapability({ provider, writeFileFn: async () => {} });
-    await cap.execute(input());
-
-    const userMsg = sent[0]!.find((m) => m.role === "user")!.content;
+    const userMsg = call.messages.find((m) => m.role === "user")!.content;
     expect(userMsg).toContain("add a greeting module");
     expect(userMsg).toContain("the goal");
     expect(userMsg).toContain("exports hello()");
-    expect(sent[0]!.some((m) => m.role === "system")).toBe(true);
-  });
-
-  it("passes the worktree as cwd so an agentic provider stays sandboxed to it", async () => {
-    const { provider, opts } = fakeProvider(JSON.stringify({ files: [], summary: "" }));
-    const cap = new EditCapability({ provider, writeFileFn: async () => {} });
-    await cap.execute(input({ worktreePath: "/wt/task-42" }));
-    expect(opts[0]?.cwd).toBe("/wt/task-42");
-  });
-});
-
-describe("parseEditPlan", () => {
-  it("parses a bare JSON object", () => {
-    const plan = parseEditPlan('{"files":[{"path":"a.ts","content":"x"}],"summary":"s"}');
-    expect(plan).toEqual({ files: [{ path: "a.ts", content: "x" }], summary: "s" });
-  });
-
-  it("tolerates surrounding prose / code fences", () => {
-    const raw = "Sure!\n```json\n{\"files\":[{\"path\":\"a.ts\",\"content\":\"x\"}],\"summary\":\"s\"}\n```\nDone.";
-    expect(parseEditPlan(raw).files).toEqual([{ path: "a.ts", content: "x" }]);
-  });
-
-  it("defaults summary to empty when missing", () => {
-    expect(parseEditPlan('{"files":[]}').summary).toBe("");
-  });
-
-  it("throws when there is no JSON object", () => {
-    expect(() => parseEditPlan("no json here")).toThrow(/no JSON object/);
-  });
-
-  it("throws when files is not an array", () => {
-    expect(() => parseEditPlan('{"summary":"s"}')).toThrow(/missing a `files` array/);
-  });
-
-  it("throws when a file lacks string path/content", () => {
-    expect(() => parseEditPlan('{"files":[{"path":"a.ts"}]}')).toThrow(/string `path` and `content`/);
-  });
-});
-
-describe("safeResolve", () => {
-  it("resolves a relative path under the worktree", () => {
-    expect(safeResolve("/wt", "src/a.ts")).toBe(safeResolve("/wt", "src/a.ts"));
-    expect(() => safeResolve("/wt", "src/a.ts")).not.toThrow();
-  });
-
-  it("rejects traversal and absolute escapes", () => {
-    expect(() => safeResolve("/wt", "../escape")).toThrow(/outside the worktree/);
-    expect(() => safeResolve("/wt", "a/../../escape")).toThrow(/outside the worktree/);
   });
 });
 
@@ -153,5 +76,17 @@ describe("buildEditPrompt", () => {
     expect(p).toContain("add a greeting module");
     expect(p).toContain("the goal");
     expect(p).toContain("exports hello()");
+  });
+});
+
+describe("summarize", () => {
+  it("takes the last non-empty line", () => {
+    expect(summarize("doing stuff\n\nDone: added X.")).toBe("Done: added X.");
+  });
+  it("falls back when empty", () => {
+    expect(summarize("   ")).toBe("Applied the requested change.");
+  });
+  it("truncates very long lines", () => {
+    expect(summarize("x".repeat(300)).endsWith("...")).toBe(true);
   });
 });

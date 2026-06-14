@@ -77,6 +77,14 @@ function buildRegistry(): ProjectRegistry {
 }
 
 function main(): void {
+  // Auto-load a local .env (copy apps/engine/.env.example → .env). Env already in
+  // the environment still wins / is used when there's no file.
+  try {
+    process.loadEnvFile();
+  } catch {
+    /* no .env file — configuration comes from the environment */
+  }
+
   const port = Number(env("PORT", "4319"));
 
   const db = createDb(env("BUREAU_DB", "./bureau.db"));

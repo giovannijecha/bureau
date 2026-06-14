@@ -70,6 +70,12 @@ async function handle(deps: HttpDeps, req: IncomingMessage, res: ServerResponse)
     return;
   }
 
+  // GET /api/config — engine status for Settings.
+  if (method === "GET" && path === "/api/config") {
+    sendJson(res, 200, deps.orchestrator.engineInfo());
+    return;
+  }
+
   // POST /api/chat — a conversation turn with Iris, scoped to a project + thread.
   if (method === "POST" && path === "/api/chat") {
     const body = SendMessageRequestDto.parse(await readJson(req));
