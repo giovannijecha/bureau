@@ -194,6 +194,7 @@ let usage: ReturnType<typeof fakeUsage>;
 let notifs: ReturnType<typeof fakeNotifications>;
 let prov: ReturnType<typeof fakeProvider>;
 let captured: CapabilityInput | null;
+let reviewInput: CapabilityInput | null;
 let events: WsEvent[];
 let orch: Orchestrator;
 /** When set, the fake edit capability blocks on this until released — lets a test
@@ -226,6 +227,15 @@ beforeEach(() => {
       input.onChunk?.("editing README.md…\nAdded a Status section.");
       if (editGate) await editGate;
       return { artifacts: [], summary: "Added a Status section.", usage: { inputTokens: 1000, outputTokens: 200, model: "claude-opus-4-8" } };
+    },
+  });
+  reviewInput = null;
+  registry.register({
+    kind: "review",
+    async execute(input) {
+      reviewInput = input;
+      input.onChunk?.("reading the diff…\nLooks good.");
+      return { artifacts: [], summary: "Looks good." };
     },
   });
   events = [];
@@ -454,6 +464,25 @@ describe("confirmMerge", () => {
     expect(orch.unreadNotifications()).toBeGreaterThan(0);
   });
 
+  it("hands a review step the current diff and persists its verdict as the step summary", async () => {
+    const proposal: TaskProposal = {
+      title: "Edit then review",
+      summary: "make a change and check it",
+      steps: [
+        { capability: "edit", description: "make the change" },
+        { capability: "review", description: "check the change before merge" },
+      ],
+    };
+    const draft = orch.createTask(proposal);
+    await orch.startTask(draft.id);
+    await orch.settle(draft.id);
+
+    expect(reviewInput?.diff).toBe("DIFF-CONTENT"); // the fake vcs.workingDiff
+    const detail = toTaskDetail(store.load(draft.id)!);
+    const reviewStep = detail.steps.find((s) => s.capability === "review")!;
+    expect(reviewStep.summary).toBe("Looks good.");
+  });
+
   it("streams the worker's output (step_progress) and persists its summary on the step", async () => {
     const draft = orch.createTask(PROPOSAL);
     await orch.startTask(draft.id);
@@ -571,9 +600,10 @@ describe("capability integrity", () => {
 
   it("fails LOUD (aborts, step failed, no commit) if a step's capability is unregistered at run time", async () => {
     const draft = orch.createTask(PROPOSAL); // valid edit step
-    // Tamper past createTask's guard: swap to an unregistered capability in the store.
+    // Tamper past createTask's guard: swap to an unregistered capability in the store
+    // ("test" is not registered in this harness; edit/review/document are).
     const t = store.load(draft.id)!;
-    store.save({ ...t, steps: t.steps.map((s) => ({ ...s, capability: "review" as const })) });
+    store.save({ ...t, steps: t.steps.map((s) => ({ ...s, capability: "test" as const })) });
 
     await orch.startTask(draft.id);
     await orch.settle(draft.id);
