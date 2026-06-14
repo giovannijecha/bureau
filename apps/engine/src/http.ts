@@ -82,6 +82,13 @@ async function handle(deps: HttpDeps, req: IncomingMessage, res: ServerResponse)
     return;
   }
 
+  // GET /api/git[?projectId=] — read-only Git console for the active project.
+  if (method === "GET" && path === "/api/git") {
+    const projectId = url.searchParams.get("projectId") ?? undefined;
+    sendJson(res, 200, await deps.orchestrator.gitInfo(projectId));
+    return;
+  }
+
   // GET /api/usage — token spend + cost. ?days=N limits the window (default all-time).
   if (method === "GET" && path === "/api/usage") {
     const daysRaw = url.searchParams.get("days");

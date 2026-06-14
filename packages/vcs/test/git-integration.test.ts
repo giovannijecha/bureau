@@ -5,7 +5,7 @@ import { join } from "node:path";
 
 import { defaultRunner, run } from "../src/exec.js";
 import { createWorktree, removeWorktree } from "../src/worktree.js";
-import { cloneRepo, commitAll, currentBranch, freshBase, syncToBase, getDiff, getWorkingDiff } from "../src/git.js";
+import { cloneRepo, commitAll, currentBranch, freshBase, syncToBase, getDiff, getWorkingDiff, recentCommits, remoteBranches, headBranch } from "../src/git.js";
 
 // These tests drive the REAL git binary against throwaway repos under the OS
 // temp dir — deterministic and fully offline (no network, no GitHub).
@@ -97,6 +97,35 @@ describe("syncToBase — refresh the clone's working tree to live origin", () =>
     await gitIn(lonely, ["add", "-A"]);
     await gitIn(lonely, ["commit", "-m", "x"]);
     expect(await syncToBase(lonely, "main")).toBe(false); // no origin → keep what we have
+  });
+});
+
+describe("read-only repo inspection (Git console)", () => {
+  it("reads recent commits, the head branch, and origin branches", async () => {
+    const clone = join(tmpRoot, "clone-console");
+    await cloneRepo(canonical, clone);
+    // a second commit on origin, then refresh the clone
+    writeFileSync(join(canonical, "feature.ts"), "export const x = 1;\n");
+    await gitIn(canonical, ["add", "-A"]);
+    await gitIn(canonical, ["commit", "-m", "add a feature"]);
+    await syncToBase(clone, "main");
+
+    const commits = await recentCommits(clone, 10);
+    expect(commits.length).toBe(2);
+    expect(commits[0]!.subject).toBe("add a feature"); // newest first
+    expect(commits[0]!.hash).toMatch(/^[0-9a-f]{7,}$/);
+    expect(commits[1]!.subject).toBe("base");
+
+    expect(await headBranch(clone)).toBe("main");
+    expect(await remoteBranches(clone)).toContain("main"); // origin/HEAD excluded
+  });
+
+  it("returns empty (never throws) on a repo with no commits", async () => {
+    const empty = join(tmpRoot, "empty-repo");
+    mkdirSync(empty);
+    await gitIn(empty, ["init", "-b", "main"]);
+    expect(await recentCommits(empty, 5)).toEqual([]);
+    expect(await remoteBranches(empty)).toEqual([]);
   });
 });
 
