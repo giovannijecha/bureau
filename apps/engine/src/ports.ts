@@ -20,6 +20,9 @@ export interface WorktreeRef {
 export interface VcsPort {
   /** Clone the canonical repo if it isn't there yet (idempotent). */
   ensureClone(): Promise<void>;
+  /** Ensure the clone exists AND its working tree is current with origin's base —
+   *  so Iris reads the LIVE repo in chat, never a stale snapshot. Best-effort. */
+  syncClone(): Promise<void>;
   /** Create the task's isolated worktree + branch. */
   setupWorktree(branch: string, worktreePath: string): Promise<WorktreeRef>;
   /** The uncommitted diff (incl. new files) — what the human reviews. */

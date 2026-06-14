@@ -5,7 +5,7 @@ import { join } from "node:path";
 
 import { defaultRunner, run } from "../src/exec.js";
 import { createWorktree, removeWorktree } from "../src/worktree.js";
-import { cloneRepo, commitAll, currentBranch, freshBase, getDiff, getWorkingDiff } from "../src/git.js";
+import { cloneRepo, commitAll, currentBranch, freshBase, syncToBase, getDiff, getWorkingDiff } from "../src/git.js";
 
 // These tests drive the REAL git binary against throwaway repos under the OS
 // temp dir — deterministic and fully offline (no network, no GitHub).
@@ -61,6 +61,42 @@ describe("freshBase + createWorktree — branch off the LATEST origin base", () 
     const wtPath = join(tmpRoot, "wt-fresh");
     await createWorktree(clone, "task/fresh", wtPath, defaultRunner, base);
     expect(existsSync(join(wtPath, "shipped.ts"))).toBe(true);
+  });
+});
+
+describe("syncToBase — refresh the clone's working tree to live origin", () => {
+  it("updates a stale clone's files to origin's advanced main (what Iris reads in chat)", async () => {
+    // `canonical` plays origin. Clone it, then advance origin's main — the clone is
+    // now stale (its README still says the old content), exactly the Iris bug.
+    const clone = join(tmpRoot, "clone-chat");
+    await cloneRepo(canonical, clone);
+    expect((await run(defaultRunner, "git", ["-C", clone, "show", "HEAD:README.md"])).trim()).toBe("# base");
+
+    writeFileSync(join(canonical, "README.md"), "# La Guerra Fredda\n");
+    writeFileSync(join(canonical, "CONTRIBUTING.md"), "contribute\n");
+    await gitIn(canonical, ["add", "-A"]);
+    await gitIn(canonical, ["commit", "-m", "rewrite the README + add CONTRIBUTING"]);
+
+    const synced = await syncToBase(clone, "main");
+    expect(synced).toBe(true);
+
+    // The clone's working tree now reflects the LIVE repo: new README content + the
+    // new file are present on disk — so a reader (Iris) sees the truth.
+    expect(existsSync(join(clone, "README.md"))).toBe(true);
+    expect((await run(defaultRunner, "git", ["-C", clone, "show", "HEAD:README.md"])).trim()).toBe("# La Guerra Fredda");
+    expect(existsSync(join(clone, "CONTRIBUTING.md"))).toBe(true);
+  });
+
+  it("is a no-op (returns false) when origin can't be reached", async () => {
+    const lonely = join(tmpRoot, "no-remote");
+    mkdirSync(lonely);
+    await gitIn(lonely, ["init", "-b", "main"]);
+    await gitIn(lonely, ["config", "user.email", "t@b.local"]);
+    await gitIn(lonely, ["config", "user.name", "T"]);
+    writeFileSync(join(lonely, "x.txt"), "x");
+    await gitIn(lonely, ["add", "-A"]);
+    await gitIn(lonely, ["commit", "-m", "x"]);
+    expect(await syncToBase(lonely, "main")).toBe(false); // no origin → keep what we have
   });
 });
 
