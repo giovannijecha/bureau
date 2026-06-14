@@ -21,6 +21,7 @@ function fakeStore() {
     save: (t) => void map.set(t.id, t),
     load: (id) => map.get(id) ?? null,
     list: () => [...map.values()],
+    delete: (id) => void map.delete(id),
   };
   return { store, map };
 }
@@ -33,6 +34,7 @@ function fakeVcs() {
     branchDiff: 0,
     reviewDiff: 0,
     pruneKeep: [] as string[],
+    deletedBranch: null as string | null,
     setupWorktree: [] as { branch: string; path: string }[],
     commitAll: [] as { path: string; message: string }[],
     push: [] as { path: string; branch: string }[],
@@ -91,6 +93,10 @@ function fakeVcs() {
       calls.pruneKeep = [...keep];
       return ["bureau/task-old1", "bureau/task-old2"];
     },
+    async deleteBranch(branch) {
+      calls.deletedBranch = branch;
+      return true;
+    },
   };
   return {
     vcs,
@@ -146,6 +152,7 @@ function fakeMemory() {
       saved.push({ title, body });
       return { path: `notes/${title}.md`, title, kind: "note", updatedAt: "t", excerpt: "", body };
     },
+    async delete() {},
     async writeJournal(path, markdown) {
       journals.push({ path, markdown });
     },
@@ -378,6 +385,39 @@ describe("cleanupTaskBranches", () => {
     expect(vcs.calls.pruneKeep).toContain(`bureau/task-${live.id}`); // the parked task is kept
     expect(vcs.calls.pruneKeep).not.toContain(`bureau/task-${done.id}`); // the merged one is prunable
     expect(res.deleted).toEqual(["bureau/task-old1", "bureau/task-old2"]);
+  });
+});
+
+describe("deleteBranch", () => {
+  it("deletes a single task branch via the vcs layer (terminal task)", async () => {
+    const t = orch.createTask(PROPOSAL);
+    await orch.startTask(t.id);
+    await orch.settle(t.id);
+    await orch.confirmMerge(t.id); // → completed (terminal, no longer in flight)
+
+    const res = await orch.deleteBranch(`bureau/task-${t.id}`);
+    expect(res.deleted).toBe(true);
+    expect(vcs.calls.deletedBranch).toBe(`bureau/task-${t.id}`);
+  });
+
+  it("refuses (400) a non-task branch name and never reaches the vcs layer", async () => {
+    await expect(orch.deleteBranch("main")).rejects.toMatchObject({ status: 400 });
+    await expect(orch.deleteBranch("release/1.0")).rejects.toMatchObject({ status: 400 });
+    expect(vcs.calls.deletedBranch).toBeNull(); // the regex guard short-circuits before the vcs call
+  });
+
+  it("refuses (409) to delete the branch of an in-flight task — it still needs it", async () => {
+    let release!: () => void;
+    editGate = new Promise<void>((r) => (release = r));
+    const t = orch.createTask(PROPOSAL);
+    await orch.startTask(t.id);
+    await until(() => store.load(t.id)!.status === "executing");
+
+    await expect(orch.deleteBranch(`bureau/task-${t.id}`)).rejects.toMatchObject({ status: 409 });
+    expect(vcs.calls.deletedBranch).toBeNull(); // never reached the vcs layer
+
+    release();
+    await orch.settle(t.id);
   });
 });
 
@@ -825,6 +865,66 @@ describe("stopTask", () => {
 
   it("throws 404 for an unknown task", async () => {
     await expect(orch.stopTask("nope")).rejects.toMatchObject({ status: 404 });
+  });
+});
+
+describe("deleteTask", () => {
+  it("deletes a created (never-started) task without touching any worktree", async () => {
+    const draft = orch.createTask(PROPOSAL);
+    await orch.deleteTask(draft.id);
+    expect(store.load(draft.id)).toBeNull();
+    expect(vcs.calls.removeWorktree).toHaveLength(0); // nothing was ever set up
+    expect(events.some((e) => e.type === "task_updated" && e.taskId === draft.id)).toBe(true);
+  });
+
+  it("deletes a task parked at the review gate and tears down its worktree", async () => {
+    const draft = orch.createTask(PROPOSAL);
+    await orch.startTask(draft.id);
+    await orch.settle(draft.id); // parked at the gate (awaiting_human)
+    expect(store.load(draft.id)!.status).toBe("awaiting_human");
+
+    await orch.deleteTask(draft.id);
+    expect(store.load(draft.id)).toBeNull();
+    expect(vcs.calls.removeWorktree.some((c) => c.force)).toBe(true);
+    expect(vcs.calls.push).toHaveLength(0); // deleting never reaches GitHub
+  });
+
+  it("deletes a RUNNING task only after its worktree is torn down (no orphan, no push)", async () => {
+    let release!: () => void;
+    editGate = new Promise<void>((r) => (release = r));
+
+    const draft = orch.createTask(PROPOSAL);
+    await orch.startTask(draft.id);
+    await until(() => store.load(draft.id)!.status === "executing"); // frozen mid-step
+
+    const del = orch.deleteTask(draft.id); // stops, settles, tears down, removes — in order
+    release(); // unblock the frozen step so the pipeline can settle
+    await del;
+
+    expect(store.load(draft.id)).toBeNull(); // record gone
+    expect(vcs.calls.removeWorktree.some((c) => c.force)).toBe(true); // worktree torn down (awaited)
+    expect(vcs.calls.push).toHaveLength(0); // never pushed
+    expect(vcs.calls.commitAll).toHaveLength(0); // aborted before commit
+  });
+
+  it("throws 404 for an unknown task", async () => {
+    await expect(orch.deleteTask("nope")).rejects.toMatchObject({ status: 404 });
+  });
+});
+
+describe("read-only task (no mutating step)", () => {
+  it("completes a review-only task with the worker's report — never aborts as 'no changes'", async () => {
+    const draft = orch.createTask({ title: "Verify state", summary: "inspect only", steps: [{ capability: "review", description: "Inspect the repo." }] });
+    expect(draft.gates).toHaveLength(0); // no review-and-merge gate for a read-only task
+
+    await orch.startTask(draft.id);
+    await orch.settle(draft.id);
+
+    const final = store.load(draft.id)!;
+    expect(final.status).toBe("completed"); // completed, NOT aborted
+    expect(final.steps[0]!.status).toBe("completed"); // the review step ran + completed (not blocked_on_gate)
+    expect(vcs.calls.commitAll).toHaveLength(0); // nothing to commit
+    expect(vcs.calls.push).toHaveLength(0); // canPush untouched — nothing pushed
   });
 });
 

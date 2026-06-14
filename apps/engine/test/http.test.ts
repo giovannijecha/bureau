@@ -42,7 +42,7 @@ const PROPOSAL: TaskProposal = { title: "T", summary: "S", steps: [{ capability:
 
 function fakeStore(seed: Task[] = []): TaskStore {
   const map = new Map<string, Task>(seed.map((t) => [t.id, t]));
-  return { save: (t) => void map.set(t.id, t), load: (id) => map.get(id) ?? null, list: () => [...map.values()] };
+  return { save: (t) => void map.set(t.id, t), load: (id) => map.get(id) ?? null, list: () => [...map.values()], delete: (id) => void map.delete(id) };
 }
 
 function fakeMessages(): MessageLog {

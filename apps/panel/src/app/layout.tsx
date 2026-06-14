@@ -3,6 +3,7 @@ import { Inter } from "next/font/google";
 import "./globals.css";
 import { Sidebar } from "../components/Sidebar";
 import { Header } from "../components/Header";
+import { ConfirmProvider } from "../components/ConfirmDialog";
 
 const inter = Inter({ subsets: ["latin"], variable: "--font-inter" });
 
@@ -21,13 +22,15 @@ export default function RootLayout({ children }: { children: ReactNode }) {
         <script dangerouslySetInnerHTML={{ __html: THEME_SCRIPT }} />
       </head>
       <body className="font-sans antialiased">
-        <div className="flex h-screen overflow-hidden">
-          <Sidebar />
-          <div className="flex flex-1 flex-col overflow-hidden">
-            <Header />
-            <main className="flex flex-1 flex-col overflow-hidden bg-muted/30">{children}</main>
+        <ConfirmProvider>
+          <div className="flex h-screen overflow-hidden">
+            <Sidebar />
+            <div className="flex flex-1 flex-col overflow-hidden">
+              <Header />
+              <main className="flex flex-1 flex-col overflow-hidden bg-muted/30">{children}</main>
+            </div>
           </div>
-        </div>
+        </ConfirmProvider>
       </body>
     </html>
   );

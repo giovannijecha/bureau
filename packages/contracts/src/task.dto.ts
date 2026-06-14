@@ -56,6 +56,18 @@ export const PipelineStepDto = z.object({
   failureReason: z.string().nullable(),
   /** The worker's own report of what it did (persisted), or null. */
   summary: z.string().nullable(),
+  /** When the worker began / finished this step (ISO-8601), or null if not yet. */
+  startedAt: z.string().nullable(),
+  completedAt: z.string().nullable(),
+});
+
+/** One row in a task's timeline — a flattened decision-log entry with a timestamp.
+ *  Captures the full history including re-run cycles (gate_reopened entries). */
+export const TimelineEntryDto = z.object({
+  /** The decision-log entry type (drives the icon): step_started, gate_reopened, … */
+  type: z.string(),
+  at: z.string(),
+  label: z.string(),
 });
 
 /** Engine status for the Settings panel. */
@@ -78,6 +90,8 @@ export const TaskDetailDto = TaskSummaryDto.extend({
   mergeError: z.string().nullable(),
   steps: z.array(PipelineStepDto),
   gates: z.array(GateViewDto),
+  /** The full event history (newest last) — substeps, gates, and re-run cycles. */
+  timeline: z.array(TimelineEntryDto),
 });
 
 /** A change Iris proposes in chat — a pipeline of steps the CEO can create as a task. */
@@ -104,6 +118,7 @@ export const CreateTaskRequestDto = z.object({
 export type TaskSummary = z.infer<typeof TaskSummaryDto>;
 export type GateDecisionRequest = z.infer<typeof GateDecisionRequestDto>;
 export type GateView = z.infer<typeof GateViewDto>;
+export type TimelineEntry = z.infer<typeof TimelineEntryDto>;
 export type TaskDetail = z.infer<typeof TaskDetailDto>;
 export type PipelineStep = z.infer<typeof PipelineStepDto>;
 export type TaskProposal = z.infer<typeof TaskProposalDto>;

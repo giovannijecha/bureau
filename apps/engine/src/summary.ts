@@ -1,7 +1,7 @@
 // Map a domain Task to the panel-facing TaskSummary DTO (contracts).
 
-import type { Task, CapabilityKind } from "@bureau/core";
-import type { TaskSummary, TaskDetail } from "@bureau/contracts";
+import type { Task, CapabilityKind, DecisionEntry, StepId } from "@bureau/core";
+import type { TaskSummary, TaskDetail, TimelineEntry } from "@bureau/contracts";
 
 /** Each capability maps to a worker persona — who Iris hands that piece to. */
 export const ASSIGNEE: Record<CapabilityKind, string> = {
@@ -90,6 +90,8 @@ export function toTaskDetail(task: Task): TaskDetail {
       status: s.status,
       failureReason: s.failureReason ?? null,
       summary: s.summary ?? null,
+      startedAt: s.startedAt ?? null,
+      completedAt: s.completedAt ?? null,
     })),
     gates: task.gates.map((g) => ({
       id: g.id,
@@ -97,5 +99,46 @@ export function toTaskDetail(task: Task): TaskDetail {
       status: g.status,
       ...(g.decision !== undefined ? { decision: g.decision } : {}),
     })),
+    timeline: toTimeline(task),
   };
+}
+
+/** Flatten a task's append-only decision log into a timeline (oldest first) — the
+ *  full history the panel renders: substeps, gates, and request-changes cycles. */
+export function toTimeline(task: Task): TimelineEntry[] {
+  return task.decisionLog.map((entry) => {
+    const { kind, label } = describe(task, entry);
+    return { type: kind, at: entry.at, label };
+  });
+}
+
+/** A one-line, human label + a kind (for the icon) for one decision-log entry.
+ *  Shared by the Hub activity feed and the task timeline. */
+export function describe(task: Task, entry: DecisionEntry): { kind: string; label: string } {
+  switch (entry.type) {
+    case "task_created":
+      return { kind: entry.type, label: "Task created" };
+    case "step_started":
+      return { kind: entry.type, label: `${who(task, entry.stepId)} started` };
+    case "step_completed":
+      return { kind: entry.type, label: `${who(task, entry.stepId)} finished` };
+    case "step_failed":
+      return { kind: entry.type, label: `${who(task, entry.stepId)} failed — ${entry.reason}` };
+    case "gate_opened":
+      return { kind: entry.type, label: "Ready for your review" };
+    case "gate_reopened":
+      return { kind: entry.type, label: "Revising — changes requested" };
+    case "gate_decided":
+      return { kind: entry.type, label: `Review ${entry.decision}` };
+    case "task_completed":
+      return { kind: entry.type, label: "Merged to main" };
+    case "task_aborted":
+      return { kind: entry.type, label: `Aborted — ${entry.reason}` };
+  }
+}
+
+/** The worker persona for the step a log entry refers to. */
+function who(task: Task, stepId: StepId): string {
+  const step = task.steps.find((s) => s.id === stepId);
+  return step ? ASSIGNEE[step.capability] : "A worker";
 }

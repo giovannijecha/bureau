@@ -29,6 +29,7 @@ import { Orchestrator } from "./orchestrator.js";
 import { ProjectRegistry, projectsFromJson, parseTestCommand, slug, type ProjectConfig } from "./projects.js";
 import { RealVcs, DbMessageLog, DbConversationStore, VaultStore, DbUsage, DbNotifications } from "./adapters.js";
 import { WsHub } from "./ws.js";
+import { TerminalHub } from "./terminal.js";
 import { createHttpServer } from "./http.js";
 import type { EventSink, VcsPort } from "./ports.js";
 
@@ -170,7 +171,37 @@ async function main(): Promise<void> {
   orchestrator.migrateOrphanMessages();
 
   const server = createHttpServer({ orchestrator, store, messages });
-  hub = new WsHub(server);
+  hub = new WsHub();
+
+  // Embedded terminal (human-operated shell console) on ws:/terminal, scoped to a
+  // project's canonical clone. Iris can read its recent output (propose→run→observe).
+  const terminal = new TerminalHub({
+    resolveCwd: (projectId) => {
+      try {
+        return projects.resolve(projectId).canonicalPath;
+      } catch {
+        return projects.default().canonicalPath;
+      }
+    },
+    resolveId: (projectId) => {
+      try {
+        return projects.resolve(projectId).id;
+      } catch {
+        return projects.default().id;
+      }
+    },
+  });
+  orchestrator.attachTerminal((projectId) => terminal.recentOutput(projectId));
+
+  // Route WebSocket upgrades by path. Both hubs use noServer:true — a single
+  // dispatcher hands each upgrade to the right one (the panel feed vs the terminal).
+  const wsHub = hub;
+  server.on("upgrade", (req, socket, head) => {
+    const pathname = new URL(req.url ?? "/", "http://localhost").pathname;
+    if (pathname === "/ws") wsHub.handleUpgrade(req, socket, head);
+    else if (pathname === "/terminal") terminal.handleUpgrade(req, socket, head);
+    else socket.destroy();
+  });
 
   // Clean up any task a previous crash/forced-exit left mid-flight BEFORE serving,
   // so the panel never sees a zombie task with an orphaned worktree.
@@ -191,6 +222,7 @@ async function main(): Promise<void> {
     console.log(`\n[engine] ${signal} — draining in-flight pipelines…`);
     void orchestrator.settleAll().finally(() => {
       hub?.close();
+      terminal.close();
       server.close(() => process.exit(0));
       setTimeout(() => process.exit(0), 5000).unref(); // hard stop if something hangs
     });

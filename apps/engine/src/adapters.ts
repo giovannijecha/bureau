@@ -20,11 +20,12 @@ import {
   remoteBranches,
   headBranch,
   pruneTaskBranches,
+  deleteTaskBranch,
   defaultRunner,
   type Runner,
   type CommitAuthor,
 } from "@bureau/vcs";
-import { readNote, writeNote, listNotes, noteModifiedAt } from "@bureau/mind";
+import { readNote, writeNote, listNotes, noteModifiedAt, deleteNote } from "@bureau/mind";
 import { MessageRepo, ConversationRepo, UsageRepo, NotificationRepo, type MessageRow, type ConversationRow, type NotificationRow } from "@bureau/db";
 import type { Message, Conversation, Note, NoteSummary, UsageSummary, Notification, NotificationKind } from "@bureau/contracts";
 import type { VcsPort, WorktreeRef, MessageLog, ConversationStore, MemoryPort, UsagePort, UsageEvent, NotificationStore, RepoView } from "./ports.js";
@@ -137,6 +138,11 @@ export class RealVcs implements VcsPort {
   pruneTaskBranches(keep: readonly string[]): Promise<string[]> {
     if (!existsSync(join(this.cfg.canonicalPath, ".git"))) return Promise.resolve([]);
     return pruneTaskBranches(this.cfg.canonicalPath, keep, this.runner);
+  }
+
+  deleteBranch(branch: string): Promise<boolean> {
+    if (!existsSync(join(this.cfg.canonicalPath, ".git"))) return Promise.resolve(false);
+    return deleteTaskBranch(this.cfg.canonicalPath, branch, this.runner);
   }
 }
 
@@ -301,6 +307,10 @@ export class VaultStore implements MemoryPort {
     return note;
   }
 
+  async delete(path: string): Promise<void> {
+    await deleteNote(this.vaultPath, path);
+  }
+
   async writeJournal(path: string, markdown: string): Promise<void> {
     await writeNote(this.vaultPath, path, markdown);
   }
@@ -341,6 +351,10 @@ export class InMemoryMemory implements MemoryPort {
     const content = `# ${title}\n\n${body.trim()}\n`;
     this.notes.set(path, { content, updatedAt: this.clock() });
     return (await this.get(path))!;
+  }
+
+  async delete(path: string): Promise<void> {
+    this.notes.delete(path);
   }
 
   async writeJournal(path: string, markdown: string): Promise<void> {

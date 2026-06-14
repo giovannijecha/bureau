@@ -24,15 +24,17 @@ import type {
 } from "@bureau/core";
 import type { CapabilityRegistry } from "@bureau/capabilities";
 import type { Provider } from "@bureau/providers";
-import type { Message, TaskProposal, ChatResponse, Project, Conversation, EngineInfo, Hub, Note, NoteSummary, UsageSummary, Notification, NotificationKind, GitInfo } from "@bureau/contracts";
+import type { Message, TaskProposal, ChatResponse, Project, Conversation, EngineInfo, Hub, Note, NoteSummary, UsageSummary, Notification, NotificationKind, GitInfo, Attachment } from "@bureau/contracts";
 import { join } from "node:path";
+import { tmpdir } from "node:os";
+import { mkdir, writeFile, rm } from "node:fs/promises";
 
 import type { TaskStore, VcsPort, EventSink, MessageLog, ConversationStore, MemoryPort, UsagePort, NotificationStore, RepoView } from "./ports.js";
 import { ProjectRegistry, toProjectDto, type ProjectConfig } from "./projects.js";
 import { OrchestratorError } from "./errors.js";
 import { irisRespond } from "./iris.js";
 import { buildHub } from "./hub.js";
-import { journalPath, journalMarkdown } from "./memory.js";
+import { journalPath, journalMarkdown, notePath } from "./memory.js";
 import { ASSIGNEE } from "./summary.js";
 
 export { OrchestratorError };
@@ -73,6 +75,14 @@ export class Orchestrator {
     return buildHub(this.d.store.list(), (k) => this.d.capabilities.has(k), 40);
   }
 
+  private terminalCtx: ((projectId?: string) => string) | null = null;
+
+  /** Wire the embedded terminal so Iris can "see" (read-only) the recent output of
+   *  commands the CEO ran in it — closing the propose→run→observe loop. */
+  attachTerminal(recentOutput: (projectId?: string) => string): void {
+    this.terminalCtx = recentOutput;
+  }
+
   /** Read-only Git console for a project: current branch, recent commits, branches.
    *  Refreshes the clone from origin FIRST so the console shows the LIVE repo. */
   async gitInfo(projectId?: string): Promise<GitInfo> {
@@ -108,6 +118,25 @@ export class Orchestrator {
       .map((t) => this.branchFor(t.id));
     const deleted = await port.pruneTaskBranches(keep);
     return { deleted, kept: keep.length };
+  }
+
+  /** Delete ONE leftover bureau/task-* branch for the active project. Refuses a
+   *  branch still owned by an in-flight task (it needs it); the vcs layer refuses
+   *  anything outside the bureau/task-* namespace. */
+  async deleteBranch(branch: string, projectId?: string): Promise<{ deleted: boolean }> {
+    if (!/^bureau\/task-[A-Za-z0-9._-]+$/.test(branch)) {
+      throw new OrchestratorError(`Refusing to delete "${branch}": only Bureau task branches are deletable.`, 400);
+    }
+    const inFlight = this.d.store
+      .list()
+      .filter((t) => t.status !== "completed" && t.status !== "aborted")
+      .map((t) => this.branchFor(t.id));
+    if (inFlight.includes(branch)) {
+      throw new OrchestratorError(`Branch ${branch} belongs to a task that's still in flight — stop or finish it first.`, 409);
+    }
+    const project = this.d.projects.resolve(projectId);
+    const port = this.d.vcs(project);
+    return { deleted: await port.deleteBranch(branch) };
   }
 
   // ── Notifications ─────────────────────────────────────────────────────────────
@@ -198,9 +227,20 @@ export class Orchestrator {
     return this.d.memory.get(path);
   }
 
-  /** Create/update a free-form CEO note. */
-  saveNote(title: string, body: string): Promise<Note> {
+  /** Create/update a free-form CEO note. Refuses (409) to overwrite a DIFFERENT
+   *  existing note — when the title slugs to a path that already exists and isn't the
+   *  note being edited (`expectedPath`) — so distinct titles never silently clobber. */
+  async saveNote(title: string, body: string, expectedPath?: string): Promise<Note> {
+    const path = notePath(title);
+    if (path !== expectedPath && (await this.d.memory.get(path)) !== null) {
+      throw new OrchestratorError(`A note titled “${title}” already exists — choose a different title, or open that note to edit it.`, 409);
+    }
     return this.d.memory.saveNote(title, body);
+  }
+
+  /** Delete a vault note by path. */
+  deleteNote(path: string): Promise<void> {
+    return this.d.memory.delete(path);
   }
 
   /** Auto-write a finished task's journal to the vault. Best-effort — a vault
@@ -229,13 +269,16 @@ export class Orchestrator {
 
   /** A conversation turn with Iris, scoped to a project + conversation thread.
    *  Creates a new conversation when none is given. */
-  async chat(content: string, projectId?: string, conversationId?: string): Promise<ChatResponse> {
+  async chat(content: string, projectId?: string, conversationId?: string, attachments?: readonly Attachment[]): Promise<ChatResponse> {
     const project = this.d.projects.resolve(projectId);
     const conversation = this.ensureConversation(conversationId, project);
 
-    this.appendChatMessage(conversation.id, "user", content);
+    // Inline text attachments into the message; save images so Iris can Read (view) them.
+    const { messageContent, images, imagesDir } = await this.prepareAttachments(content, attachments, conversation.id);
+    this.appendChatMessage(conversation.id, "user", messageContent);
     if (conversation.title === DEFAULT_CONVERSATION_TITLE) {
-      this.d.conversations.rename(conversation.id, titleFrom(content), this.d.clock());
+      const seed = content.trim() || attachments?.[0]?.name || "Attachments";
+      this.d.conversations.rename(conversation.id, titleFrom(seed), this.d.clock());
     }
 
     // Iris reads the ACTIVE project's clone (never the engine's own working dir).
@@ -249,7 +292,25 @@ export class Orchestrator {
     const repo = await port.repoInfo(8).catch(() => null);
     const history = this.d.messages.listByConversation(conversation.id);
     const irisProject = { owner: project.owner, name: project.name, baseBranch: project.baseBranch, hasTests: project.testCommand !== undefined };
-    const turn = await irisRespond(this.d.provider, history, irisProject, cwd, repo ? buildRepoContext(repo) : undefined);
+    // Fold the repo's git state AND any recent Bureau-terminal output into Iris's
+    // read-only context, so she can answer about branches/history and reference the
+    // results of commands the CEO ran in the terminal.
+    const termOut = this.terminalCtx?.(project.id)?.trim();
+    const context =
+      [
+        repo ? buildRepoContext(repo) : "",
+        termOut ? `Recent Bureau-terminal output (the CEO ran these — read-only, for your reference):\n${termOut}` : "",
+      ]
+        .filter((s) => s !== "")
+        .join("\n\n") || undefined;
+    let turn;
+    try {
+      turn = await irisRespond(this.d.provider, history, irisProject, cwd, context, images);
+    } finally {
+      // The agent has Read the images during the turn — drop the temp dir so image
+      // attachments don't accumulate on disk over the daemon's life.
+      if (imagesDir) await rm(imagesDir, { recursive: true, force: true }).catch(() => {});
+    }
 
     const reply = this.appendChatMessage(conversation.id, "iris", turn.reply);
     this.recordUsage("iris", null, turn.usage);
@@ -257,6 +318,47 @@ export class Orchestrator {
     return turn.proposal
       ? { reply, conversationId: conversation.id, proposal: turn.proposal }
       : { reply, conversationId: conversation.id };
+  }
+
+  /** Inline text attachments into the message content; save image attachments to a
+   *  temp dir so the agent can VIEW them with its Read tool. Returns the message to
+   *  persist + the saved images (name + on-disk path) for Iris's --add-dir. */
+  private async prepareAttachments(
+    content: string,
+    attachments: readonly Attachment[] | undefined,
+    conversationId: string
+  ): Promise<{ messageContent: string; images: { name: string; path: string }[]; imagesDir: string | null }> {
+    if (!attachments || attachments.length === 0) return { messageContent: content, images: [], imagesDir: null };
+    const TEXT_CAP = 200_000;
+    const parts: string[] = content.trim() ? [content.trim()] : [];
+    const images: { name: string; path: string }[] = [];
+    let imagesDir: string | null = null;
+    for (const a of attachments) {
+      if (a.kind === "text") {
+        const body = a.content.length > TEXT_CAP ? `${a.content.slice(0, TEXT_CAP)}\n…[truncated]` : a.content;
+        // A fence longer than any backtick run IN the body, so a file that contains
+        // ``` (markdown/code files do) can't close the wrapper early (CommonMark).
+        const longest = Math.max(0, ...[...body.matchAll(/`+/g)].map((m) => m[0].length));
+        const fence = "`".repeat(Math.max(3, longest + 1));
+        parts.push(`--- Attached file: ${a.name} ---\n${fence}\n${body}\n${fence}`);
+      } else {
+        if (imagesDir === null) {
+          // A per-TURN subdir so --add-dir exposes only this turn's images (not the
+          // whole conversation's), and so it can be removed wholesale after the turn.
+          imagesDir = join(tmpdir(), "bureau-attachments", conversationId, this.d.ids());
+          await mkdir(imagesDir, { recursive: true });
+        }
+        let safe = a.name.replace(/[^A-Za-z0-9._-]/g, "_").slice(0, 80) || "image";
+        // The Read tool keys image rendering off the extension — ensure one (from the
+        // authoritative mediaType) when the sanitized name lacks it.
+        if (!/\.(png|jpe?g|gif|webp|bmp|svg)$/i.test(safe)) safe += extForImage(a.mediaType);
+        const path = join(imagesDir, `${this.d.ids()}-${safe}`);
+        await writeFile(path, Buffer.from(a.content, "base64"));
+        images.push({ name: a.name, path });
+        parts.push(`[Image attached: ${a.name}]`);
+      }
+    }
+    return { messageContent: parts.join("\n\n") || "(attachments)", images, imagesDir };
   }
 
   /** The CEO's chat threads, most-recent first. */
@@ -363,6 +465,10 @@ export class Orchestrator {
     const taskId = this.d.ids();
     const gateId = this.d.ids();
     const lastIdx = proposal.steps.length - 1;
+    // A task only needs the pr_approval (review-and-merge) gate if it MUTATES files.
+    // A purely read-only pipeline (plan/review/test only) produces no diff to merge —
+    // it completes with the workers' reports, with no gate.
+    const mutates = proposal.steps.some((s) => s.capability === "edit" || s.capability === "document");
     const steps: Step[] = proposal.steps.map((s, i) => ({
       id: this.d.ids() as StepId,
       capability: s.capability,
@@ -370,7 +476,7 @@ export class Orchestrator {
       acceptanceCriteria: [],
       status: "pending",
       artifactIds: [],
-      ...(i === lastIdx ? { gateAfter: gateId as GateId } : {}),
+      ...(mutates && i === lastIdx ? { gateAfter: gateId as GateId } : {}),
     }));
     const task: Task = {
       id: taskId as TaskId,
@@ -380,8 +486,9 @@ export class Orchestrator {
       repoName: project.name,
       status: "created",
       steps,
-      // The single human gate is the pr_approval gate — the final confirm-merge.
-      gates: [{ id: gateId as GateId, kind: "pr_approval", status: "pending" }],
+      // The single human gate is the pr_approval gate — the final confirm-merge. A
+      // read-only task has none (nothing to merge).
+      gates: mutates ? [{ id: gateId as GateId, kind: "pr_approval", status: "pending" }] : [],
       artifacts: [],
       decisionLog: [],
       createdAt: now,
@@ -478,14 +585,26 @@ export class Orchestrator {
         this.notifyTestFailure(taskId, step.capability, out.summary); // advisory red flag, never blocks
       }
 
-      // Capture the diff (incl. new files), then commit it locally on the branch.
+      // A read-only task (plan/review/test only) has no gate: there's no diff to
+      // commit or merge — the workers' reports ARE the deliverable. Complete it
+      // directly (never abort it as a false "no changes" failure).
+      const gate = this.requireTask(taskId).gates[0];
+      if (gate === undefined) {
+        task = this.drive(this.requireTask(taskId), { type: "COMPLETE_TASK" });
+        this.emitTaskUpdated(task);
+        await this.journalTask(task);
+        return;
+      }
+
+      // Mutating task: capture the diff (incl. new files), commit it locally on the
+      // branch, then open the review gate.
       const diff = await vcs.workingDiff(worktreePath);
       if (this.requireTask(taskId).status !== "executing") return; // stopped before commit
       const committed = await vcs.commitAll(worktreePath, `Bureau: ${truncate(this.requireTask(taskId).goal)}`);
       task = this.requireTask(taskId);
       if (task.status !== "executing") return; // stopped during commit
-      // Fail loud on a no-op run: if nothing was committed, the workers produced no
-      // change — never park an empty task at the review gate as a false "done".
+      // Fail loud on a no-op run: a mutating task that committed nothing means the
+      // worker produced no change — never park an empty task at the review gate.
       if (!committed) {
         throw new Error("The pipeline produced no changes — there is nothing to review. The worker may not have edited any files.");
       }
@@ -499,7 +618,6 @@ export class Orchestrator {
         },
       ]);
 
-      const gate = task.gates[0]!;
       task = this.drive(task, { type: "OPEN_GATE", gateId: gate.id });
       this.d.events.emit({ type: "gate_opened", taskId, gateId: gate.id, gateKind: "pr_approval" });
       this.notify("review", taskId, "Ready for your review", `“${truncate(task.goal)}” finished and is waiting for you to review & merge.`);
@@ -646,6 +764,30 @@ export class Orchestrator {
       }
     }
     return task;
+  }
+
+  /** Permanently remove a task. If it's still live, stop it first (aborts + tears
+   *  down its worktree) so nothing is left orphaned, then delete the record. The
+   *  task's bureau/task-* branch (if it ever pushed one) is left for the Git
+   *  "clean up branches" action — deleting a record never reaches GitHub. */
+  async deleteTask(taskId: string): Promise<void> {
+    const task = this.requireTask(taskId); // 404s if unknown
+    if (task.status !== "completed" && task.status !== "aborted") {
+      await this.stopTask(taskId); // abort the task
+      await this.settle(taskId); // the background pipeline has now released the worktree path
+      // For a STILL-RUNNING task, stopTask only SCHEDULES the worktree teardown
+      // (detached, not tracked in `running`), so settle() above doesn't guarantee
+      // it ran. Tear it down inline and AWAIT it before dropping the record — else
+      // the 204 races ahead of the teardown and a shutdown could orphan the worktree.
+      const aborted = this.requireTask(taskId);
+      if (aborted.worktreePath !== undefined) {
+        const vcs = this.vcsForTask(aborted);
+        if (vcs) await vcs.removeWorktree({ path: aborted.worktreePath, branch: this.branchFor(taskId) }, true).catch(() => {});
+      }
+    }
+    this.d.store.delete(taskId as TaskId);
+    // Tell every open panel to refresh its lists; the deleted task now 404s.
+    this.d.events.emit({ type: "task_updated", taskId, status: "deleted" });
   }
 
   /** The CEO's decision at the open review gate. Three outcomes, ONE entry point:
@@ -858,6 +1000,26 @@ function titleFrom(content: string): string {
 
 function prBody(goal: string): string {
   return `${goal}\n\n🤖 Opened by Bureau.`;
+}
+
+/** A file extension for a saved image attachment, derived from its media type — so
+ *  the Read tool (which keys image rendering off the extension) renders it. */
+function extForImage(mediaType?: string): string {
+  switch ((mediaType ?? "").toLowerCase()) {
+    case "image/jpeg":
+    case "image/jpg":
+      return ".jpg";
+    case "image/gif":
+      return ".gif";
+    case "image/webp":
+      return ".webp";
+    case "image/bmp":
+      return ".bmp";
+    case "image/svg+xml":
+      return ".svg";
+    default:
+      return ".png";
+  }
 }
 
 /** A concise, read-only summary of the repo's git state for Iris's context — so she

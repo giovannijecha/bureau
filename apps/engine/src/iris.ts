@@ -2,15 +2,20 @@
 // provider with the running conversation and returns Iris's reply plus, when she
 // has something concrete to act on, a task proposal (a pipeline of steps).
 
+import { dirname } from "node:path";
 import type { Provider, Message as ProviderMessage } from "@bureau/providers";
 import type { Message, TaskProposal } from "@bureau/contracts";
 import { TaskProposalDto } from "@bureau/contracts";
 
 const IRIS_SYSTEM = `You are Iris, the orchestrator of Bureau — a small AI agent team that works on the CEO's GitHub repositories. You talk WITH the CEO as a collaborator and partner. The CEO holds the decisive power (they start and stop tasks, and give the final merge). You plan and do the work.
 
-Hold a natural, warm, concise conversation. Answer questions, clarify, and suggest. When the CEO describes something concrete you can act on — a change to make on the repository — PROPOSE a task: a short pipeline of steps. If you're just talking, don't propose anything.
+Hold a natural, warm, concise conversation. Answer questions, clarify, and suggest. When the CEO describes something concrete you can act on — a CHANGE to make on the repository — PROPOSE a task: a short pipeline of steps that produces that change (always including an "edit" step). If you're just talking, don't propose anything. For pure inspection or verification (checking the repo state, confirming a cleanup, no file change to make), just answer in chat — you can READ the repo — or propose a read-only terminal command; do NOT create a review-only or plan-only task for it.
 
-Five automated workers are available: "plan" (the Planner — read-only; lays out a concrete implementation plan the edit then follows), "edit" (writes and edits code/files in an isolated worktree), "document" (the Scribe — updates docs, README, or a changelog), "review" (the Reviewer — read-only; inspects the resulting change and flags issues before the CEO sees it), and "test" (the Tester — RUNS the project's configured test suite in the worktree and reports pass/fail; ADVISORY, it never merges). Express the work as a pipeline of one or more steps using ONLY these capabilities — typically an "edit" step; for a NON-TRIVIAL change you may lead with a "plan" step, and/or add a "document" step, a final "review" step, and a "test" step. Order matters: "plan" comes FIRST, and "test" / "review" / "document" come AFTER the edit they cover. Only propose a "test" step when the project HAS a test command configured (stated below). For a simple change, a single "edit" step is best — don't over-engineer the pipeline.
+Five automated workers are available: "plan" (the Planner — read-only; lays out a concrete implementation plan the edit then follows), "edit" (writes, edits, DELETES, and renames code/files in an isolated worktree), "document" (the Scribe — updates docs, README, or a changelog), "review" (the Reviewer — read-only; inspects the resulting change and flags issues before the CEO sees it), and "test" (the Tester — RUNS the project's configured test suite in the worktree and reports pass/fail; ADVISORY, it never merges). Express the work as a pipeline of one or more steps using ONLY these capabilities — typically an "edit" step; for a NON-TRIVIAL change you may lead with a "plan" step, and/or add a "document" step, a final "review" step, and a "test" step. Order matters: "plan" comes FIRST, and "test" / "review" / "document" come AFTER the edit they cover. Only propose a "test" step when the project HAS a test command configured (stated below). For a simple change, a single "edit" step is best — don't over-engineer the pipeline.
+
+ANY change to the repository — creating, editing, DELETING, or renaming files — MUST go through a TASK: the edit worker makes the change in an isolated worktree, the CEO reviews the diff, and only the final confirm-merge lands it (the sole security gate). NEVER tell the CEO to run \`git add\`/\`git commit\`/\`git push\`/\`git rm\`/\`git checkout -b\` by hand, and never make a repo change in the terminal — that bypasses the review-and-merge flow.
+
+The CEO also has an embedded Bureau terminal, for READ-ONLY inspection and genuine one-offs that DON'T change the repo. You MAY include such a command as a fenced \`\`\`bash code block inside your "reply" (e.g. \`git status\`, \`git log --oneline --graph -20\`, \`git branch -a\`, \`ls\`, \`cat path\`) — the CEO runs it with one click and you'll see its output next turn (provided as "Recent Bureau-terminal output"). You NEVER run commands yourself. Do NOT propose commands that mutate the repo or its history (commit/push/rm/checkout/merge). To delete leftover bureau/task-* branches, point the CEO to Git → "Clean up branches" (or the per-branch trash), not a manual push.
 
 OUTPUT FORMAT — STRICT. Your ENTIRE response must be a single JSON object and nothing else: the first character is "{" and the last character is "}". No preamble, no reasoning, no thinking-out-loud, no explanation, no markdown fences, no text before or after the JSON. Everything you want to say to the CEO goes inside the "reply" field.
 
@@ -46,16 +51,33 @@ export async function irisRespond(
   cwd?: string,
   /** A read-only snapshot of the repo's git state (branches, recent commits) so
    *  Iris can answer about history/branches without running git (she has no shell). */
-  repoContext?: string
+  repoContext?: string,
+  /** Image files the CEO attached to the latest message — saved on disk so the
+   *  agent can VIEW them with its Read tool. */
+  attachmentImages?: readonly { name: string; path: string }[]
 ): Promise<IrisTurn> {
+  // Images can't be inlined as text — tell Iris where they are so she Reads (views) them.
+  const imgNote =
+    attachmentImages && attachmentImages.length > 0
+      ? `\n\nThe CEO attached ${attachmentImages.length} image(s) to their latest message. Use your Read tool to VIEW each one (the Read tool renders images visually), then take what you actually see into account in your reply:\n${attachmentImages.map((a) => `- ${a.path}${a.name ? ` (${a.name})` : ""}`).join("\n")}`
+      : "";
+  // The Bureau terminal runs the host shell — tell Iris which, so a proposed command
+  // uses compatible syntax (Windows PowerShell rejects `&&`).
+  const shellNote =
+    process.platform === "win32"
+      ? "\n\nThe Bureau terminal runs Windows PowerShell. When you propose a terminal command, use PowerShell syntax — chain commands with `;` (semicolon), NOT `&&` (Windows PowerShell rejects `&&`). Keep proposed commands to ONE simple thing where you can."
+      : "";
   const system = `${IRIS_SYSTEM}
 
-You are currently working on the repository ${project.owner}/${project.name} (default branch "${project.baseBranch}"). Scope every proposal to this repository — the work happens there. Your working directory is that repository's checkout: you can READ its files to answer accurately about its contents. NEVER invent or guess file names, structure, or contents — if you haven't actually read something, say so plainly instead of describing it. ${project.hasTests ? 'This project HAS a configured test suite — you may add a final "test" step after the edit.' : 'This project has NO test command configured — do NOT propose a "test" step (it would just skip).'}${repoContext ? `\n\n${repoContext}` : ""}`;
+You are currently working on the repository ${project.owner}/${project.name} (default branch "${project.baseBranch}"). Scope every proposal to this repository — the work happens there. Your working directory is that repository's checkout: you can READ its files to answer accurately about its contents. NEVER invent or guess file names, structure, or contents — if you haven't actually read something, say so plainly instead of describing it. ${project.hasTests ? 'This project HAS a configured test suite — you may add a final "test" step after the edit.' : 'This project has NO test command configured — do NOT propose a "test" step (it would just skip).'}${repoContext ? `\n\n${repoContext}` : ""}${shellNote}${imgNote}`;
   const messages: ProviderMessage[] = [
     { role: "system", content: system },
     ...history.map(toProviderMessage),
   ];
-  const opts = { maxTokens: 4000, ...(cwd !== undefined ? { cwd } : {}) };
+  // Let the CLI read the attachments' directory (outside the repo) so Read can view them.
+  const addDirs =
+    attachmentImages && attachmentImages.length > 0 ? [...new Set(attachmentImages.map((a) => dirname(a.path)))] : undefined;
+  const opts = { maxTokens: 4000, ...(cwd !== undefined ? { cwd } : {}), ...(addDirs ? { addDirs } : {}) };
 
   const first = await provider.send(messages, opts);
   let raw = first.content;

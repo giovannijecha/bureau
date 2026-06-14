@@ -1,7 +1,8 @@
 "use client";
 
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useRef, useState, type ChangeEvent } from "react";
 import Link from "next/link";
+import { useRouter } from "next/navigation";
 import {
   Sparkles,
   Send,
@@ -13,13 +14,18 @@ import {
   ArrowRight,
   CheckCircle2,
   FolderGit2,
+  Paperclip,
+  X,
+  FileText,
+  Image as ImageIcon,
 } from "lucide-react";
-import type { Message, TaskProposal, Conversation } from "@bureau/contracts";
+import type { Message, TaskProposal, Conversation, Attachment } from "@bureau/contracts";
 import { chat, createTask, listConversations, deleteConversation, messagesFor } from "../lib/api";
 import { useProjects } from "../lib/useProjects";
 import { ProjectPicker } from "../components/ProjectPicker";
 import { ConversationsRail } from "../components/ConversationsRail";
 import { Markdown } from "../components/Markdown";
+import { useConfirm } from "../components/ConfirmDialog";
 import { cn } from "../lib/utils";
 
 const ASSIGNEE: Record<string, string> = {
@@ -32,6 +38,9 @@ const ASSIGNEE: Record<string, string> = {
 
 export default function AssistantPage() {
   const { projects, active, activeId, setActiveId } = useProjects();
+  const confirm = useConfirm();
+  const router = useRouter();
+  const runInTerminal = useCallback((cmd: string) => router.push(`/terminal?run=${encodeURIComponent(cmd)}`), [router]);
   const [input, setInput] = useState("");
   const [log, setLog] = useState<Message[]>([]);
   const [proposal, setProposal] = useState<TaskProposal | null>(null);
@@ -39,8 +48,10 @@ export default function AssistantPage() {
   const [error, setError] = useState<string | null>(null);
   const [conversations, setConversations] = useState<Conversation[]>([]);
   const [convId, setConvId] = useState<string | null>(null);
+  const [attachments, setAttachments] = useState<Attachment[]>([]);
   const inputRef = useRef<HTMLTextAreaElement>(null);
   const bottomRef = useRef<HTMLDivElement>(null);
+  const fileRef = useRef<HTMLInputElement>(null);
 
   const refreshConversations = useCallback(async () => {
     try {
@@ -52,7 +63,7 @@ export default function AssistantPage() {
 
   const selectConv = useCallback(async (id: string) => {
     setConvId(id);
-    setProposal(null);
+    setProposal(loadProposal(id)); // restore a pending proposal for this thread
     setError(null);
     try {
       setLog(await messagesFor(id));
@@ -67,6 +78,16 @@ export default function AssistantPage() {
     setProposal(null);
     setError(null);
     inputRef.current?.focus();
+  }, []);
+
+  // A note's "Ask Iris" deep-link (?ask=) pre-fills the composer.
+  useEffect(() => {
+    const ask = new URLSearchParams(window.location.search).get("ask");
+    if (ask) {
+      setInput(ask);
+      window.history.replaceState(null, "", window.location.pathname);
+      inputRef.current?.focus();
+    }
   }, []);
 
   // Load threads on mount; open the most recent one.
@@ -89,17 +110,23 @@ export default function AssistantPage() {
 
   async function onSend() {
     const content = input.trim();
-    if (!content || busy) return;
+    if ((!content && attachments.length === 0) || busy) return;
     setBusy(true);
     setError(null);
     setProposal(null);
-    setLog((l) => [...l, local("user", content)]);
+    persistProposal(convId, null); // clear up-front so a failed send can't resurrect the old proposal
+    const atts = attachments;
+    const shown = content + (atts.length ? `${content ? "\n\n" : ""}📎 ${atts.map((a) => a.name).join(", ")}` : "");
+    setLog((l) => [...l, local("user", shown)]);
     setInput("");
+    setAttachments([]);
     try {
-      const res = await chat(content, activeId ?? undefined, convId ?? undefined);
+      const res = await chat(content, activeId ?? undefined, convId ?? undefined, atts.length ? atts : undefined);
       setLog((l) => [...l, res.reply]);
-      if (res.proposal) setProposal(res.proposal);
       setConvId(res.conversationId); // always adopt the server's authoritative thread id
+      // Persist (or clear) the proposal for this thread so it survives reload / switch.
+      setProposal(res.proposal ?? null);
+      persistProposal(res.conversationId, res.proposal ?? null);
       void refreshConversations();
     } catch (e) {
       setError(errMsg(e));
@@ -108,8 +135,43 @@ export default function AssistantPage() {
     }
   }
 
+  async function onFiles(e: ChangeEvent<HTMLInputElement>) {
+    const files = Array.from(e.target.files ?? []);
+    e.target.value = ""; // allow re-selecting the same file
+    setError(null);
+    const room = 8 - attachments.length;
+    const next: Attachment[] = [];
+    for (const file of files.slice(0, Math.max(0, room))) {
+      try {
+        if (file.type.startsWith("image/")) {
+          if (file.size > 8_000_000) {
+            setError(`“${file.name}” is too large (max 8 MB).`);
+            continue;
+          }
+          const dataUrl = await readFile(file, "dataURL");
+          next.push({ name: file.name, kind: "image", content: dataUrl.includes(",") ? dataUrl.slice(dataUrl.indexOf(",") + 1) : dataUrl, mediaType: file.type || "image/png" });
+        } else {
+          if (file.size > 256_000) {
+            setError(`“${file.name}” is too large (max 256 KB for a text file).`);
+            continue;
+          }
+          next.push({ name: file.name, kind: "text", content: await readFile(file, "text") });
+        }
+      } catch {
+        setError(`Couldn’t read “${file.name}”.`);
+      }
+    }
+    if (next.length) setAttachments((a) => [...a, ...next]);
+  }
+
   async function removeConv(id: string) {
-    if (typeof window !== "undefined" && !window.confirm("Delete this conversation? This can't be undone.")) return;
+    const ok = await confirm({
+      title: "Delete conversation?",
+      description: "This conversation and all its messages will be permanently removed. This can't be undone.",
+      confirmLabel: "Delete",
+      variant: "destructive",
+    });
+    if (!ok) return;
     try {
       await deleteConversation(id);
     } catch {
@@ -121,6 +183,7 @@ export default function AssistantPage() {
 
   function refine() {
     setProposal(null);
+    persistProposal(convId, null);
     setInput("Let's refine that: ");
     inputRef.current?.focus();
   }
@@ -132,6 +195,7 @@ export default function AssistantPage() {
     try {
       const task = await createTask(proposal, activeId ?? undefined);
       setProposal(null);
+      persistProposal(convId, null);
       setLog((l) => [...l, createdNote(task.id, proposal.title)]);
     } catch (e) {
       setError(errMsg(e));
@@ -168,10 +232,21 @@ export default function AssistantPage() {
           ) : (
             <div className="w-full space-y-3.5 px-6 py-6 lg:px-10">
               {log.map((m) => (
-                <ChatBubble key={m.id} message={m} />
+                <ChatBubble key={m.id} message={m} onRun={runInTerminal} />
               ))}
               {busy && <TypingIndicator />}
-              {proposal && <ProposalCard proposal={proposal} busy={busy} onCreate={create} onRefine={refine} onKeep={() => setProposal(null)} />}
+              {proposal && (
+                <ProposalCard
+                  proposal={proposal}
+                  busy={busy}
+                  onCreate={create}
+                  onRefine={refine}
+                  onKeep={() => {
+                    setProposal(null);
+                    persistProposal(convId, null);
+                  }}
+                />
+              )}
               {error && (
                 <div className="flex items-center gap-1.5 text-sm text-destructive">
                   <AlertCircle className="h-4 w-4" />
@@ -200,11 +275,47 @@ export default function AssistantPage() {
               placeholder="Message Iris…"
               className="max-h-44 min-h-[48px] w-full resize-none bg-transparent px-4 pt-3.5 text-sm leading-relaxed outline-none placeholder:text-muted-foreground"
             />
+            {attachments.length > 0 && (
+              <div className="flex flex-wrap gap-1.5 px-3 pb-0.5 pt-1">
+                {attachments.map((a, i) => (
+                  <span key={i} className="inline-flex items-center gap-1.5 rounded-md border bg-muted/50 px-2 py-1 text-xs">
+                    {a.kind === "image" ? <ImageIcon className="h-3.5 w-3.5 shrink-0 text-primary" /> : <FileText className="h-3.5 w-3.5 shrink-0 text-amber-500" />}
+                    <span className="max-w-[160px] truncate">{a.name}</span>
+                    <button
+                      onClick={() => setAttachments((prev) => prev.filter((_, j) => j !== i))}
+                      className="shrink-0 text-muted-foreground transition-colors hover:text-foreground"
+                      aria-label={`Remove ${a.name}`}
+                    >
+                      <X className="h-3 w-3" />
+                    </button>
+                  </span>
+                ))}
+              </div>
+            )}
             <div className="flex items-center justify-between gap-2 px-2.5 pb-2.5 pt-1">
-              <ProjectPicker compact projects={projects} active={active} onChange={setActiveId} />
+              <div className="flex items-center gap-1.5">
+                <button
+                  onClick={() => fileRef.current?.click()}
+                  disabled={busy}
+                  title="Attach images or files"
+                  aria-label="Attach"
+                  className="flex h-8 w-8 items-center justify-center rounded-lg text-muted-foreground transition-colors hover:bg-accent hover:text-foreground disabled:opacity-40"
+                >
+                  <Paperclip className="h-4 w-4" />
+                </button>
+                <input
+                  ref={fileRef}
+                  type="file"
+                  multiple
+                  accept="image/*,.md,.markdown,.txt,.json,.csv,.log,.ts,.tsx,.js,.jsx,.py,.go,.rs,.java,.rb,.php,.c,.cpp,.h,.css,.html,.yml,.yaml,.toml,.sh,.sql,text/*"
+                  className="hidden"
+                  onChange={onFiles}
+                />
+                <ProjectPicker compact projects={projects} active={active} onChange={setActiveId} />
+              </div>
               <button
                 onClick={onSend}
-                disabled={busy || !input.trim()}
+                disabled={busy || (!input.trim() && attachments.length === 0)}
                 aria-label="Send"
                 className="flex h-8 w-8 items-center justify-center rounded-lg bg-primary text-primary-foreground transition-colors hover:bg-primary/90 disabled:opacity-40"
               >
@@ -223,7 +334,7 @@ export default function AssistantPage() {
   );
 }
 
-function ChatBubble({ message }: { message: Message }) {
+function ChatBubble({ message, onRun }: { message: Message; onRun?: (cmd: string) => void }) {
   if (message.role === "system") {
     return (
       <div className="flex justify-center">
@@ -248,7 +359,7 @@ function ChatBubble({ message }: { message: Message }) {
       >
         {/* Iris replies are markdown (bold, lists, code, links); the CEO's own
             messages are shown verbatim. */}
-        {isUser ? message.content : <Markdown source={message.content} />}
+        {isUser ? message.content : <Markdown source={message.content} onRun={onRun} />}
       </div>
     </div>
   );
@@ -344,4 +455,37 @@ function createdNote(taskId: string, title: string): Message {
 }
 function errMsg(e: unknown): string {
   return e instanceof Error ? e.message : String(e);
+}
+
+// A pending task proposal is ephemeral UI state that the engine doesn't persist, so
+// it survives reload / conversation-switch in localStorage, keyed by conversation.
+const PROPOSAL_KEY = (convId: string) => `bureau.proposal.${convId}`;
+function loadProposal(convId: string | null): TaskProposal | null {
+  if (!convId || typeof window === "undefined") return null;
+  try {
+    const raw = window.localStorage.getItem(PROPOSAL_KEY(convId));
+    return raw ? (JSON.parse(raw) as TaskProposal) : null;
+  } catch {
+    return null;
+  }
+}
+function persistProposal(convId: string | null, proposal: TaskProposal | null): void {
+  if (!convId || typeof window === "undefined") return;
+  try {
+    if (proposal) window.localStorage.setItem(PROPOSAL_KEY(convId), JSON.stringify(proposal));
+    else window.localStorage.removeItem(PROPOSAL_KEY(convId));
+  } catch {
+    /* storage unavailable — proposal just won't persist */
+  }
+}
+
+/** Read a File as UTF-8 text or a data URL (base64), promisified. */
+function readFile(file: File, mode: "text" | "dataURL"): Promise<string> {
+  return new Promise((resolve, reject) => {
+    const r = new FileReader();
+    r.onerror = () => reject(r.error ?? new Error("read failed"));
+    r.onload = () => resolve(String(r.result ?? ""));
+    if (mode === "text") r.readAsText(file);
+    else r.readAsDataURL(file);
+  });
 }

@@ -96,6 +96,18 @@ async function handle(deps: HttpDeps, req: IncomingMessage, res: ServerResponse)
     return;
   }
 
+  // DELETE /api/git/branch?name=<branch>[&projectId=] — delete ONE bureau/task-* branch.
+  if (method === "DELETE" && path === "/api/git/branch") {
+    const name = url.searchParams.get("name");
+    const projectId = url.searchParams.get("projectId") ?? undefined;
+    if (!name) {
+      sendJson(res, 400, { error: "missing branch name" });
+      return;
+    }
+    sendJson(res, 200, await deps.orchestrator.deleteBranch(name, projectId));
+    return;
+  }
+
   // GET /api/usage — token spend + cost. ?days=N limits the window (default all-time).
   if (method === "GET" && path === "/api/usage") {
     const daysRaw = url.searchParams.get("days");
@@ -134,27 +146,35 @@ async function handle(deps: HttpDeps, req: IncomingMessage, res: ServerResponse)
     }
     if (method === "POST") {
       const body = SaveNoteRequestDto.parse(await readJson(req));
-      sendJson(res, 201, await deps.orchestrator.saveNote(body.title, body.body));
+      sendJson(res, 201, await deps.orchestrator.saveNote(body.title, body.body, body.expectedPath));
       return;
     }
   }
 
   // GET /api/memory/:path — one note (path may contain slashes, e.g. notes/foo.md).
-  if (method === "GET" && path.startsWith("/api/memory/")) {
+  // DELETE /api/memory/:path — remove a note.
+  if (path.startsWith("/api/memory/")) {
     const notePath = decodeURIComponent(path.slice("/api/memory/".length));
-    const note = await deps.orchestrator.getNote(notePath);
-    if (!note) {
-      sendJson(res, 404, { error: "note not found" });
+    if (method === "GET") {
+      const note = await deps.orchestrator.getNote(notePath);
+      if (!note) {
+        sendJson(res, 404, { error: "note not found" });
+        return;
+      }
+      sendJson(res, 200, note);
       return;
     }
-    sendJson(res, 200, note);
-    return;
+    if (method === "DELETE") {
+      await deps.orchestrator.deleteNote(notePath);
+      res.writeHead(204).end();
+      return;
+    }
   }
 
   // POST /api/chat — a conversation turn with Iris, scoped to a project + thread.
   if (method === "POST" && path === "/api/chat") {
     const body = SendMessageRequestDto.parse(await readJson(req));
-    sendJson(res, 200, await deps.orchestrator.chat(body.content, body.projectId, body.conversationId));
+    sendJson(res, 200, await deps.orchestrator.chat(body.content, body.projectId, body.conversationId, body.attachments));
     return;
   }
 
@@ -215,6 +235,14 @@ async function handle(deps: HttpDeps, req: IncomingMessage, res: ServerResponse)
       return;
     }
     sendJson(res, 200, taskMatch[2] ? { diff: latestDiff(task) } : toTaskDetail(task));
+    return;
+  }
+
+  // DELETE /api/tasks/:id — stop (if live) and permanently remove the task.
+  const deleteMatch = /^\/api\/tasks\/([^/]+)$/.exec(path);
+  if (method === "DELETE" && deleteMatch) {
+    await deps.orchestrator.deleteTask(decodeURIComponent(deleteMatch[1]!));
+    res.writeHead(204).end();
     return;
   }
 

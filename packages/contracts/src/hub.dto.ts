@@ -16,6 +16,8 @@ export const WorkerStatusDto = z.object({
   live: z.boolean(),
   /** How many steps of this capability are running right now, across all tasks. */
   runningStepCount: z.number().int().nonnegative(),
+  /** How many steps of this capability have COMPLETED across all tasks (lifetime). */
+  totalStepCount: z.number().int().nonnegative(),
 });
 
 /** One entry in the company-wide activity feed — a flattened task decision-log row. */

@@ -21,10 +21,13 @@ export const NoteDto = NoteSummaryDto.extend({
   body: z.string(),
 });
 
-/** Create or update a free-form CEO/Iris note. */
+/** Create or update a free-form CEO/Iris note. `expectedPath` is the path of the
+ *  note being edited — saving refuses to overwrite a DIFFERENT existing note (409),
+ *  so two distinct titles that slug to the same path never silently clobber. */
 export const SaveNoteRequestDto = z.object({
   title: z.string().min(1),
   body: z.string(),
+  expectedPath: z.string().optional(),
 });
 
 export type NoteKind = z.infer<typeof NoteKindSchema>;

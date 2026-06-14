@@ -18,10 +18,14 @@ import {
   FlaskConical,
   ScanEye,
   FileText,
+  ListTodo,
+  FolderGit2,
+  ArrowRight,
   type LucideIcon,
 } from "lucide-react";
 import type { Hub, WorkerStatus, Activity } from "@bureau/contracts";
-import { getHub } from "../../lib/api";
+import { getHub, listTasks } from "../../lib/api";
+import { useProjects } from "../../lib/useProjects";
 import { useEngineEvents } from "../../lib/useEngineEvents";
 import { cn } from "../../lib/utils";
 
@@ -40,13 +44,16 @@ const ACTIVITY: Record<string, { icon: LucideIcon; tint: string }> = {
   step_completed: { icon: CheckCircle2, tint: "text-green-500" },
   step_failed: { icon: XCircle, tint: "text-red-500" },
   gate_opened: { icon: CircleDot, tint: "text-amber-500" },
+  gate_reopened: { icon: Pencil, tint: "text-amber-500" },
   gate_decided: { icon: Check, tint: "text-green-500" },
   task_completed: { icon: GitMerge, tint: "text-green-500" },
   task_aborted: { icon: XCircle, tint: "text-red-500" },
 };
 
 export default function HubPage() {
+  const { active } = useProjects();
   const [hub, setHub] = useState<Hub | null>(null);
+  const [total, setTotal] = useState<number | null>(null);
   // Latest live output line per capability, from step_progress events.
   const [liveChunk, setLiveChunk] = useState<Record<string, string>>({});
   const alive = useRef(true);
@@ -59,10 +66,16 @@ export default function HubPage() {
 
   const load = useCallback(async () => {
     try {
-      const h = await getHub();
-      if (alive.current) setHub(h);
+      const [h, tasks] = await Promise.all([getHub(), listTasks()]);
+      if (alive.current) {
+        setHub(h);
+        setTotal(tasks.length);
+      }
     } catch {
-      if (alive.current) setHub({ workers: [], activity: [], awaitingReview: [], stats: { activeTasks: 0, awaitingReview: 0, merged: 0 } });
+      if (alive.current) {
+        setHub({ workers: [], activity: [], awaitingReview: [], stats: { activeTasks: 0, awaitingReview: 0, merged: 0 } });
+        setTotal(0);
+      }
     }
   }, []);
 
@@ -97,11 +110,40 @@ export default function HubPage() {
 
   return (
     <div className="h-full overflow-y-auto p-6">
+      {/* Waiting on you — the decision surface, first and actionable. */}
+      {hub.awaitingReview.length > 0 && (
+        <div className="mb-5 overflow-hidden rounded-xl border border-amber-500/40 bg-amber-500/5">
+          <div className="flex items-center gap-2 border-b border-amber-500/20 px-4 py-3 text-sm font-semibold">
+            <CircleDot className="h-4 w-4 text-amber-500" /> Waiting on you
+            <span className="ml-1 rounded-full bg-amber-500/15 px-1.5 py-0.5 text-xs text-amber-600 dark:text-amber-400">{hub.awaitingReview.length}</span>
+          </div>
+          <div className="divide-y divide-amber-500/10">
+            {hub.awaitingReview.map((t) => (
+              <Link key={t.id} href={`/tasks/${t.id}`} className="flex items-center gap-3 px-4 py-3 transition-colors hover:bg-amber-500/5">
+                <span className="min-w-0 flex-1 truncate text-sm font-medium">{t.goal}</span>
+                <span className="hidden text-xs text-muted-foreground sm:inline">{t.repoOwner}/{t.repoName}</span>
+                <span className="inline-flex items-center gap-1 rounded-md bg-amber-500/15 px-2 py-1 text-xs font-medium text-amber-700 dark:text-amber-300">
+                  Review &amp; merge <ArrowRight className="h-3 w-3" />
+                </span>
+              </Link>
+            ))}
+          </div>
+        </div>
+      )}
+
       {/* Pulse */}
-      <div className="mb-5 grid gap-3 sm:grid-cols-3">
-        <Pulse icon={Loader2} label="Active now" value={hub.stats.activeTasks} tint="text-blue-400" ring="bg-blue-500/10" spin={hub.stats.activeTasks > 0} />
-        <Pulse icon={CircleDot} label="Waiting on you" value={hub.stats.awaitingReview} tint="text-amber-500" ring="bg-amber-500/10" />
-        <Pulse icon={GitMerge} label="Merged" value={hub.stats.merged} tint="text-green-500" ring="bg-green-500/10" />
+      <div className="mb-5 grid gap-3 sm:grid-cols-2 lg:grid-cols-4">
+        <Stat icon={ListTodo} label="Total tasks" value={total ?? 0} tint="text-foreground" ring="bg-muted" />
+        <Stat
+          icon={hub.stats.activeTasks > 0 ? Loader2 : ActivityIcon}
+          label="Active now"
+          value={hub.stats.activeTasks}
+          tint="text-blue-400"
+          ring="bg-blue-500/10"
+          spin={hub.stats.activeTasks > 0}
+        />
+        <Stat icon={CircleDot} label="Awaiting review" value={hub.stats.awaitingReview} tint="text-amber-500" ring="bg-amber-500/10" />
+        <Stat icon={GitMerge} label="Merged" value={hub.stats.merged} tint="text-green-500" ring="bg-green-500/10" />
       </div>
 
       {/* Worker floor */}
@@ -129,7 +171,7 @@ export default function HubPage() {
                 Nothing yet — start a task from the Assistant and watch the floor light up.
               </div>
             ) : (
-              <div className="divide-y">
+              <div className="max-h-[560px] divide-y overflow-y-auto">
                 {hub.activity.map((a) => (
                   <ActivityRow key={a.id} a={a} />
                 ))}
@@ -138,27 +180,38 @@ export default function HubPage() {
           </div>
         </div>
 
-        {/* Waiting on you */}
-        <div>
-          <div className="overflow-hidden rounded-xl border bg-card">
-            <div className="flex items-center gap-2 border-b px-4 py-3 text-sm font-semibold">
-              <CircleDot className="h-4 w-4 text-amber-500" /> Waiting on you
-            </div>
-            {hub.awaitingReview.length === 0 ? (
-              <p className="px-4 py-10 text-center text-sm text-muted-foreground">Nothing needs your decision.</p>
-            ) : (
-              <div className="divide-y">
-                {hub.awaitingReview.map((t) => (
-                  <Link key={t.id} href={`/tasks/${t.id}`} className="block px-4 py-3 transition-colors hover:bg-muted/50">
-                    <div className="truncate text-sm font-medium">{t.goal}</div>
-                    <div className="mt-0.5 text-xs text-muted-foreground">
-                      {t.repoOwner}/{t.repoName} · review &amp; merge
-                    </div>
-                  </Link>
-                ))}
+        {/* Active project + quick start */}
+        <div className="space-y-3">
+          <div className="rounded-xl border bg-card p-4">
+            <div className="mb-2 text-xs font-medium uppercase tracking-wide text-muted-foreground">Active project</div>
+            {active ? (
+              <div className="flex items-center gap-2.5">
+                <div className="flex h-9 w-9 items-center justify-center rounded-lg bg-primary/10 text-primary">
+                  <FolderGit2 className="h-5 w-5" />
+                </div>
+                <div className="min-w-0">
+                  <div className="truncate text-sm font-semibold">
+                    {active.owner}/{active.name}
+                  </div>
+                  <div className="text-xs text-muted-foreground">{active.baseBranch}</div>
+                </div>
               </div>
+            ) : (
+              <Link href="/projects" className="text-sm text-primary hover:underline">
+                Choose a project →
+              </Link>
             )}
           </div>
+          <Link
+            href="/"
+            className="flex items-center gap-2.5 rounded-xl border border-primary/30 bg-primary/5 p-4 transition-colors hover:bg-primary/10"
+          >
+            <Sparkles className="h-5 w-5 text-primary" />
+            <div>
+              <div className="text-sm font-semibold">Talk to Iris</div>
+              <div className="text-xs text-muted-foreground">Describe what you need and start a task.</div>
+            </div>
+          </Link>
         </div>
       </div>
     </div>
@@ -213,7 +266,7 @@ function ActivityRow({ a }: { a: Activity }) {
   );
 }
 
-function Pulse({
+function Stat({
   icon: Icon,
   label,
   value,
@@ -229,7 +282,7 @@ function Pulse({
   spin?: boolean;
 }) {
   return (
-    <div className="rounded-xl border bg-card p-4">
+    <div className="rounded-xl border bg-card p-4 transition-colors hover:border-foreground/15">
       <div className="flex items-center gap-3">
         <div className={cn("flex h-10 w-10 shrink-0 items-center justify-center rounded-lg", ring)}>
           <Icon className={cn("h-5 w-5", tint, spin && "animate-spin")} />

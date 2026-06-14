@@ -3,16 +3,16 @@
 import Link from "next/link";
 import { usePathname } from "next/navigation";
 import {
-  LayoutDashboard,
   Sparkles,
   ListTodo,
   FolderGit2,
   GitBranch,
   Bot,
   Settings,
-  Activity,
+  LayoutDashboard,
   BrainCircuit,
   BarChart3,
+  Terminal,
   type LucideIcon,
 } from "lucide-react";
 import { cn } from "../lib/utils";
@@ -25,12 +25,12 @@ interface NavItem {
 }
 
 const NAV: NavItem[] = [
-  { title: "Overview", href: "/overview", icon: LayoutDashboard },
+  { title: "Hub", href: "/hub", icon: LayoutDashboard },
   { title: "Assistant", href: "/", icon: Sparkles },
-  { title: "Hub", href: "/hub", icon: Activity },
   { title: "Projects", href: "/projects", icon: FolderGit2 },
   { title: "Tasks", href: "/tasks", icon: ListTodo },
   { title: "Git", href: "/git", icon: GitBranch },
+  { title: "Terminal", href: "/terminal", icon: Terminal },
   { title: "Agents", href: "/agents", icon: Bot },
   { title: "Memory", href: "/memory", icon: BrainCircuit },
   { title: "Metrics", href: "/metrics", icon: BarChart3 },

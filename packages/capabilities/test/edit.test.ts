@@ -1,6 +1,10 @@
 import { describe, it, expect } from "vitest";
 
-import { EditCapability, buildEditPrompt, summarize, EDIT_TOOLS } from "../src/edit.js";
+import { mkdtemp, writeFile, readFile as readFileFs, access } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+
+import { EditCapability, buildEditPrompt, summarize, EDIT_TOOLS, applyFileOps, OPS_FILE } from "../src/edit.js";
 import type { CapabilityInput } from "../src/capability.js";
 import type { Provider, Message, SendOptions } from "@bureau/providers";
 import type { Step, StepId } from "@bureau/core";
@@ -62,7 +66,7 @@ describe("EditCapability.execute (agentic)", () => {
     expect(call.opts?.tools).toEqual([...EDIT_TOOLS]);
     expect(call.opts?.tools).toContain("Edit");
     expect(call.opts?.tools).toContain("Write");
-    expect(call.opts?.tools).not.toContain("Bash"); // no arbitrary command execution
+    expect(call.opts?.tools).not.toContain("Bash"); // NO shell — deletes/renames go through the .bureau-ops manifest
 
     const userMsg = call.messages.find((m) => m.role === "user")!.content;
     expect(userMsg).toContain("add a greeting module");
@@ -79,6 +83,31 @@ describe("EditCapability.execute (agentic)", () => {
 
     expect(chunks).toEqual(["worked on it.\nAdded the module."]); // the live stream was delivered
     expect(out.summary).toBe("Added the module."); // and the final summary still parsed
+  });
+});
+
+describe("applyFileOps (Bureau-side delete/rename — no shell, no injection surface)", () => {
+  it("applies delete + rename from the manifest, REJECTS traversal, and removes the manifest", async () => {
+    const wt = await mkdtemp(join(tmpdir(), "bureau-edit-test-"));
+    await writeFile(join(wt, "DELETE_ME.md"), "x");
+    await writeFile(join(wt, "old.txt"), "y");
+    // includes a path-traversal op that MUST be ignored, never escaping the worktree.
+    await writeFile(join(wt, OPS_FILE), "delete DELETE_ME.md\nrename old.txt -> sub/new.txt\ndelete ../../../etc/passwd\n# a comment\n");
+
+    const applied = await applyFileOps(wt);
+
+    await expect(access(join(wt, "DELETE_ME.md"))).rejects.toThrow(); // deleted
+    await expect(access(join(wt, "old.txt"))).rejects.toThrow(); // moved away
+    expect(await readFileFs(join(wt, "sub", "new.txt"), "utf8")).toBe("y"); // renamed into a new subdir
+    await expect(access(join(wt, OPS_FILE))).rejects.toThrow(); // manifest removed (never in the diff)
+    expect(applied.some((a) => a.includes("deleted DELETE_ME.md"))).toBe(true);
+    expect(applied.some((a) => a.includes("renamed old.txt"))).toBe(true);
+    expect(applied.some((a) => a.toLowerCase().includes("passwd"))).toBe(false); // traversal never applied
+  });
+
+  it("is a safe no-op when the worker wrote no manifest", async () => {
+    const wt = await mkdtemp(join(tmpdir(), "bureau-edit-test-"));
+    expect(await applyFileOps(wt)).toEqual([]);
   });
 });
 

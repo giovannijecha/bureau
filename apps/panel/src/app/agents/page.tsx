@@ -111,7 +111,17 @@ function WorkerCard({ w }: { w: WorkerStatus }) {
             </span>
           </div>
           <p className="mt-1.5 text-sm text-muted-foreground">{persona.desc}</p>
-          {w.live && <p className="mt-1.5 text-xs font-medium text-blue-400">Working now — {w.runningStepCount} step{w.runningStepCount === 1 ? "" : "s"}</p>}
+          <div className="mt-2 flex flex-wrap items-center gap-x-3 gap-y-1 text-xs">
+            <span className="text-muted-foreground">
+              <span className="font-semibold text-foreground/80">{w.totalStepCount}</span> step{w.totalStepCount === 1 ? "" : "s"} run
+            </span>
+            {w.live && (
+              <span className="inline-flex items-center gap-1 font-medium text-blue-400">
+                <span className="h-1.5 w-1.5 animate-pulse rounded-full bg-blue-400" />
+                running now ({w.runningStepCount})
+              </span>
+            )}
+          </div>
         </div>
       </div>
     </div>

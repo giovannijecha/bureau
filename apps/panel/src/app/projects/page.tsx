@@ -2,10 +2,24 @@
 
 import { useCallback, useEffect, useRef, useState } from "react";
 import Link from "next/link";
-import { FolderGit2, GitBranch, Check, ExternalLink, Loader2, CircleDot, GitMerge, ListTodo } from "lucide-react";
-import type { TaskSummary } from "@bureau/contracts";
+import { useRouter } from "next/navigation";
+import {
+  FolderGit2,
+  GitBranch,
+  Check,
+  ExternalLink,
+  Loader2,
+  CircleDot,
+  GitMerge,
+  ListTodo,
+  Activity,
+  Sparkles,
+  Terminal as TerminalIcon,
+  GitCommit,
+} from "lucide-react";
+import type { TaskSummary, GitInfo } from "@bureau/contracts";
 import { useProjects } from "../../lib/useProjects";
-import { listTasks } from "../../lib/api";
+import { listTasks, getGitInfo } from "../../lib/api";
 import { useEngineEvents } from "../../lib/useEngineEvents";
 import { cn } from "../../lib/utils";
 
@@ -21,8 +35,10 @@ function emptyStats(): RepoStats {
 }
 
 export default function ProjectsPage() {
+  const router = useRouter();
   const { projects, active, setActiveId, error } = useProjects();
   const [byRepo, setByRepo] = useState<Map<string, RepoStats>>(new Map());
+  const [gitById, setGitById] = useState<Record<string, GitInfo | null>>({});
   const alive = useRef(true);
   useEffect(() => {
     alive.current = true;
@@ -31,7 +47,7 @@ export default function ProjectsPage() {
     };
   }, []);
 
-  const load = useCallback(async () => {
+  const loadStats = useCallback(async () => {
     try {
       const tasks = await listTasks();
       const map = new Map<string, RepoStats>();
@@ -50,17 +66,41 @@ export default function ProjectsPage() {
     }
   }, []);
 
+  // Each project's live git state (clone status + last commit), fetched in parallel.
+  const loadGit = useCallback(async (ids: string[]) => {
+    await Promise.all(
+      ids.map(async (id) => {
+        try {
+          const g = await getGitInfo(id);
+          if (alive.current) setGitById((prev) => ({ ...prev, [id]: g }));
+        } catch {
+          if (alive.current) setGitById((prev) => ({ ...prev, [id]: null }));
+        }
+      })
+    );
+  }, []);
+
   useEffect(() => {
-    void load();
-  }, [load]);
+    void loadStats();
+  }, [loadStats]);
+
+  useEffect(() => {
+    if (projects.length > 0) void loadGit(projects.map((p) => p.id));
+  }, [projects, loadGit]);
 
   useEngineEvents((e) => {
-    if (e.type === "task_updated") void load();
+    if (e.type === "task_updated") void loadStats();
   });
+
+  // Scope a project active, then jump to a section.
+  function go(projectId: string, href: string) {
+    setActiveId(projectId);
+    router.push(href);
+  }
 
   return (
     <div className="h-full overflow-y-auto p-6">
-      <p className="mb-4 text-sm text-muted-foreground">Pick the active project — Iris scopes her work to it in the Assistant.</p>
+      <p className="mb-4 text-sm text-muted-foreground">Your repositories — pick the active one (Iris scopes her work to it) and jump straight in.</p>
 
       {error && <p className="mb-4 text-sm text-destructive">⚠ {error}</p>}
 
@@ -70,10 +110,12 @@ export default function ProjectsPage() {
           No projects configured. Set <code className="font-mono">BUREAU_PROJECTS</code> on the engine.
         </div>
       ) : (
-        <div className="grid gap-3 sm:grid-cols-2">
+        <div className="grid gap-3 lg:grid-cols-2">
           {projects.map((p) => {
             const isActive = active?.id === p.id;
             const stats = byRepo.get(`${p.owner}/${p.name}`) ?? emptyStats();
+            const git = gitById[p.id];
+            const lastCommit = git?.commits[0];
             return (
               <div key={p.id} className={cn("flex flex-col rounded-xl border bg-card p-4 transition-colors", isActive && "border-primary/40")}>
                 <div className="flex items-start gap-3">
@@ -91,46 +133,68 @@ export default function ProjectsPage() {
                         </span>
                       )}
                     </div>
-                    <div className="mt-1 flex items-center gap-1.5 text-xs text-muted-foreground">
-                      <GitBranch className="h-3 w-3" />
-                      {p.baseBranch}
+                    <div className="mt-1 flex flex-wrap items-center gap-x-2.5 gap-y-1 text-xs text-muted-foreground">
+                      <span className="inline-flex items-center gap-1">
+                        <GitBranch className="h-3 w-3" />
+                        {git?.branch ?? p.baseBranch}
+                      </span>
+                      <span
+                        className={cn(
+                          "inline-flex items-center gap-1",
+                          git === undefined ? "" : git?.cloned ? "text-green-500" : "text-amber-500"
+                        )}
+                      >
+                        <span className={cn("h-1.5 w-1.5 rounded-full", git === undefined ? "bg-muted-foreground/40" : git?.cloned ? "bg-green-500" : "bg-amber-500")} />
+                        {git === undefined ? "checking…" : git?.cloned ? "cloned" : "not cloned"}
+                      </span>
                     </div>
                   </div>
                 </div>
 
+                {/* Last commit */}
+                {lastCommit && (
+                  <div className="mt-3 flex items-center gap-2 rounded-lg border bg-muted/30 px-3 py-2 text-xs">
+                    <GitCommit className="h-3.5 w-3.5 shrink-0 text-muted-foreground" />
+                    <code className="shrink-0 font-mono text-primary">{lastCommit.hash}</code>
+                    <span className="min-w-0 flex-1 truncate text-muted-foreground">{lastCommit.subject}</span>
+                  </div>
+                )}
+
                 {/* Live task stats for this repo */}
-                <div className="mt-4 grid grid-cols-4 gap-2 rounded-lg border bg-muted/30 p-2.5 text-center">
+                <div className="mt-3 grid grid-cols-4 gap-2 rounded-lg border bg-muted/30 p-2.5 text-center">
                   <Mini icon={ListTodo} value={stats.total} label="tasks" tint="text-foreground" />
-                  <Mini icon={Loader2} value={stats.active} label="active" tint="text-blue-400" spin={stats.active > 0} />
+                  <Mini icon={stats.active > 0 ? Loader2 : Activity} value={stats.active} label="active" tint="text-blue-400" spin={stats.active > 0} />
                   <Mini icon={CircleDot} value={stats.awaiting} label="review" tint="text-amber-500" />
                   <Mini icon={GitMerge} value={stats.merged} label="merged" tint="text-green-500" />
                 </div>
 
-                <div className="mt-4 flex items-center gap-2">
-                  {isActive ? (
-                    <span className="inline-flex items-center gap-1.5 text-xs font-medium text-primary">
-                      <Check className="h-3.5 w-3.5" />
-                      Selected in Assistant
-                    </span>
-                  ) : (
+                {/* Quick actions — each scopes this project active first. */}
+                <div className="mt-3 flex flex-wrap items-center gap-1.5">
+                  <Action icon={Sparkles} label="Chat" onClick={() => go(p.id, "/")} primary />
+                  <Action icon={GitBranch} label="Git" onClick={() => go(p.id, "/git")} />
+                  <Action icon={TerminalIcon} label="Terminal" onClick={() => go(p.id, "/terminal")} />
+                  <Action icon={ListTodo} label="Tasks" onClick={() => go(p.id, "/tasks")} />
+                  {!isActive && (
                     <button
                       onClick={() => setActiveId(p.id)}
-                      className="inline-flex h-8 items-center gap-1.5 rounded-md border bg-background px-3 text-xs font-medium transition-colors hover:bg-accent"
+                      className="ml-auto inline-flex h-7 items-center gap-1.5 rounded-md border bg-background px-2.5 text-xs font-medium transition-colors hover:bg-accent"
                     >
                       Set active
                     </button>
                   )}
-                  <Link href="/tasks" className="text-xs text-muted-foreground transition-colors hover:text-foreground">
-                    View tasks
-                  </Link>
+                  {isActive && (
+                    <span className="ml-auto inline-flex items-center gap-1 text-xs font-medium text-primary">
+                      <Check className="h-3.5 w-3.5" /> Active
+                    </span>
+                  )}
                   <a
                     href={`https://github.com/${p.owner}/${p.name}`}
                     target="_blank"
                     rel="noreferrer"
-                    className="ml-auto inline-flex items-center gap-1 text-xs text-muted-foreground transition-colors hover:text-foreground"
+                    title="Open on GitHub"
+                    className="inline-flex h-7 w-7 items-center justify-center rounded-md border bg-background text-muted-foreground transition-colors hover:bg-accent hover:text-foreground"
                   >
-                    GitHub
-                    <ExternalLink className="h-3 w-3" />
+                    <ExternalLink className="h-3.5 w-3.5" />
                   </a>
                 </div>
               </div>
@@ -139,6 +203,21 @@ export default function ProjectsPage() {
         </div>
       )}
     </div>
+  );
+}
+
+function Action({ icon: Icon, label, onClick, primary = false }: { icon: typeof ListTodo; label: string; onClick: () => void; primary?: boolean }) {
+  return (
+    <button
+      onClick={onClick}
+      className={cn(
+        "inline-flex h-7 items-center gap-1.5 rounded-md px-2.5 text-xs font-medium transition-colors",
+        primary ? "bg-primary text-primary-foreground hover:bg-primary/90" : "border bg-background hover:bg-accent"
+      )}
+    >
+      <Icon className={cn("h-3.5 w-3.5", primary ? "" : "text-primary")} />
+      {label}
+    </button>
   );
 }
 
