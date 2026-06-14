@@ -63,7 +63,11 @@ function fakeOrchestrator(
       | "listNotes"
       | "getNote"
       | "saveNote"
-      | "usageSummary",
+      | "usageSummary"
+      | "listNotifications"
+      | "unreadNotifications"
+      | "markNotificationRead"
+      | "markAllNotificationsRead",
       (...a: never[]) => unknown
     >
   > = {}
@@ -78,6 +82,10 @@ function fakeOrchestrator(
     hub: over.hub ?? (() => ({ workers: [], activity: [], awaitingReview: [], stats: { activeTasks: 0, awaitingReview: 0, merged: 0 } })),
     usageSummary:
       over.usageSummary ?? (() => ({ totals: { inputTokens: 0, outputTokens: 0, costUsd: 0, events: 0 }, byScope: [], byModel: [], byDay: [], sinceDay: null })),
+    listNotifications: over.listNotifications ?? (() => []),
+    unreadNotifications: over.unreadNotifications ?? (() => 0),
+    markNotificationRead: over.markNotificationRead ?? (() => {}),
+    markAllNotificationsRead: over.markAllNotificationsRead ?? (() => {}),
     listNotes: over.listNotes ?? (async () => []),
     getNote: over.getNote ?? (async () => null),
     saveNote:
@@ -216,6 +224,37 @@ describe("GET /api/usage", () => {
     expect(res.status).toBe(200);
     expect((await res.json()).totals.events).toBe(1);
     expect(seen).toEqual([7]);
+  });
+});
+
+describe("notifications", () => {
+  it("GET /api/notifications returns items + unread count", async () => {
+    const orchestrator = fakeOrchestrator({
+      listNotifications: (() => [{ id: "n1", kind: "review", taskId: "t1", subject: "Ready", body: "b", createdAt: "t", readAt: null }]) as never,
+      unreadNotifications: (() => 1) as never,
+    });
+    const url = await listen({ orchestrator, store: fakeStore(), messages: fakeMessages() });
+    const res = await fetch(`${url}/api/notifications`);
+    expect(res.status).toBe(200);
+    const body = (await res.json()) as { items: { id: string }[]; unread: number };
+    expect(body.items[0]!.id).toBe("n1");
+    expect(body.unread).toBe(1);
+  });
+
+  it("POST /api/notifications/:id/read acknowledges one → 204", async () => {
+    const read: string[] = [];
+    const orchestrator = fakeOrchestrator({ markNotificationRead: ((id: string) => read.push(id)) as never });
+    const url = await listen({ orchestrator, store: fakeStore(), messages: fakeMessages() });
+    expect((await post(`${url}/api/notifications/n1/read`, {})).status).toBe(204);
+    expect(read).toEqual(["n1"]);
+  });
+
+  it("POST /api/notifications/read-all → 204", async () => {
+    let all = false;
+    const orchestrator = fakeOrchestrator({ markAllNotificationsRead: (() => void (all = true)) as never });
+    const url = await listen({ orchestrator, store: fakeStore(), messages: fakeMessages() });
+    expect((await post(`${url}/api/notifications/read-all`, {})).status).toBe(204);
+    expect(all).toBe(true);
   });
 });
 

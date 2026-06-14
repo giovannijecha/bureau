@@ -90,6 +90,27 @@ async function handle(deps: HttpDeps, req: IncomingMessage, res: ServerResponse)
     return;
   }
 
+  // GET /api/notifications — the CEO's inbox (newest first) + unread count.
+  if (method === "GET" && path === "/api/notifications") {
+    sendJson(res, 200, { items: deps.orchestrator.listNotifications(), unread: deps.orchestrator.unreadNotifications() });
+    return;
+  }
+
+  // POST /api/notifications/read-all — acknowledge everything.
+  if (method === "POST" && path === "/api/notifications/read-all") {
+    deps.orchestrator.markAllNotificationsRead();
+    res.writeHead(204).end();
+    return;
+  }
+
+  // POST /api/notifications/:id/read — acknowledge one.
+  const notifMatch = /^\/api\/notifications\/([^/]+)\/read$/.exec(path);
+  if (method === "POST" && notifMatch) {
+    deps.orchestrator.markNotificationRead(decodeURIComponent(notifMatch[1]!));
+    res.writeHead(204).end();
+    return;
+  }
+
   // GET /api/memory — vault notes (optionally ?q= filtered).  POST creates a note.
   if (path === "/api/memory") {
     if (method === "GET") {

@@ -18,9 +18,9 @@ import {
   type CommitAuthor,
 } from "@bureau/vcs";
 import { readNote, writeNote, listNotes, noteModifiedAt } from "@bureau/mind";
-import { MessageRepo, ConversationRepo, UsageRepo, type MessageRow, type ConversationRow } from "@bureau/db";
-import type { Message, Conversation, Note, NoteSummary, UsageSummary } from "@bureau/contracts";
-import type { VcsPort, WorktreeRef, MessageLog, ConversationStore, MemoryPort, UsagePort, UsageEvent } from "./ports.js";
+import { MessageRepo, ConversationRepo, UsageRepo, NotificationRepo, type MessageRow, type ConversationRow, type NotificationRow } from "@bureau/db";
+import type { Message, Conversation, Note, NoteSummary, UsageSummary, Notification, NotificationKind } from "@bureau/contracts";
+import type { VcsPort, WorktreeRef, MessageLog, ConversationStore, MemoryPort, UsagePort, UsageEvent, NotificationStore } from "./ports.js";
 import { noteSummary, notePath } from "./memory.js";
 import { summarizeUsage } from "./usage.js";
 
@@ -206,6 +206,31 @@ export class DbUsage implements UsagePort {
   summary(sinceDay: string | null): UsageSummary {
     return summarizeUsage(this.repo.since(sinceDay ?? undefined), sinceDay);
   }
+}
+
+/** Durable CEO notifications backed by the SQLite notifications table. */
+export class DbNotifications implements NotificationStore {
+  constructor(private readonly repo: NotificationRepo) {}
+
+  create(n: Notification): void {
+    this.repo.create({ ...n });
+  }
+  list(limit?: number): Notification[] {
+    return this.repo.list(limit).map(toNotification);
+  }
+  unreadCount(): number {
+    return this.repo.unreadCount();
+  }
+  markRead(id: string, readAt: string): void {
+    this.repo.markRead(id, readAt);
+  }
+  markAllRead(readAt: string): void {
+    this.repo.markAllRead(readAt);
+  }
+}
+
+function toNotification(r: NotificationRow): Notification {
+  return { id: r.id, kind: r.kind as NotificationKind, taskId: r.taskId, subject: r.subject, body: r.body, createdAt: r.createdAt, readAt: r.readAt };
 }
 
 /** System Memory backed by an on-disk markdown vault (@bureau/mind). */

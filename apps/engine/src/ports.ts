@@ -3,7 +3,7 @@
 // the canPush security gate — fully unit-testable with no DB, git, or network.
 
 import type { Task, TaskId } from "@bureau/core";
-import type { WsEvent, Message, Conversation, Note, NoteSummary, UsageSummary } from "@bureau/contracts";
+import type { WsEvent, Message, Conversation, Note, NoteSummary, UsageSummary, Notification } from "@bureau/contracts";
 
 export interface TaskStore {
   save(task: Task): void;
@@ -79,6 +79,15 @@ export interface UsageEvent {
 export interface UsagePort {
   record(event: UsageEvent): void;
   summary(sinceDay: string | null): UsageSummary;
+}
+
+/** Durable CEO notifications (review-ready / merged / failed). */
+export interface NotificationStore {
+  create(notification: Notification): void;
+  list(limit?: number): Notification[];
+  unreadCount(): number;
+  markRead(id: string, readAt: string): void;
+  markAllRead(readAt: string): void;
 }
 
 /** System Memory — the org's durable vault of markdown notes (task journals +

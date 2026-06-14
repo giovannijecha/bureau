@@ -9,7 +9,8 @@ import type { WsEvent, Message, TaskProposal, Conversation } from "@bureau/contr
 
 import { Orchestrator } from "../src/orchestrator.js";
 import { ProjectRegistry, type ProjectConfig } from "../src/projects.js";
-import type { TaskStore, VcsPort, MessageLog, ConversationStore, MemoryPort, UsagePort, UsageEvent } from "../src/ports.js";
+import type { TaskStore, VcsPort, MessageLog, ConversationStore, MemoryPort, UsagePort, UsageEvent, NotificationStore } from "../src/ports.js";
+import type { Notification } from "@bureau/contracts";
 import { toTaskDetail } from "../src/summary.js";
 
 // ── fakes ────────────────────────────────────────────────────────────────────
@@ -130,6 +131,21 @@ function fakeMemory() {
   return { memory, journals, saved };
 }
 
+function fakeNotifications() {
+  const items: Notification[] = [];
+  const store: NotificationStore = {
+    create: (n) => void items.unshift(n),
+    list: () => items,
+    unreadCount: () => items.filter((n) => n.readAt === null).length,
+    markRead: (id, at) => {
+      const i = items.findIndex((n) => n.id === id);
+      if (i >= 0) items[i] = { ...items[i]!, readAt: at };
+    },
+    markAllRead: (at) => items.forEach((n, i) => (items[i] = { ...n, readAt: at })),
+  };
+  return { store, items };
+}
+
 function fakeUsage() {
   const events: UsageEvent[] = [];
   const usage: UsagePort = {
@@ -175,6 +191,7 @@ let store: TaskStore;
 let vcs: ReturnType<typeof fakeVcs>;
 let mem: ReturnType<typeof fakeMemory>;
 let usage: ReturnType<typeof fakeUsage>;
+let notifs: ReturnType<typeof fakeNotifications>;
 let prov: ReturnType<typeof fakeProvider>;
 let captured: CapabilityInput | null;
 let events: WsEvent[];
@@ -197,6 +214,7 @@ beforeEach(() => {
   vcs = fakeVcs();
   mem = fakeMemory();
   usage = fakeUsage();
+  notifs = fakeNotifications();
   prov = fakeProvider(JSON.stringify({ reply: "Sure!", proposal: PROPOSAL }));
   const registry = new CapabilityRegistry();
   captured = null;
@@ -222,6 +240,7 @@ beforeEach(() => {
     conversations: fakeConversations(),
     memory: mem.memory,
     usage: usage.usage,
+    notifications: notifs.store,
     ids: () => `id-${++n}`,
     clock: () => "2026-06-13T00:00:00.000Z",
   });
@@ -256,6 +275,9 @@ describe("projects", () => {
       events: { emit: () => {} },
       messages: fakeMessages(),
       conversations: fakeConversations(),
+      memory: fakeMemory().memory,
+      usage: fakeUsage().usage,
+      notifications: fakeNotifications().store,
       ids: () => `r-${++k}`,
       clock: () => "2026-06-13T00:00:00.000Z",
     });
@@ -418,6 +440,17 @@ describe("confirmMerge", () => {
     expect(detail.merged).toBe(true);
     expect(detail.mergeError).toBeNull();
     expect(detail.prUrl).toBe("https://github.com/acme/widget/pull/1");
+  });
+
+  it("notifies the CEO when a task parks for review and again when it merges", async () => {
+    const draft = orch.createTask(PROPOSAL);
+    await orch.startTask(draft.id);
+    await orch.settle(draft.id);
+    expect(notifs.items.some((nft) => nft.kind === "review" && nft.taskId === draft.id)).toBe(true);
+
+    await orch.confirmMerge(draft.id);
+    expect(notifs.items.some((nft) => nft.kind === "merged" && nft.taskId === draft.id)).toBe(true);
+    expect(orch.unreadNotifications()).toBeGreaterThan(0);
   });
 
   it("records token usage for each worker step (scoped to the capability + task)", async () => {

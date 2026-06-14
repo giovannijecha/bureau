@@ -13,6 +13,7 @@ import type {
   NoteSummary,
   Note,
   UsageSummary,
+  Notification,
 } from "@bureau/contracts";
 
 export const ENGINE_URL = process.env.NEXT_PUBLIC_ENGINE_URL ?? "http://localhost:4319";
@@ -52,6 +53,21 @@ export async function getHub(): Promise<Hub> {
 export async function getUsage(days?: number): Promise<UsageSummary> {
   const suffix = days && days > 0 ? `?days=${days}` : "";
   return json(await fetch(`${BASE}/api/usage${suffix}`));
+}
+
+/** The CEO's notification inbox + unread count. */
+export async function listNotifications(): Promise<{ items: Notification[]; unread: number }> {
+  return json(await fetch(`${BASE}/api/notifications`));
+}
+
+export async function markNotificationRead(id: string): Promise<void> {
+  const res = await postJson(`/api/notifications/${encodeURIComponent(id)}/read`);
+  if (!res.ok) throw new Error(`engine responded ${res.status}`);
+}
+
+export async function markAllNotificationsRead(): Promise<void> {
+  const res = await postJson("/api/notifications/read-all");
+  if (!res.ok) throw new Error(`engine responded ${res.status}`);
 }
 
 /** System Memory — the vault's notes (task journals + CEO/Iris notes). */
