@@ -2,25 +2,43 @@
 
 import { useCallback, useEffect, useRef, useState } from "react";
 import Link from "next/link";
-import { ListTodo, CircleDot, Loader2, CheckCircle2, FolderGit2, ArrowRight, Sparkles } from "lucide-react";
-import type { TaskSummary } from "@bureau/contracts";
-import { listTasks } from "../../lib/api";
+import {
+  ListTodo,
+  CircleDot,
+  Loader2,
+  GitMerge,
+  FolderGit2,
+  ArrowRight,
+  Sparkles,
+  Activity as ActivityIcon,
+  Plus,
+  Play,
+  CheckCircle2,
+  XCircle,
+  Check,
+  type LucideIcon,
+} from "lucide-react";
+import type { Hub, TaskSummary, Activity } from "@bureau/contracts";
+import { getHub, listTasks } from "../../lib/api";
 import { useProjects } from "../../lib/useProjects";
 import { useEngineEvents } from "../../lib/useEngineEvents";
 import { cn } from "../../lib/utils";
 
-const STATUS_COLOR: Record<string, string> = {
-  awaiting_human: "border-amber-500/40 text-amber-500",
-  completed: "border-green-500/40 text-green-500",
-  executing: "border-blue-500/40 text-blue-400",
-  planning: "border-blue-500/40 text-blue-400",
-  created: "border-border text-muted-foreground",
-  aborted: "border-red-500/40 text-red-500",
+const ACTIVITY: Record<string, { icon: LucideIcon; tint: string }> = {
+  task_created: { icon: Plus, tint: "text-muted-foreground" },
+  step_started: { icon: Play, tint: "text-blue-400" },
+  step_completed: { icon: CheckCircle2, tint: "text-green-500" },
+  step_failed: { icon: XCircle, tint: "text-red-500" },
+  gate_opened: { icon: CircleDot, tint: "text-amber-500" },
+  gate_decided: { icon: Check, tint: "text-green-500" },
+  task_completed: { icon: GitMerge, tint: "text-green-500" },
+  task_aborted: { icon: XCircle, tint: "text-red-500" },
 };
 
 export default function OverviewPage() {
   const { active } = useProjects();
-  const [tasks, setTasks] = useState<TaskSummary[] | null>(null);
+  const [hub, setHub] = useState<Hub | null>(null);
+  const [total, setTotal] = useState<number | null>(null);
   const alive = useRef(true);
   useEffect(() => {
     alive.current = true;
@@ -31,10 +49,16 @@ export default function OverviewPage() {
 
   const load = useCallback(async () => {
     try {
-      const list = await listTasks();
-      if (alive.current) setTasks(list);
+      const [h, tasks] = await Promise.all([getHub(), listTasks()]);
+      if (alive.current) {
+        setHub(h);
+        setTotal(tasks.length);
+      }
     } catch {
-      if (alive.current) setTasks([]);
+      if (alive.current) {
+        setHub({ workers: [], activity: [], awaitingReview: [], stats: { activeTasks: 0, awaitingReview: 0, merged: 0 } });
+        setTotal(0);
+      }
     }
   }, []);
 
@@ -43,58 +67,64 @@ export default function OverviewPage() {
   }, [load]);
 
   useEngineEvents((e) => {
-    if (e.type === "task_updated") void load();
+    if (e.type === "task_updated" || e.type === "gate_opened" || e.type === "step_completed") void load();
   });
 
-  const list = tasks ?? [];
-  const running = list.filter((t) => t.status === "planning" || t.status === "executing").length;
-  const awaiting = list.filter((t) => t.status === "awaiting_human").length;
-  const completed = list.filter((t) => t.status === "completed").length;
-  const recent = [...list].reverse().slice(0, 6);
+  const stats = hub?.stats ?? { activeTasks: 0, awaitingReview: 0, merged: 0 };
 
   return (
     <div className="h-full overflow-y-auto p-6">
+      {/* Waiting on you — the decision surface, first. */}
+      {hub && hub.awaitingReview.length > 0 && (
+        <div className="mb-5 overflow-hidden rounded-xl border border-amber-500/40 bg-amber-500/5">
+          <div className="flex items-center gap-2 border-b border-amber-500/20 px-4 py-3 text-sm font-semibold">
+            <CircleDot className="h-4 w-4 text-amber-500" /> Waiting on you
+            <span className="ml-1 rounded-full bg-amber-500/15 px-1.5 py-0.5 text-xs text-amber-600 dark:text-amber-400">{hub.awaitingReview.length}</span>
+          </div>
+          <div className="divide-y divide-amber-500/10">
+            {hub.awaitingReview.map((t) => (
+              <Link key={t.id} href={`/tasks/${t.id}`} className="flex items-center gap-3 px-4 py-3 transition-colors hover:bg-amber-500/5">
+                <span className="min-w-0 flex-1 truncate text-sm font-medium">{t.goal}</span>
+                <span className="hidden text-xs text-muted-foreground sm:inline">{t.repoOwner}/{t.repoName}</span>
+                <span className="inline-flex items-center gap-1 rounded-md bg-amber-500/15 px-2 py-1 text-xs font-medium text-amber-700 dark:text-amber-300">
+                  Review &amp; merge <ArrowRight className="h-3 w-3" />
+                </span>
+              </Link>
+            ))}
+          </div>
+        </div>
+      )}
+
       <div className="mb-5 grid gap-3 sm:grid-cols-2 lg:grid-cols-4">
-        <Stat icon={ListTodo} label="Total tasks" value={list.length} tint="text-foreground" ring="bg-muted" />
-        <Stat icon={Loader2} label="Running" value={running} tint="text-blue-400" ring="bg-blue-500/10" spin={running > 0} />
-        <Stat icon={CircleDot} label="Awaiting review" value={awaiting} tint="text-amber-500" ring="bg-amber-500/10" />
-        <Stat icon={CheckCircle2} label="Completed" value={completed} tint="text-green-500" ring="bg-green-500/10" />
+        <Stat icon={ListTodo} label="Total tasks" value={total ?? 0} tint="text-foreground" ring="bg-muted" />
+        <Stat icon={Loader2} label="Active now" value={stats.activeTasks} tint="text-blue-400" ring="bg-blue-500/10" spin={stats.activeTasks > 0} />
+        <Stat icon={CircleDot} label="Awaiting review" value={stats.awaitingReview} tint="text-amber-500" ring="bg-amber-500/10" />
+        <Stat icon={GitMerge} label="Merged" value={stats.merged} tint="text-green-500" ring="bg-green-500/10" />
       </div>
 
       <div className="grid gap-5 lg:grid-cols-3">
-        {/* Recent tasks */}
+        {/* Activity */}
         <div className="lg:col-span-2">
           <div className="overflow-hidden rounded-xl border bg-card">
             <div className="flex items-center justify-between border-b px-4 py-3">
-              <span className="text-sm font-semibold">Recent tasks</span>
-              <Link href="/tasks" className="inline-flex items-center gap-1 text-xs text-muted-foreground hover:text-foreground">
-                All tasks <ArrowRight className="h-3 w-3" />
+              <span className="flex items-center gap-2 text-sm font-semibold">
+                <ActivityIcon className="h-4 w-4 text-primary" /> Recent activity
+              </span>
+              <Link href="/hub" className="inline-flex items-center gap-1 text-xs text-muted-foreground hover:text-foreground">
+                Open Hub <ArrowRight className="h-3 w-3" />
               </Link>
             </div>
-            {tasks === null ? (
+            {hub === null ? (
               <p className="px-4 py-10 text-center text-sm text-muted-foreground">Loading…</p>
-            ) : recent.length === 0 ? (
+            ) : hub.activity.length === 0 ? (
               <div className="flex flex-col items-center gap-2 px-4 py-10 text-center text-sm text-muted-foreground">
                 <Sparkles className="h-6 w-6 opacity-40" />
-                No tasks yet — start one from the Assistant.
+                No activity yet — start a task from the Assistant.
               </div>
             ) : (
               <div className="divide-y">
-                {recent.map((t) => (
-                  <Link key={t.id} href={`/tasks/${t.id}`} className="flex items-center gap-3 px-4 py-3 transition-colors hover:bg-muted/50">
-                    <span className="min-w-0 flex-1 truncate text-sm">{t.goal}</span>
-                    <span className="hidden shrink-0 text-xs text-muted-foreground sm:inline">
-                      {t.repoOwner}/{t.repoName}
-                    </span>
-                    <span
-                      className={cn(
-                        "shrink-0 rounded-full border px-2 py-0.5 text-xs font-medium",
-                        STATUS_COLOR[t.status] ?? "border-border text-muted-foreground"
-                      )}
-                    >
-                      {t.status.replace(/_/g, " ")}
-                    </span>
-                  </Link>
+                {hub.activity.slice(0, 8).map((a) => (
+                  <ActivityRow key={a.id} a={a} />
                 ))}
               </div>
             )}
@@ -139,6 +169,20 @@ export default function OverviewPage() {
   );
 }
 
+function ActivityRow({ a }: { a: Activity }) {
+  const meta = ACTIVITY[a.kind] ?? { icon: ActivityIcon, tint: "text-muted-foreground" };
+  const Icon = meta.icon;
+  return (
+    <Link href={`/tasks/${a.taskId}`} className="flex items-start gap-3 px-4 py-2.5 transition-colors hover:bg-muted/50">
+      <Icon className={cn("mt-0.5 h-4 w-4 shrink-0", meta.tint)} />
+      <div className="min-w-0 flex-1">
+        <div className="truncate text-sm">{a.label}</div>
+        <div className="truncate text-xs text-muted-foreground">{a.taskGoal}</div>
+      </div>
+    </Link>
+  );
+}
+
 function Stat({
   icon: Icon,
   label,
@@ -147,7 +191,7 @@ function Stat({
   ring,
   spin = false,
 }: {
-  icon: typeof ListTodo;
+  icon: LucideIcon;
   label: string;
   value: number;
   tint: string;
