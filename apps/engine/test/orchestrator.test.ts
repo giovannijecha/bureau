@@ -7,7 +7,7 @@ import type { CapabilityInput } from "@bureau/capabilities";
 import type { Provider } from "@bureau/providers";
 import type { WsEvent, Message, TaskProposal, Conversation } from "@bureau/contracts";
 
-import { Orchestrator } from "../src/orchestrator.js";
+import { Orchestrator, buildRepoContext } from "../src/orchestrator.js";
 import { ProjectRegistry, type ProjectConfig } from "../src/projects.js";
 import type { TaskStore, VcsPort, MessageLog, ConversationStore, MemoryPort, UsagePort, UsageEvent, NotificationStore } from "../src/ports.js";
 import type { Notification } from "@bureau/contracts";
@@ -328,6 +328,26 @@ describe("chat", () => {
     const res = await orch.chat("hi");
     expect(res.reply.content).toBe("Tell me more.");
     expect(res.proposal).toBeUndefined();
+  });
+});
+
+describe("buildRepoContext (Iris's git awareness)", () => {
+  it("summarizes branches (separating Bureau task branches) + recent commits for Iris", () => {
+    const ctx = buildRepoContext({
+      cloned: true,
+      branch: "main",
+      branches: ["main", "feature-x", "bureau/task-abc"],
+      commits: [{ hash: "abc1234", author: "Gio", date: "2026-06-14", subject: "Cold War README" }],
+    });
+    expect(ctx).toContain("Checked-out branch: main");
+    expect(ctx).toContain("feature-x");
+    expect(ctx).toContain("leftover Bureau task branch"); // task branches called out separately
+    expect(ctx).toContain("abc1234 Cold War README");
+    expect(ctx).toMatch(/do NOT claim you can.?t see/i); // tells Iris she HAS this info
+  });
+
+  it("is empty when the repo isn't cloned", () => {
+    expect(buildRepoContext({ cloned: false, branch: null, branches: [], commits: [] })).toBe("");
   });
 });
 

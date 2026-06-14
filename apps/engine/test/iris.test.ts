@@ -93,4 +93,22 @@ describe("irisRespond", () => {
     expect(t.proposal).toBeUndefined();
     expect(sendCount()).toBe(2);
   });
+
+  it("injects the repo git context into the system prompt so Iris knows the branches", async () => {
+    let systemSeen = "";
+    const provider: Provider = {
+      name: "fake",
+      authStrategy: { kind: "api-key", isAvailable: () => true },
+      async send(messages) {
+        systemSeen = messages.find((m) => m.role === "system")?.content ?? "";
+        return { content: JSON.stringify({ reply: "ok" }), inputTokens: 0, outputTokens: 0 };
+      },
+      async stream() {
+        return { content: "", inputTokens: 0, outputTokens: 0 };
+      },
+    };
+    await irisRespond(provider, user("which branches exist?"), PROJECT, undefined, "Repository git state: Branches: main, feature-x");
+    expect(systemSeen).toContain("Repository git state");
+    expect(systemSeen).toContain("feature-x");
+  });
 });
