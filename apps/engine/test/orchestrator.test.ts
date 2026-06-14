@@ -255,6 +255,12 @@ beforeEach(() => {
       return { artifacts: [], summary: "Looks good." };
     },
   });
+  registry.register({
+    kind: "plan",
+    async execute() {
+      return { artifacts: [], summary: "PLAN: edit README.md and add a Status section." };
+    },
+  });
   events = [];
   let n = 0;
   orch = new Orchestrator({
@@ -581,6 +587,25 @@ describe("decideGate", () => {
     await orch.confirmMerge(draft.id);
     expect(notifs.items.some((nft) => nft.kind === "merged" && nft.taskId === draft.id)).toBe(true);
     expect(orch.unreadNotifications()).toBeGreaterThan(0);
+  });
+
+  it("threads an earlier step's summary into a later step's context (plan → edit)", async () => {
+    const proposal: TaskProposal = {
+      title: "Plan then edit",
+      summary: "plan the change, then make it",
+      steps: [
+        { capability: "plan", description: "plan the change" },
+        { capability: "edit", description: "make the change" },
+      ],
+    };
+    const draft = orch.createTask(proposal);
+    captured = null;
+    await orch.startTask(draft.id);
+    await orch.settle(draft.id);
+
+    // the edit step (captured last) saw the planner's plan in its context
+    expect(captured?.context).toContain("PLAN: edit README.md and add a Status section.");
+    expect(captured?.context).toContain("Planner"); // labelled by persona
   });
 
   it("hands a review step the current diff and persists its verdict as the step summary", async () => {
