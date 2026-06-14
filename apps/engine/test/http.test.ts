@@ -58,6 +58,7 @@ function fakeOrchestrator(
       | "startTask"
       | "stopTask"
       | "confirmMerge"
+      | "decideGate"
       | "listProjects"
       | "hub"
       | "gitInfo"
@@ -80,6 +81,7 @@ function fakeOrchestrator(
     startTask: over.startTask ?? (async () => makeTask()),
     stopTask: over.stopTask ?? (async () => makeTask()),
     confirmMerge: over.confirmMerge ?? (async () => makeTask()),
+    decideGate: over.decideGate ?? (async () => makeTask()),
     hub: over.hub ?? (() => ({ workers: [], activity: [], awaitingReview: [], stats: { activeTasks: 0, awaitingReview: 0, merged: 0 } })),
     gitInfo:
       over.gitInfo ??
@@ -200,6 +202,22 @@ describe("task actions", () => {
     const url = await listen({ orchestrator, store: fakeStore(), messages: fakeMessages() });
     const res = await post(`${url}/api/tasks/t1/merge`, {});
     expect(res.status).toBe(409);
+  });
+
+  it("POST /api/tasks/:id/gate validates the body and routes to decideGate", async () => {
+    const seen: { decision: string; notes?: string }[] = [];
+    const orchestrator = fakeOrchestrator({
+      decideGate: (async (_id: string, decision: string, notes?: string) => {
+        seen.push({ decision, notes });
+        return makeTask();
+      }) as never,
+    });
+    const url = await listen({ orchestrator, store: fakeStore(), messages: fakeMessages() });
+
+    expect((await post(`${url}/api/tasks/t1/gate`, { decision: "request_changes", notes: "fix it" })).status).toBe(200);
+    expect(seen).toEqual([{ decision: "request_changes", notes: "fix it" }]);
+    // a bad decision enum is rejected by the DTO → 400
+    expect((await post(`${url}/api/tasks/t1/gate`, { decision: "maybe" })).status).toBe(400);
   });
 });
 

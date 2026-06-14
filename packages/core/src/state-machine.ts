@@ -24,6 +24,7 @@ export type TransitionEvent =
   | { type: "FAIL_STEP"; stepId: StepId; reason: string }
   | { type: "OPEN_GATE"; gateId: GateId }
   | { type: "DECIDE_GATE"; gateId: GateId; decision: HumanDecision; notes?: string }
+  | { type: "REOPEN_FOR_CHANGES"; gateId: GateId }
   | { type: "COMPLETE_TASK" }
   | { type: "ABORT_TASK"; reason: string };
 
@@ -175,6 +176,46 @@ export function transition(task: Task, event: TransitionEvent): Task {
         return { ...newGate, status: "executing", updatedAt: now };
       }
       return newGate;
+    }
+
+    case "REOPEN_FOR_CHANGES": {
+      // The CEO asked for changes (a request_changes decision). Re-open the loop:
+      // reset the gate + its step to pending and resume executing so the worker
+      // revises the diff. ONLY legal on a gate the CEO marked request_changes —
+      // a plain "rejected" gate stays terminal, so reject can never be re-run.
+      assertNotTerminal(task, event.type);
+      assertStatus(task, "awaiting_human", event.type);
+      const gate = requireGate(task, event.gateId);
+      if (gate.status !== "rejected" || gate.decision !== "request_changes") {
+        throw new TransitionError(
+          `Gate ${event.gateId} is not awaiting changes (status: ${gate.status}, decision: ${gate.decision ?? "none"})`
+        );
+      }
+      // Rebuild the gate + EVERY step as FRESH objects (omit decision/decidedAt/
+      // notes, startedAt/completedAt/summary/failureReason) so the whole pipeline
+      // re-runs with the CEO's feedback, and no stale decision can ever survive
+      // into a later canPush() check — under exactOptionalPropertyTypes, omitted ≠
+      // undefined. The whole pipeline (not just the gated step) re-runs: a change
+      // request is about the overall diff, and re-running only the last step would
+      // re-run the read-only review, not the edit that produced the change.
+      const resetGate: Gate = { id: gate.id, kind: gate.kind, status: "pending" };
+      const resetStep = (s: Step): Step => ({
+        id: s.id,
+        capability: s.capability,
+        description: s.description,
+        acceptanceCriteria: s.acceptanceCriteria,
+        status: "pending",
+        ...(s.gateAfter !== undefined ? { gateAfter: s.gateAfter } : {}),
+        artifactIds: s.artifactIds,
+      });
+      return {
+        ...task,
+        status: "executing",
+        updatedAt: now,
+        gates: task.gates.map((g) => (g.id === gate.id ? resetGate : g)),
+        steps: task.steps.map(resetStep),
+        decisionLog: [...task.decisionLog, { type: "gate_reopened", at: now, gateId: gate.id }],
+      };
     }
 
     case "COMPLETE_TASK":

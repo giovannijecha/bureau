@@ -17,9 +17,11 @@ import {
   ChevronDown,
   ChevronRight,
   ExternalLink,
+  Pencil,
+  Send,
 } from "lucide-react";
 import type { TaskDetail, PipelineStep } from "@bureau/contracts";
-import { getTask, startTask, stopTask, mergeTask } from "../../../lib/api";
+import { getTask, startTask, stopTask, mergeTask, decideGate } from "../../../lib/api";
 import { useEngineEvents } from "../../../lib/useEngineEvents";
 import { cn } from "../../../lib/utils";
 
@@ -70,6 +72,15 @@ export default function TaskDetailPage({ params }: { params: { id: string } }) {
     if (e.type === "step_progress") {
       setLive((prev) => ({ ...prev, [e.stepId]: (prev[e.stepId] ?? "") + e.chunk }));
       return;
+    }
+    // A step (re)starting begins a fresh stream — drop its stale buffer so a
+    // request-changes re-run doesn't glue the first run's output onto the new one.
+    if (e.type === "step_started") {
+      setLive((prev) => {
+        const next = { ...prev };
+        delete next[e.stepId];
+        return next;
+      });
     }
     void load();
   });
@@ -237,21 +248,7 @@ export default function TaskDetailPage({ params }: { params: { id: string } }) {
         <div className="overflow-hidden rounded-xl border bg-card">
           <div className="border-b px-4 py-3 text-sm font-semibold">Branch changes</div>
           <DiffView diff={task.diff} />
-          {reviewable && (
-            <div className="flex items-center justify-between gap-4 border-t bg-muted/40 px-4 py-3">
-              <span className="text-sm text-muted-foreground">
-                Confirming squash-merges into <code className="font-mono">main</code> and deletes the branch.
-              </span>
-              <button
-                onClick={() => act(() => mergeTask(id))}
-                disabled={busy}
-                className="inline-flex h-9 shrink-0 items-center gap-1.5 rounded-md bg-green-600 px-3.5 text-sm font-medium text-white transition-colors hover:bg-green-700 disabled:opacity-50"
-              >
-                {busy ? <Loader2 className="h-4 w-4 animate-spin" /> : <GitMerge className="h-4 w-4" />}
-                Confirm &amp; merge to main
-              </button>
-            </div>
-          )}
+          {reviewable && <ReviewBar id={id} busy={busy} act={act} />}
         </div>
       )}
 
@@ -323,6 +320,87 @@ function WorkerOutput({ status, summary, live }: { status: PipelineStep["status"
     <p className="ml-9 mt-2 rounded-md border bg-muted/40 px-2.5 py-1.5 text-xs text-muted-foreground">
       <span className="font-medium text-foreground/70">Reported:</span> {text}
     </p>
+  );
+}
+
+/** The review decision bar — approve & merge, request changes (re-run with notes),
+ *  or reject (abort). request_changes flips the task to executing → the running
+ *  banner + live stream take over with no extra wiring. */
+function ReviewBar({ id, busy, act }: { id: string; busy: boolean; act: (fn: () => Promise<TaskDetail>) => void }) {
+  const [requesting, setRequesting] = useState(false);
+  const [notes, setNotes] = useState("");
+  const trimmed = notes.trim();
+
+  if (requesting) {
+    return (
+      <div className="space-y-2 border-t bg-muted/40 px-4 py-3">
+        <label className="text-sm font-medium">What should change?</label>
+        <textarea
+          value={notes}
+          onChange={(e) => setNotes(e.target.value)}
+          rows={3}
+          autoFocus
+          placeholder="Describe the changes you want — the worker will revise the diff and bring it back for review."
+          className="w-full resize-y rounded-md border bg-background p-2.5 text-sm outline-none focus:border-primary"
+        />
+        <div className="flex justify-end gap-2">
+          <button
+            onClick={() => {
+              setRequesting(false);
+              setNotes("");
+            }}
+            className="inline-flex h-9 items-center rounded-md border bg-background px-3.5 text-sm font-medium transition-colors hover:bg-accent"
+          >
+            Cancel
+          </button>
+          <button
+            onClick={() => act(() => decideGate(id, "request_changes", trimmed))}
+            disabled={busy || trimmed === ""}
+            className="inline-flex h-9 items-center gap-1.5 rounded-md bg-amber-600 px-3.5 text-sm font-medium text-white transition-colors hover:bg-amber-700 disabled:opacity-50"
+          >
+            {busy ? <Loader2 className="h-4 w-4 animate-spin" /> : <Send className="h-4 w-4" />}
+            Send request
+          </button>
+        </div>
+      </div>
+    );
+  }
+
+  return (
+    <div className="flex flex-wrap items-center justify-between gap-3 border-t bg-muted/40 px-4 py-3">
+      <span className="text-sm text-muted-foreground">
+        Approve to squash-merge into <code className="font-mono">main</code>, ask for changes, or reject.
+      </span>
+      <div className="flex shrink-0 flex-wrap gap-2">
+        <button
+          onClick={() => act(() => decideGate(id, "approved"))}
+          disabled={busy}
+          className="inline-flex h-9 items-center gap-1.5 rounded-md bg-green-600 px-3.5 text-sm font-medium text-white transition-colors hover:bg-green-700 disabled:opacity-50"
+        >
+          {busy ? <Loader2 className="h-4 w-4 animate-spin" /> : <GitMerge className="h-4 w-4" />}
+          Approve &amp; merge
+        </button>
+        <button
+          onClick={() => setRequesting(true)}
+          disabled={busy}
+          className="inline-flex h-9 items-center gap-1.5 rounded-md border bg-background px-3.5 text-sm font-medium transition-colors hover:bg-accent disabled:opacity-50"
+        >
+          <Pencil className="h-4 w-4" />
+          Request changes
+        </button>
+        <button
+          onClick={() => {
+            if (typeof window !== "undefined" && !window.confirm("Reject this task? It will be aborted and its branch discarded.")) return;
+            act(() => decideGate(id, "rejected"));
+          }}
+          disabled={busy}
+          className="inline-flex h-9 items-center gap-1.5 rounded-md px-3.5 text-sm font-medium text-red-500 transition-colors hover:bg-red-500/10 disabled:opacity-50"
+        >
+          <XCircle className="h-4 w-4" />
+          Reject
+        </button>
+      </div>
+    </div>
   );
 }
 

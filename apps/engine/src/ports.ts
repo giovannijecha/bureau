@@ -25,8 +25,15 @@ export interface VcsPort {
   syncClone(): Promise<void>;
   /** Create the task's isolated worktree + branch. */
   setupWorktree(branch: string, worktreePath: string): Promise<WorktreeRef>;
-  /** The uncommitted diff (incl. new files) — what the human reviews. */
+  /** The uncommitted diff (incl. new files) — what the human reviews on the first run. */
   workingDiff(worktreePath: string): Promise<string>;
+  /** The committed branch diff vs `base` (e.g. "origin/main") — the full PR-shaped
+   *  change. Used to re-review after a request-changes re-run, where the working
+   *  diff would show only the increment over the first commit. */
+  branchDiff(worktreePath: string, base: string): Promise<string>;
+  /** The full change vs `base` INCLUDING uncommitted work — what a mid-pipeline
+   *  review worker should see (correct on both the first run and a re-run). */
+  reviewDiff(worktreePath: string, base: string): Promise<string>;
   /** Stage + commit; returns false if there was nothing to commit. */
   commitAll(worktreePath: string, message: string): Promise<boolean>;
   /** Push the branch. Iris calls this ONLY after canPush()===true. */

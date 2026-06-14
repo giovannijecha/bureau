@@ -791,6 +791,105 @@ describe("end-to-end happy path", () => {
 });
 
 // ===========================================================================
+// REOPEN_FOR_CHANGES — the request-changes re-run loop. Must never open the wall.
+// ===========================================================================
+
+/** A task parked awaiting the CEO, on a gate the CEO marked request_changes. */
+function awaitingChanges(): Task {
+  return makeTask({
+    status: "awaiting_human",
+    steps: [
+      makeStep({ id: sid("s1"), capability: "edit", status: "completed", startedAt: STALE, completedAt: STALE, summary: "edited v1" }),
+      makeStep({ id: sid("s2"), capability: "review", status: "blocked_on_gate", gateAfter: gid("g-pr"), startedAt: STALE, completedAt: STALE, summary: "looked ok" }),
+    ],
+    gates: [makeGate({ id: gid("g-pr"), kind: "pr_approval", status: "rejected", decision: "request_changes", decidedAt: STALE, notes: "fix the bug" })],
+  });
+}
+
+describe("transition() — REOPEN_FOR_CHANGES", () => {
+  it("resets the gate + ALL steps to pending, clears their fields, and resumes executing", () => {
+    const task = awaitingChanges();
+    const next = transition(task, { type: "REOPEN_FOR_CHANGES", gateId: gid("g-pr") });
+
+    expect(next.status).toBe("executing");
+    // gate reset to pending with decision/decidedAt/notes CLEARED (omitted, not undefined)
+    const gate = next.gates[0]!;
+    expect(gate.status).toBe("pending");
+    expect("decision" in gate).toBe(false);
+    expect("decidedAt" in gate).toBe(false);
+    expect("notes" in gate).toBe(false);
+    // every step back to pending, completedAt/summary/startedAt cleared, gateAfter kept
+    for (const s of next.steps) {
+      expect(s.status).toBe("pending");
+      expect("completedAt" in s).toBe(false);
+      expect("summary" in s).toBe(false);
+      expect("startedAt" in s).toBe(false);
+    }
+    expect(next.steps[1]!.gateAfter).toBe("g-pr"); // gate linkage preserved
+    expect(next.decisionLog.at(-1)).toMatchObject({ type: "gate_reopened", gateId: "g-pr" });
+    expect(canPush(next)).toBe(false); // executing + pending gate → wall closed
+  });
+
+  it("does not mutate the input task", () => {
+    const task = awaitingChanges();
+    const before = JSON.parse(JSON.stringify(task));
+    transition(task, { type: "REOPEN_FOR_CHANGES", gateId: gid("g-pr") });
+    expect(task).toEqual(before);
+  });
+
+  it("is ILLEGAL on a plainly rejected gate — a real reject stays terminal", () => {
+    const task = makeTask({
+      status: "awaiting_human",
+      steps: [makeStep({ id: sid("s1"), status: "blocked_on_gate", gateAfter: gid("g-pr") })],
+      gates: [makeGate({ id: gid("g-pr"), status: "rejected", decision: "rejected", decidedAt: STALE })],
+    });
+    expectIllegal(task, { type: "REOPEN_FOR_CHANGES", gateId: gid("g-pr") });
+  });
+
+  it("is ILLEGAL on an approved / open / pending gate", () => {
+    for (const g of [
+      makeGate({ id: gid("g-pr"), status: "approved", decision: "approved", decidedAt: STALE }),
+      makeGate({ id: gid("g-pr"), status: "open" }),
+      makeGate({ id: gid("g-pr"), status: "pending" }),
+    ]) {
+      const task = makeTask({ status: "awaiting_human", gates: [g] });
+      expectIllegal(task, { type: "REOPEN_FOR_CHANGES", gateId: gid("g-pr") });
+    }
+  });
+
+  it("is ILLEGAL from any non-awaiting_human status, and on a terminal task", () => {
+    for (const status of ALL_STATUSES.filter((s) => s !== "awaiting_human")) {
+      const task = makeTask({
+        status,
+        gates: [makeGate({ id: gid("g-pr"), status: "rejected", decision: "request_changes", decidedAt: STALE })],
+      });
+      expectIllegal(task, { type: "REOPEN_FOR_CHANGES", gateId: gid("g-pr") });
+    }
+  });
+
+  it("is ILLEGAL on an unknown gate id", () => {
+    expectIllegal(awaitingChanges(), { type: "REOPEN_FOR_CHANGES", gateId: gid("nope") });
+  });
+
+  it("the full loop keeps the wall closed until a fresh approve+complete after the re-run", () => {
+    // request_changes → reopen → re-run the step → re-open the gate → still closed;
+    // only a NEW approve on the new diff + COMPLETE_TASK opens it.
+    let task = transition(awaitingChanges(), { type: "REOPEN_FOR_CHANGES", gateId: gid("g-pr") });
+    expect(canPush(task)).toBe(false);
+    for (const s of task.steps) {
+      task = transition(task, { type: "START_STEP", stepId: s.id });
+      task = transition(task, { type: "COMPLETE_STEP", stepId: s.id });
+    }
+    expect(canPush(task)).toBe(false); // last step blocked_on_gate, gate pending
+    task = transition(task, { type: "OPEN_GATE", gateId: gid("g-pr") });
+    expect(canPush(task)).toBe(false); // gate open
+    task = transition(task, { type: "DECIDE_GATE", gateId: gid("g-pr"), decision: "approved" });
+    task = transition(task, { type: "COMPLETE_TASK" });
+    expect(canPush(task)).toBe(true); // ✅ only now
+  });
+});
+
+// ===========================================================================
 // canPush() — fail-closed hardening: a gate clears the wall only when BOTH its
 // status AND its recorded decision are "approved". These cases all describe
 // status/decision desyncs and corrupt records that must NEVER open the wall.

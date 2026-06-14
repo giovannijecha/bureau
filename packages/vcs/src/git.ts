@@ -209,6 +209,24 @@ export async function getWorkingDiff(
   return run(runner, "git", ["-C", worktreePath, "diff", "--cached"]);
 }
 
+/**
+ * The FULL change vs `base`, including uncommitted work — `git add -A` then
+ * `git diff --cached <base>` (index vs base). Unlike getWorkingDiff (index vs
+ * HEAD), this is correct for a reviewer running MID-pipeline after earlier steps
+ * have already committed: it always shows the whole PR-shaped change from base,
+ * on both the first run (nothing committed yet) and a re-run (v1 committed + v2
+ * staged). `base` is a ref like "origin/main".
+ */
+export async function getReviewDiff(
+  worktreePath: string,
+  base: string,
+  runner: Runner = defaultRunner
+): Promise<string> {
+  assertSafeRef(base, "review diff base");
+  await run(runner, "git", ["-C", worktreePath, "add", "-A"]);
+  return run(runner, "git", ["-C", worktreePath, "diff", "--cached", base]);
+}
+
 /** Push the branch to origin. Call ONLY after canPush() === true (engine-gated). */
 export async function push(
   worktreePath: string,

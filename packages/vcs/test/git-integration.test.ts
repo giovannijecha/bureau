@@ -5,7 +5,7 @@ import { join } from "node:path";
 
 import { defaultRunner, run } from "../src/exec.js";
 import { createWorktree, removeWorktree } from "../src/worktree.js";
-import { cloneRepo, commitAll, currentBranch, freshBase, syncToBase, getDiff, getWorkingDiff, recentCommits, remoteBranches, headBranch } from "../src/git.js";
+import { cloneRepo, commitAll, currentBranch, freshBase, syncToBase, getDiff, getWorkingDiff, getReviewDiff, recentCommits, remoteBranches, headBranch } from "../src/git.js";
 
 // These tests drive the REAL git binary against throwaway repos under the OS
 // temp dir — deterministic and fully offline (no network, no GitHub).
@@ -97,6 +97,38 @@ describe("syncToBase — refresh the clone's working tree to live origin", () =>
     await gitIn(lonely, ["add", "-A"]);
     await gitIn(lonely, ["commit", "-m", "x"]);
     expect(await syncToBase(lonely, "main")).toBe(false); // no origin → keep what we have
+  });
+});
+
+describe("getDiff — cumulative across a re-run (the request-changes loop)", () => {
+  it("shows the FULL change vs base after a second commit, not just the increment", async () => {
+    // Mirrors a request_changes re-run: commit v1, then commit v2 on the same branch.
+    // The branch diff vs base must show BOTH files (the whole PR-shaped change), which
+    // a working diff (index vs HEAD) would miss after v1 is committed.
+    const wtPath = join(tmpRoot, "wt-rerun");
+    await createWorktree(canonical, "task/rerun", wtPath);
+    writeFileSync(join(wtPath, "v1.ts"), "export const v1 = 1;\n");
+    await commitAll(wtPath, "v1");
+    writeFileSync(join(wtPath, "v2.ts"), "export const v2 = 2;\n");
+    await commitAll(wtPath, "v2 (revision)");
+
+    const diff = await getDiff(wtPath, "main"); // git diff main...HEAD — merge-base relative
+    expect(diff).toContain("v1.ts"); // the first commit is still in the diff…
+    expect(diff).toContain("v2.ts"); // …alongside the revision — the FULL change
+  });
+
+  it("getReviewDiff shows the full change vs base INCLUDING uncommitted work", async () => {
+    // The mid-pipeline reviewer's view on a re-run: v1 committed, v2 still in the
+    // working tree. getReviewDiff must show BOTH (a working diff would miss v1).
+    const wtPath = join(tmpRoot, "wt-reviewdiff");
+    await createWorktree(canonical, "task/reviewdiff", wtPath);
+    writeFileSync(join(wtPath, "v1.ts"), "export const v1 = 1;\n");
+    await commitAll(wtPath, "v1");
+    writeFileSync(join(wtPath, "v2.ts"), "export const v2 = 2;\n"); // uncommitted
+
+    const diff = await getReviewDiff(wtPath, "main");
+    expect(diff).toContain("v1.ts"); // committed baseline included…
+    expect(diff).toContain("v2.ts"); // …plus the uncommitted increment
   });
 });
 

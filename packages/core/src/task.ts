@@ -67,6 +67,7 @@ export type DecisionEntry =
   | { readonly type: "step_completed"; readonly at: string; readonly stepId: StepId }
   | { readonly type: "step_failed"; readonly at: string; readonly stepId: StepId; readonly reason: string }
   | { readonly type: "gate_opened"; readonly at: string; readonly gateId: GateId }
+  | { readonly type: "gate_reopened"; readonly at: string; readonly gateId: GateId }
   | { readonly type: "gate_decided"; readonly at: string; readonly gateId: GateId; readonly decision: HumanDecision; readonly notes?: string }
   | { readonly type: "task_completed"; readonly at: string }
   | { readonly type: "task_aborted"; readonly at: string; readonly reason: string };
