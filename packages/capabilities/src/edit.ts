@@ -31,6 +31,9 @@ export interface AgenticWorkerOptions {
   readonly acceptEdits?: boolean;
   /** Override the user prompt (defaults to the edit prompt). */
   readonly prompt?: string;
+  /** How to derive the step summary from the model's output (defaults to the last
+   *  line). A planner keeps the whole plan so later steps can follow it. */
+  readonly summarize?: (content: string) => string;
 }
 
 /** Shared body for agentic workers (edit, document, review): the provider works in
@@ -64,10 +67,11 @@ export async function runAgenticFileWorker(
   const response = input.onChunk
     ? await provider.stream(messages, input.onChunk, sendOpts)
     : await provider.send(messages, sendOpts);
-  // The worktree now holds the change; the model's final line summarizes it.
+  // The worktree now holds the change; the model's final line summarizes it (or a
+  // custom summarizer keeps more — a planner keeps the whole plan).
   return {
     artifacts: [],
-    summary: summarize(response.content),
+    summary: (opts.summarize ?? summarize)(response.content),
     usage: { inputTokens: response.inputTokens, outputTokens: response.outputTokens, model: response.model ?? provider.name },
   };
 }

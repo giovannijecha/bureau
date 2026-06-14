@@ -33,6 +33,7 @@ import { OrchestratorError } from "./errors.js";
 import { irisRespond } from "./iris.js";
 import { buildHub } from "./hub.js";
 import { journalPath, journalMarkdown } from "./memory.js";
+import { ASSIGNEE } from "./summary.js";
 
 export { OrchestratorError };
 
@@ -425,7 +426,7 @@ export class Orchestrator {
         const out = await this.d.capabilities.get(step.capability).execute({
           step,
           worktreePath,
-          context: task.goal,
+          context: this.stepContext(taskId, planned.id),
           ...(reviewDiff !== undefined ? { diff: reviewDiff } : {}),
           // Pipe the worker's live output to the panel as it works.
           onChunk: (chunk) =>
@@ -537,7 +538,7 @@ export class Orchestrator {
         const out = await this.d.capabilities.get(step.capability).execute({
           step,
           worktreePath,
-          context: `${task.goal}\n\n${changeRequest}`,
+          context: this.stepContext(taskId, planned.id, changeRequest),
           ...(reviewDiff !== undefined ? { diff: reviewDiff } : {}),
           onChunk: (chunk) =>
             this.d.events.emit({ type: "step_progress", taskId, stepId: planned.id, capability: step.capability, chunk }),
@@ -777,6 +778,24 @@ export class Orchestrator {
 
   private branchFor(taskId: string): string {
     return `bureau/task-${taskId}`;
+  }
+
+  /** A step's context: the goal, an optional change request (on a re-run), and the
+   *  summaries of the steps already run in this task — so each worker builds on the
+   *  prior ones (the edit follows the plan; document/review see what changed). */
+  private stepContext(taskId: string, currentStepId: StepId, changeRequest?: string): string {
+    const task = this.requireTask(taskId);
+    const parts = [task.goal];
+    if (changeRequest) parts.push(changeRequest);
+    const idx = task.steps.findIndex((s) => s.id === currentStepId);
+    const prior = task.steps.slice(0, Math.max(0, idx)).filter((s) => s.summary !== undefined && s.summary !== "");
+    if (prior.length > 0) {
+      parts.push(
+        "Earlier steps in this task already produced:\n" +
+          prior.map((s) => `### ${ASSIGNEE[s.capability]} (${s.capability}):\n${s.summary}`).join("\n\n")
+      );
+    }
+    return parts.join("\n\n");
   }
 }
 

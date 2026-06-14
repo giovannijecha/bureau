@@ -92,10 +92,10 @@ Stateless operatives that Iris delegates Task steps to. Each is replaceable — 
 
 | Worker | Persona | Role | Status |
 |---|---|---|---|
+| `plan` | Planner | Read-only — lay out a concrete implementation plan the edit follows | ✅ Live |
 | `edit` | Editor | Apply a code change directly in an isolated worktree | ✅ Live |
 | `document` | Scribe | Update docs / README / changelog for the change | ✅ Live |
 | `review` | Reviewer | Read-only — inspect the diff and flag issues before human review | ✅ Live |
-| `plan` | Planner | Break a request into ordered steps + acceptance criteria | Planned |
 | `test` | Tester | Run the repo's test suite against the change | Planned |
 
 `edit`, `document`, and `review` are **agentic** — the model works the worktree files directly (confined to that directory; no shell). `edit`/`document` mutate; `review` is strictly read-only (read tools, no auto-accept) and its assessment is shown to you at the gate. Iris composes them into a multi-step pipeline (e.g. edit → document → review) that produces one reviewed diff. Workers are registered in the `CapabilityRegistry`; `createTask` refuses any capability that isn't registered, so an unbuilt worker can never silently no-op.

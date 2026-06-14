@@ -14,7 +14,7 @@
 import { randomUUID } from "node:crypto";
 import Anthropic from "@anthropic-ai/sdk";
 import { createDb, runMigrations, TaskRepo, MessageRepo, ConversationRepo, UsageRepo, NotificationRepo } from "@bureau/db";
-import { CapabilityRegistry, EditCapability, DocumentCapability, ReviewCapability } from "@bureau/capabilities";
+import { CapabilityRegistry, EditCapability, DocumentCapability, ReviewCapability, PlanCapability } from "@bureau/capabilities";
 import {
   AnthropicProvider,
   ClaudeCliProvider,
@@ -93,6 +93,7 @@ async function main(): Promise<void> {
 
   const provider = buildProvider();
   const capabilities = new CapabilityRegistry();
+  capabilities.register(new PlanCapability({ provider }));
   capabilities.register(new EditCapability({ provider }));
   capabilities.register(new DocumentCapability({ provider }));
   capabilities.register(new ReviewCapability({ provider }));
