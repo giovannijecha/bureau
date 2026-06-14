@@ -12,10 +12,13 @@ import type { Message } from "../src/provider.js";
 
 const stubStrategy = { kind: "cli-delegation" as const, isAvailable: () => true };
 
-function fakeRunner(result: CliResult): { run: CliRunner; calls: { cli: string; args: string[]; input: string }[] } {
-  const calls: { cli: string; args: string[]; input: string }[] = [];
-  const run: CliRunner = async (cli, args, input) => {
-    calls.push({ cli, args, input });
+function fakeRunner(result: CliResult): {
+  run: CliRunner;
+  calls: { cli: string; args: string[]; input: string; cwd?: string }[];
+} {
+  const calls: { cli: string; args: string[]; input: string; cwd?: string }[] = [];
+  const run: CliRunner = async (cli, args, input, cwd) => {
+    calls.push({ cli, args, input, cwd });
     return result;
   };
   return { run, calls };
@@ -46,8 +49,28 @@ describe("ClaudeCliProvider — send", () => {
       DEFAULT_MODEL,
       "--system-prompt",
       "be brief",
+      "--tools",
+      "Read",
+      "Glob",
+      "Grep",
     ]);
     expect(call.input).toBe("question?"); // single user turn → raw prompt on stdin
+  });
+
+  it("runs in the given cwd and restricts the agent to read-only tools (no Edit/Write/Bash)", async () => {
+    const { run, calls } = fakeRunner({ stdout: okJson("x"), stderr: "", code: 0 });
+    const provider = new ClaudeCliProvider({ authStrategy: stubStrategy, run });
+
+    await provider.send([{ role: "user", content: "edit a file" }], { cwd: "/wt/task-1" });
+
+    const call = calls[0]!;
+    expect(call.cwd).toBe("/wt/task-1"); // confined to the worktree
+    const ti = call.args.indexOf("--tools");
+    expect(ti).toBeGreaterThan(-1);
+    expect(call.args.slice(ti + 1)).toEqual(["Read", "Glob", "Grep"]); // exclusive allowlist
+    for (const writeTool of ["Edit", "Write", "MultiEdit", "Bash", "NotebookEdit"]) {
+      expect(call.args).not.toContain(writeTool);
+    }
   });
 
   it("omits --system-prompt when there is no system message", async () => {

@@ -2,27 +2,30 @@ import { describe, it, expect } from "vitest";
 
 import { EditCapability, buildEditPrompt, parseEditPlan, safeResolve } from "../src/edit.js";
 import type { CapabilityInput } from "../src/capability.js";
-import type { Provider, Message } from "@bureau/providers";
+import type { Provider, Message, SendOptions } from "@bureau/providers";
 import type { Step, StepId } from "@bureau/core";
 
 const sid = (s: string) => s as unknown as StepId;
 
-function fakeProvider(content: string): { provider: Provider; sent: Message[][] } {
+function fakeProvider(content: string): { provider: Provider; sent: Message[][]; opts: (SendOptions | undefined)[] } {
   const sent: Message[][] = [];
+  const opts: (SendOptions | undefined)[] = [];
   const provider: Provider = {
     name: "fake",
     authStrategy: { kind: "api-key", isAvailable: () => true },
-    async send(messages) {
+    async send(messages, options) {
       sent.push(messages);
+      opts.push(options);
       return { content, inputTokens: 0, outputTokens: 0 };
     },
-    async stream(messages, onChunk) {
+    async stream(messages, onChunk, options) {
       sent.push(messages);
+      opts.push(options);
       onChunk(content);
       return { content, inputTokens: 0, outputTokens: 0 };
     },
   };
-  return { provider, sent };
+  return { provider, sent, opts };
 }
 
 const step = (overrides: Partial<Step> = {}): Step => ({
@@ -94,6 +97,13 @@ describe("EditCapability.execute", () => {
     expect(userMsg).toContain("the goal");
     expect(userMsg).toContain("exports hello()");
     expect(sent[0]!.some((m) => m.role === "system")).toBe(true);
+  });
+
+  it("passes the worktree as cwd so an agentic provider stays sandboxed to it", async () => {
+    const { provider, opts } = fakeProvider(JSON.stringify({ files: [], summary: "" }));
+    const cap = new EditCapability({ provider, writeFileFn: async () => {} });
+    await cap.execute(input({ worktreePath: "/wt/task-42" }));
+    expect(opts[0]?.cwd).toBe("/wt/task-42");
   });
 });
 

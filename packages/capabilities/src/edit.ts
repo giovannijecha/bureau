@@ -29,12 +29,13 @@ export interface EditCapabilityDeps {
   readonly clock?: () => string;
 }
 
-const EDIT_SYSTEM = `You are Bureau's "edit" worker. You are given a change to make to a repository checked out in a worktree.
-Respond with ONLY a JSON object — no prose, no markdown fences — of the form:
+const EDIT_SYSTEM = `You are Bureau's "edit" worker. You are given a change to make to a repository checked out in a worktree, which is your working directory. You can READ files in the worktree to see their current contents before deciding the new ones.
+
+Respond with ONLY a JSON object — your ENTIRE response must start with "{" and end with "}", with no prose, no reasoning, and no markdown fences — of the form:
 {"files":[{"path":"relative/path/from/repo/root.ext","content":"<full new file contents>"}],"summary":"one-line description of the change"}
 Rules:
 - "path" is relative to the repo root and uses forward slashes. Never use absolute paths or "..".
-- "content" is the COMPLETE new contents of the file (you are replacing it wholesale, not patching).
+- "content" is the COMPLETE new contents of the file (you are replacing it wholesale, not patching). Read the current file first so you preserve everything that should stay.
 - Include every file you change. Keep the change minimal and focused on what was asked.`;
 
 export class EditCapability implements Capability {
@@ -56,7 +57,9 @@ export class EditCapability implements Capability {
       { role: "system", content: EDIT_SYSTEM },
       { role: "user", content: buildEditPrompt(input) },
     ];
-    const response = await this.provider.send(messages, { maxTokens: 16_000 });
+    // cwd = the worktree: an agentic provider (claude CLI) reads files relative to
+    // it and can never reach outside it. Bureau still applies the plan itself.
+    const response = await this.provider.send(messages, { maxTokens: 16_000, cwd: input.worktreePath });
     const plan = parseEditPlan(response.content);
 
     const artifacts: Artifact[] = [];

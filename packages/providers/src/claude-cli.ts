@@ -7,7 +7,7 @@
 // whole answer as a single chunk (true CLI streaming is a later phase).
 
 import { spawn } from "node:child_process";
-import type { Provider, AuthStrategy, Message, ProviderResponse } from "./provider.js";
+import type { Provider, AuthStrategy, Message, ProviderResponse, SendOptions } from "./provider.js";
 import { DEFAULT_MODEL } from "./anthropic.js";
 
 export interface CliResult {
@@ -16,12 +16,14 @@ export interface CliResult {
   readonly code: number;
 }
 
-export type CliRunner = (cli: string, args: string[], input: string) => Promise<CliResult>;
+export type CliRunner = (cli: string, args: string[], input: string, cwd?: string) => Promise<CliResult>;
 
-/** Default runner: spawn the CLI, feed the prompt on stdin, collect stdout. */
-export const defaultCliRunner: CliRunner = (cli, args, input) =>
+/** Default runner: spawn the CLI, feed the prompt on stdin, collect stdout. The
+ *  CLI runs in `cwd` (the task's worktree for edits) so its tools can't reach
+ *  outside it. */
+export const defaultCliRunner: CliRunner = (cli, args, input, cwd) =>
   new Promise<CliResult>((resolve) => {
-    const child = spawn(cli, args, { stdio: ["pipe", "pipe", "pipe"] });
+    const child = spawn(cli, args, { stdio: ["pipe", "pipe", "pipe"], ...(cwd !== undefined ? { cwd } : {}) });
     let stdout = "";
     let stderr = "";
     child.stdout.on("data", (d: Buffer) => (stdout += d.toString()));
@@ -31,12 +33,22 @@ export const defaultCliRunner: CliRunner = (cli, args, input) =>
     child.stdin.end(input);
   });
 
+/**
+ * The ONLY tools the CLI may use — strictly read-only. The `claude` binary is an
+ * autonomous agent; without this it would use Edit/Write/Bash to mutate files
+ * directly (in the wrong place, with non-deterministic results). Bureau owns all
+ * mutation: the model returns a plan, the capability writes it into the worktree.
+ */
+export const READONLY_TOOLS = ["Read", "Glob", "Grep"] as const;
+
 export interface ClaudeCliProviderOptions {
   readonly authStrategy: AuthStrategy;
   readonly run?: CliRunner;
   readonly cli?: string;
   readonly model?: string;
   readonly name?: string;
+  /** Override the tool allowlist (tests). Defaults to read-only — do NOT add write tools. */
+  readonly tools?: readonly string[];
 }
 
 export class ClaudeCliProvider implements Provider {
@@ -45,24 +57,29 @@ export class ClaudeCliProvider implements Provider {
   private readonly run: CliRunner;
   private readonly cli: string;
   private readonly model: string;
+  private readonly tools: readonly string[];
 
   constructor(opts: ClaudeCliProviderOptions) {
     this.authStrategy = opts.authStrategy;
     this.run = opts.run ?? defaultCliRunner;
     this.cli = opts.cli ?? "claude";
     this.model = opts.model ?? DEFAULT_MODEL;
+    this.tools = opts.tools ?? READONLY_TOOLS;
     this.name = opts.name ?? `claude-cli:${this.model}`;
   }
 
-  async send(messages: Message[], _options?: { maxTokens?: number }): Promise<ProviderResponse> {
+  async send(messages: Message[], options?: SendOptions): Promise<ProviderResponse> {
     if (!messages.some((m) => m.role !== "system")) {
       throw new Error("ClaudeCliProvider.send requires at least one user/assistant message.");
     }
     const { system, prompt } = renderCliPrompt(messages);
     const args = ["-p", "--output-format", "json", "--model", this.model];
     if (system !== undefined) args.push("--system-prompt", system);
+    // Restrict to read-only tools LAST (variadic --tools consumes the rest), so the
+    // agent can never write/edit/bash — it only reads + returns the plan.
+    if (this.tools.length > 0) args.push("--tools", ...this.tools);
 
-    const { stdout, stderr, code } = await this.run(this.cli, args, prompt);
+    const { stdout, stderr, code } = await this.run(this.cli, args, prompt, options?.cwd);
     if (code !== 0) {
       throw new Error(`claude CLI exited with code ${code}: ${stderr.trim() || "(no stderr)"}`);
     }
@@ -72,7 +89,7 @@ export class ClaudeCliProvider implements Provider {
   async stream(
     messages: Message[],
     onChunk: (chunk: string) => void,
-    options?: { maxTokens?: number }
+    options?: SendOptions
   ): Promise<ProviderResponse> {
     // Phase 1: no incremental CLI streaming yet — deliver the full answer once.
     const result = await this.send(messages, options);
