@@ -9,12 +9,9 @@ export default function ProjectsPage() {
 
   return (
     <div className="h-full overflow-y-auto p-6">
-      <div className="mb-6">
-        <h1 className="text-2xl font-bold tracking-tight">Projects</h1>
-        <p className="mt-1 text-sm text-muted-foreground">
-          The repositories Bureau works on. Pick the active one — Iris scopes her work to it in the Assistant.
-        </p>
-      </div>
+      <p className="mb-4 text-sm text-muted-foreground">
+        Pick the active project — Iris scopes her work to it in the Assistant.
+      </p>
 
       {error && <p className="mb-4 text-sm text-destructive">⚠ {error}</p>}
 

@@ -49,16 +49,11 @@ export default function OverviewPage() {
 
   return (
     <div className="h-full overflow-y-auto p-6">
-      <div className="mb-6">
-        <h1 className="text-2xl font-bold tracking-tight">Overview</h1>
-        <p className="mt-1 text-sm text-muted-foreground">Your team at a glance.</p>
-      </div>
-
       <div className="mb-5 grid gap-3 sm:grid-cols-2 lg:grid-cols-4">
-        <Stat icon={ListTodo} label="Total tasks" value={list.length} tint="text-foreground" />
-        <Stat icon={Loader2} label="Running" value={running} tint="text-blue-400" />
-        <Stat icon={CircleDot} label="Awaiting review" value={awaiting} tint="text-amber-500" />
-        <Stat icon={CheckCircle2} label="Completed" value={completed} tint="text-green-500" />
+        <Stat icon={ListTodo} label="Total tasks" value={list.length} tint="text-foreground" ring="bg-muted" />
+        <Stat icon={Loader2} label="Running" value={running} tint="text-blue-400" ring="bg-blue-500/10" spin={running > 0} />
+        <Stat icon={CircleDot} label="Awaiting review" value={awaiting} tint="text-amber-500" ring="bg-amber-500/10" />
+        <Stat icon={CheckCircle2} label="Completed" value={completed} tint="text-green-500" ring="bg-green-500/10" />
       </div>
 
       <div className="grid gap-5 lg:grid-cols-3">
@@ -139,14 +134,32 @@ export default function OverviewPage() {
   );
 }
 
-function Stat({ icon: Icon, label, value, tint }: { icon: typeof ListTodo; label: string; value: number; tint: string }) {
+function Stat({
+  icon: Icon,
+  label,
+  value,
+  tint,
+  ring,
+  spin = false,
+}: {
+  icon: typeof ListTodo;
+  label: string;
+  value: number;
+  tint: string;
+  ring: string;
+  spin?: boolean;
+}) {
   return (
-    <div className="rounded-xl border bg-card p-4">
-      <div className="flex items-center justify-between">
-        <span className="text-xs font-medium text-muted-foreground">{label}</span>
-        <Icon className={cn("h-4 w-4", tint)} />
+    <div className="rounded-xl border bg-card p-4 transition-colors hover:border-foreground/15">
+      <div className="flex items-center gap-3">
+        <div className={cn("flex h-10 w-10 shrink-0 items-center justify-center rounded-lg", ring)}>
+          <Icon className={cn("h-5 w-5", tint, spin && "animate-spin")} />
+        </div>
+        <div className="min-w-0">
+          <div className="text-2xl font-bold leading-none tracking-tight">{value}</div>
+          <div className="mt-1.5 truncate text-xs text-muted-foreground">{label}</div>
+        </div>
       </div>
-      <div className="mt-2 text-2xl font-bold tracking-tight">{value}</div>
     </div>
   );
 }

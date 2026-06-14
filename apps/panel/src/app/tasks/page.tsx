@@ -52,16 +52,15 @@ export default function TasksPage() {
 
   return (
     <div className="h-full overflow-y-auto p-6">
-      <div className="mb-6 flex items-start justify-between">
-        <div>
-          <h1 className="text-2xl font-bold tracking-tight">Tasks</h1>
-          <p className="mt-1 text-sm text-muted-foreground">Every task Iris has run, oldest first.</p>
-        </div>
+      <div className="mb-4 flex items-center justify-between">
+        <p className="text-sm text-muted-foreground">
+          {tasks === null ? "Loading…" : `${tasks.length} task${tasks.length === 1 ? "" : "s"}`}
+        </p>
         <button
           onClick={() => void load()}
-          className="inline-flex h-9 items-center gap-2 rounded-md border bg-background px-3 text-sm font-medium transition-colors hover:bg-accent"
+          className="inline-flex h-8 items-center gap-1.5 rounded-md border bg-background px-2.5 text-xs font-medium text-muted-foreground transition-colors hover:bg-accent hover:text-foreground"
         >
-          <RefreshCw className={cn("h-4 w-4", spin && "animate-spin")} />
+          <RefreshCw className={cn("h-3.5 w-3.5", spin && "animate-spin")} />
           Refresh
         </button>
       </div>
