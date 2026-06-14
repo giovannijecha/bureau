@@ -331,16 +331,18 @@ function FileDiff({ file, defaultOpen }: { file: DiffFile; defaultOpen: boolean 
 
 function DiffLines({ lines }: { lines: string[] }) {
   return (
-    <pre className="max-h-[420px] overflow-auto bg-black/40 px-4 py-3 font-mono text-xs leading-relaxed">
+    <pre className="max-h-[420px] overflow-auto bg-zinc-950 px-4 py-3 font-mono text-xs leading-relaxed">
       {lines.map((line, i) => {
+        // Fixed (theme-independent) colours — the diff is always a dark code block,
+        // so it reads the same in light and dark mode.
         const cls =
           line.startsWith("+") && !line.startsWith("+++")
             ? "text-green-400"
             : line.startsWith("-") && !line.startsWith("---")
               ? "text-red-400"
               : /^(@@|diff |index |\+\+\+|---)/.test(line)
-                ? "text-muted-foreground"
-                : "text-foreground/80";
+                ? "text-zinc-500"
+                : "text-zinc-300";
         return (
           <div key={i} className={cls}>
             {line || " "}
