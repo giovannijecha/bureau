@@ -76,7 +76,7 @@ function buildRegistry(): ProjectRegistry {
   return new ProjectRegistry([project]);
 }
 
-function main(): void {
+async function main(): Promise<void> {
   // Auto-load a local .env (copy apps/engine/.env.example → .env). Env already in
   // the environment still wins / is used when there's no file.
   try {
@@ -145,11 +145,10 @@ function main(): void {
   const server = createHttpServer({ orchestrator, store, messages });
   hub = new WsHub(server);
 
-  // Clean up any task a previous crash/forced-exit left mid-flight before serving,
-  // so the panel never shows a zombie task with an orphaned worktree.
-  void orchestrator.reconcile().then((n) => {
-    if (n > 0) console.log(`[engine] reconcile: aborted ${n} interrupted task(s) from a previous run.`);
-  });
+  // Clean up any task a previous crash/forced-exit left mid-flight BEFORE serving,
+  // so the panel never sees a zombie task with an orphaned worktree.
+  const reclaimed = await orchestrator.reconcile();
+  if (reclaimed > 0) console.log(`[engine] reconcile: aborted ${reclaimed} interrupted task(s) from a previous run.`);
 
   server.listen(port, () => {
     console.log(`Bureau engine listening on http://localhost:${port} (ws: /ws)`);
@@ -173,4 +172,7 @@ function main(): void {
   process.on("SIGTERM", () => shutdown("SIGTERM"));
 }
 
-main();
+main().catch((err) => {
+  console.error("[engine] failed to start:", err);
+  process.exit(1);
+});

@@ -26,6 +26,7 @@ export interface AnthropicProviderOptions {
 export class AnthropicProvider implements Provider {
   readonly name: string;
   readonly authStrategy: AuthStrategy;
+  readonly agentic = false; // plain completion — no tool execution, cannot edit files
   private readonly client: Anthropic;
   private readonly model: string;
 

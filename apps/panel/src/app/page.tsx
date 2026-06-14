@@ -98,7 +98,7 @@ export default function AssistantPage() {
       const res = await chat(content, activeId ?? undefined, convId ?? undefined);
       setLog((l) => [...l, res.reply]);
       if (res.proposal) setProposal(res.proposal);
-      if (convId === null) setConvId(res.conversationId);
+      setConvId(res.conversationId); // always adopt the server's authoritative thread id
       void refreshConversations();
     } catch (e) {
       setError(errMsg(e));
@@ -326,16 +326,12 @@ function ProposalCard({
   );
 }
 
+let localSeq = 0;
 function local(role: "user" | "iris", content: string): Message {
-  return { id: `local-${role}-${Math.abs(hash(content))}`, role, content, createdAt: "" };
+  return { id: `local-${role}-${++localSeq}`, role, content, createdAt: "" };
 }
 function createdNote(taskId: string, title: string): Message {
   return { id: `created-${taskId}`, role: "system", content: `Created “${title}” — open it in Tasks`, taskId, createdAt: "" };
-}
-function hash(s: string): number {
-  let h = 0;
-  for (let i = 0; i < s.length; i++) h = (h * 31 + s.charCodeAt(i)) | 0;
-  return h;
 }
 function errMsg(e: unknown): string {
   return e instanceof Error ? e.message : String(e);

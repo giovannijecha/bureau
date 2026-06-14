@@ -15,6 +15,7 @@ function fakeProvider(content: string): {
   const provider: Provider = {
     name: "fake",
     authStrategy: { kind: "cli-delegation", isAvailable: () => true },
+    agentic: true,
     async send(messages, opts) {
       sent.push({ messages, opts });
       return { content, inputTokens: 0, outputTokens: 0 };

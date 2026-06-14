@@ -60,10 +60,15 @@ export class Orchestrator {
     return this.d.projects.list().map(toProjectDto);
   }
 
-  /** Engine status for the Settings panel. */
+  /** Engine status for the Settings panel. provider availability is cached — the
+   *  CLI strategy probes a subprocess, so we never re-probe per request. */
+  private providerAvailable: boolean | undefined;
   engineInfo(): EngineInfo {
+    if (this.providerAvailable === undefined) {
+      this.providerAvailable = this.d.provider.authStrategy.isAvailable();
+    }
     return {
-      provider: { name: this.d.provider.name, available: this.d.provider.authStrategy.isAvailable() },
+      provider: { name: this.d.provider.name, available: this.providerAvailable },
       projectCount: this.d.projects.list().length,
       inflightTasks: this.running.size,
     };
@@ -301,9 +306,14 @@ export class Orchestrator {
       // Capture the diff (incl. new files), then commit it locally on the branch.
       const diff = await vcs.workingDiff(worktreePath);
       if (this.requireTask(taskId).status !== "executing") return; // stopped before commit
-      await vcs.commitAll(worktreePath, `Bureau: ${truncate(this.requireTask(taskId).goal)}`);
+      const committed = await vcs.commitAll(worktreePath, `Bureau: ${truncate(this.requireTask(taskId).goal)}`);
       task = this.requireTask(taskId);
       if (task.status !== "executing") return; // stopped during commit
+      // Fail loud on a no-op run: if nothing was committed, the workers produced no
+      // change — never park an empty task at the review gate as a false "done".
+      if (!committed) {
+        throw new Error("The pipeline produced no changes — there is nothing to review. The worker may not have edited any files.");
+      }
       task = this.addArtifacts(task, [
         {
           id: this.d.ids() as ArtifactId,

@@ -48,7 +48,7 @@ describe("ClaudeCliProvider — send", () => {
       "json",
       "--model",
       DEFAULT_MODEL,
-      "--system-prompt",
+      "--append-system-prompt",
       "be brief",
       "--tools",
       "Read",

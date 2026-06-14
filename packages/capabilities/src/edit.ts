@@ -33,6 +33,13 @@ export class EditCapability implements Capability {
   }
 
   async execute(input: CapabilityInput): Promise<CapabilityOutput> {
+    // The edit worker only works with an agentic provider (one that runs Edit/Write
+    // in the worktree). Fail loud rather than produce a silent no-op (empty diff).
+    if (this.provider.agentic !== true) {
+      throw new Error(
+        `The edit worker needs an agentic provider (the claude CLI), but "${this.provider.name}" only does text completion. Install the claude CLI or unset ANTHROPIC_API_KEY.`
+      );
+    }
     const messages: Message[] = [
       { role: "system", content: EDIT_SYSTEM },
       { role: "user", content: buildEditPrompt(input) },
