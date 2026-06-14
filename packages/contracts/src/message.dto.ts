@@ -12,7 +12,11 @@ export const MessageDto = z.object({
 });
 
 export const SendMessageRequestDto = z.object({
-  content: z.string().min(1).max(32_000),
+  content: z
+    .string()
+    .min(1)
+    .max(32_000)
+    .refine((s) => s.trim().length > 0, { message: "content cannot be empty or whitespace-only" }),
   /** Which project the conversation is about (defaults to the first project). */
   projectId: z.string().optional(),
   /** Which conversation to append to (a new one is created when omitted). */

@@ -86,6 +86,7 @@ export const DEFAULT_CLI_TIMEOUT_MS = 240_000;
 export class ClaudeCliProvider implements Provider {
   readonly name: string;
   readonly authStrategy: AuthStrategy;
+  readonly agentic = true; // the CLI executes Read/Edit/Write in the worktree itself
   private readonly run: CliRunner;
   private readonly cli: string;
   private readonly model: string;
@@ -109,7 +110,8 @@ export class ClaudeCliProvider implements Provider {
     const { system, prompt } = renderCliPrompt(messages);
     const tools = options?.tools ?? this.tools;
     const args = ["-p", "--output-format", "json", "--model", this.model];
-    if (system !== undefined) args.push("--system-prompt", system);
+    // Append (don't replace) so Claude Code's default tool/safety guidance is kept.
+    if (system !== undefined) args.push("--append-system-prompt", system);
     if (options?.acceptEdits) {
       // The edit worker: auto-accept file edits, but only inside the working dir.
       args.push("--permission-mode", "acceptEdits");

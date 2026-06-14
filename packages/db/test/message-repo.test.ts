@@ -2,18 +2,24 @@ import { describe, it, expect, beforeEach } from "vitest";
 
 import { createDb, runMigrations, type BureauDb } from "../src/client.js";
 import { MessageRepo, type MessageRow } from "../src/message-repo.js";
+import { ConversationRepo } from "../src/conversation-repo.js";
 
 let db: BureauDb;
 let repo: MessageRepo;
+let conv: ConversationRepo;
+
+const mkConv = (id: string) => conv.create({ id, title: "t", projectId: null, createdAt: "t", updatedAt: "t" });
 
 beforeEach(() => {
   db = createDb(":memory:");
   runMigrations(db);
   repo = new MessageRepo(db);
+  conv = new ConversationRepo(db);
 });
 
 const m = (over: Partial<MessageRow> = {}): MessageRow => ({
   id: "m1",
+  conversationId: null,
   role: "user",
   content: "hello",
   taskId: null,
@@ -49,5 +55,32 @@ describe("MessageRepo", () => {
   it("persists an absent taskId as null", () => {
     repo.append(m({ id: "n", taskId: null }));
     expect(repo.list()[0]!.taskId).toBeNull();
+  });
+
+  it("listByConversation isolates threads", () => {
+    mkConv("c1");
+    mkConv("c2");
+    repo.append(m({ id: "a", conversationId: "c1", content: "in c1" }));
+    repo.append(m({ id: "b", conversationId: "c2", content: "in c2" }));
+    repo.append(m({ id: "c", conversationId: "c1", content: "also c1" }));
+
+    expect(repo.listByConversation("c1").map((x) => x.id)).toEqual(["a", "c"]);
+    expect(repo.listByConversation("c2").map((x) => x.id)).toEqual(["b"]);
+    expect(repo.listByConversation("nope")).toEqual([]);
+  });
+
+  it("adoptOrphans assigns conversation-less messages to a thread (and only those)", () => {
+    mkConv("c1");
+    mkConv("c2");
+    repo.append(m({ id: "old1", conversationId: null }));
+    repo.append(m({ id: "old2", conversationId: null }));
+    repo.append(m({ id: "owned", conversationId: "c2" }));
+
+    const adopted = repo.adoptOrphans("c1");
+
+    expect(adopted).toBe(2);
+    expect(repo.listByConversation("c1").map((x) => x.id)).toEqual(["old1", "old2"]);
+    expect(repo.listByConversation("c2").map((x) => x.id)).toEqual(["owned"]); // untouched
+    expect(repo.adoptOrphans("c3")).toBe(0); // nothing left to adopt
   });
 });

@@ -285,10 +285,12 @@ function parseDiff(diff: string): DiffFile[] {
   const files: DiffFile[] = [];
   let cur: DiffFile | null = null;
   for (const line of diff.split("\n")) {
-    if (line.startsWith("diff --git")) {
+    if (line.startsWith("diff --git ")) {
       if (cur) files.push(cur);
-      const m = / b\/(.+)$/.exec(line);
-      cur = { path: m ? m[1]! : "file", lines: [], added: 0, removed: 0 };
+      // header is `diff --git a/PATH b/PATH`; take the path after the LAST " b/".
+      const rest = line.slice("diff --git ".length);
+      const idx = rest.lastIndexOf(" b/");
+      cur = { path: idx >= 0 ? rest.slice(idx + 3) : rest, lines: [], added: 0, removed: 0 };
     }
     if (!cur) continue;
     cur.lines.push(line);
@@ -305,8 +307,8 @@ function DiffView({ diff }: { diff: string }) {
   if (files.length === 0) return <DiffLines lines={diff.split("\n")} />;
   return (
     <div className="divide-y">
-      {files.map((f) => (
-        <FileDiff key={f.path} file={f} defaultOpen={files.length <= 2} />
+      {files.map((f, i) => (
+        <FileDiff key={i} file={f} defaultOpen={files.length <= 2} />
       ))}
     </div>
   );

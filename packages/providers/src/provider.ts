@@ -37,6 +37,12 @@ export interface SendOptions {
 export interface Provider {
   readonly name: string;
   readonly authStrategy: AuthStrategy;
+  /**
+   * True if the provider EXECUTES tools (reads/edits files) when given cwd/tools —
+   * i.e. the agent does the work itself. The `edit` capability requires this. A
+   * plain completion provider (Anthropic API) is NOT agentic.
+   */
+  readonly agentic?: boolean;
 
   send(messages: Message[], options?: SendOptions): Promise<ProviderResponse>;
 

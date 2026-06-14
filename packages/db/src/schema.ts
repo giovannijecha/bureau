@@ -137,7 +137,9 @@ export const messages = sqliteTable(
   {
     seq: integer("seq").primaryKey({ autoIncrement: true }),
     id: text("id").notNull().unique(),
-    conversationId: text("conversation_id"),
+    // Nullable (pre-thread messages have NULL) but FK-cascaded: deleting a
+    // conversation removes its messages at the DB level too.
+    conversationId: text("conversation_id").references(() => conversations.id, { onDelete: "cascade" }),
     role: text("role").notNull().$type<"user" | "iris" | "system">(),
     content: text("content").notNull(),
     taskId: text("task_id"),
