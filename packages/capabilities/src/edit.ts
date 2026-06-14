@@ -24,15 +24,26 @@ export interface EditCapabilityDeps {
   readonly provider: Provider;
 }
 
-/** Shared body for agentic file workers (edit, document): the provider edits the
- *  worktree directly, confined to it; the engine captures the diff. */
+export interface AgenticWorkerOptions {
+  /** Tool allowlist (defaults to the edit tools). A read-only worker passes Read/Glob/Grep. */
+  readonly tools?: readonly string[];
+  /** Auto-accept edits in the worktree (defaults true). A read-only worker passes false. */
+  readonly acceptEdits?: boolean;
+  /** Override the user prompt (defaults to the edit prompt). */
+  readonly prompt?: string;
+}
+
+/** Shared body for agentic workers (edit, document, review): the provider works in
+ *  the worktree, confined to it. Edit/document mutate it (the engine captures the
+ *  diff); review reads it (read-only tools, acceptEdits off). Streams when asked. */
 export async function runAgenticFileWorker(
   provider: Provider,
   input: CapabilityInput,
-  systemPrompt: string
+  systemPrompt: string,
+  opts: AgenticWorkerOptions = {}
 ): Promise<CapabilityOutput> {
-  // Only works with an agentic provider (one that runs Edit/Write in the worktree).
-  // Fail loud rather than produce a silent no-op (empty diff).
+  // Only works with an agentic provider (one that runs tools in the worktree).
+  // Fail loud rather than produce a silent no-op.
   if (provider.agentic !== true) {
     throw new Error(
       `This worker needs an agentic provider (the claude CLI), but "${provider.name}" only does text completion. Install the claude CLI or unset ANTHROPIC_API_KEY.`
@@ -40,14 +51,19 @@ export async function runAgenticFileWorker(
   }
   const messages: Message[] = [
     { role: "system", content: systemPrompt },
-    { role: "user", content: buildEditPrompt(input) },
+    { role: "user", content: opts.prompt ?? buildEditPrompt(input) },
   ];
-  const opts = { maxTokens: 8_000, cwd: input.worktreePath, tools: [...EDIT_TOOLS], acceptEdits: true };
+  const sendOpts = {
+    maxTokens: 8_000,
+    cwd: input.worktreePath,
+    tools: opts.tools ? [...opts.tools] : [...EDIT_TOOLS],
+    acceptEdits: opts.acceptEdits ?? true,
+  };
   // Stream when the caller wants live progress (the engine pipes chunks to the
-  // panel); otherwise a plain send. Both edit the worktree directly + return usage.
+  // panel); otherwise a plain send. Both run in the worktree + return usage.
   const response = input.onChunk
-    ? await provider.stream(messages, input.onChunk, opts)
-    : await provider.send(messages, opts);
+    ? await provider.stream(messages, input.onChunk, sendOpts)
+    : await provider.send(messages, sendOpts);
   // The worktree now holds the change; the model's final line summarizes it.
   return {
     artifacts: [],

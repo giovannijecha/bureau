@@ -389,10 +389,13 @@ export class Orchestrator {
         if (!this.d.capabilities.has(step.capability)) {
           throw new Error(`Capability "${step.capability}" is not available yet.`);
         }
+        // A review worker assesses the change so far — hand it the current diff.
+        const reviewDiff = step.capability === "review" ? await vcs.workingDiff(worktreePath) : undefined;
         const out = await this.d.capabilities.get(step.capability).execute({
           step,
           worktreePath,
           context: task.goal,
+          ...(reviewDiff !== undefined ? { diff: reviewDiff } : {}),
           // Pipe the worker's live output to the panel as it works.
           onChunk: (chunk) =>
             this.d.events.emit({ type: "step_progress", taskId, stepId: planned.id, capability: step.capability, chunk }),

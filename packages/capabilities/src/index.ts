@@ -4,5 +4,6 @@
 
 export type { Capability, CapabilityInput, CapabilityOutput } from "./capability.js";
 export { CapabilityRegistry } from "./registry.js";
-export { EditCapability, runAgenticFileWorker, buildEditPrompt, summarize, EDIT_TOOLS, type EditCapabilityDeps } from "./edit.js";
+export { EditCapability, runAgenticFileWorker, buildEditPrompt, summarize, EDIT_TOOLS, type EditCapabilityDeps, type AgenticWorkerOptions } from "./edit.js";
 export { DocumentCapability, type DocumentCapabilityDeps } from "./document.js";
+export { ReviewCapability, buildReviewPrompt, REVIEW_TOOLS, type ReviewCapabilityDeps } from "./review.js";
