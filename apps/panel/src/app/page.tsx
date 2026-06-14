@@ -111,7 +111,7 @@ export default function AssistantPage() {
             )}
           </div>
         ) : (
-          <div className="mx-auto w-full max-w-3xl space-y-4 px-6 py-6">
+          <div className="w-full space-y-3.5 px-6 py-6 lg:px-10">
             {log.map((m) => (
               <ChatBubble key={m.id} message={m} />
             ))}
@@ -126,8 +126,8 @@ export default function AssistantPage() {
         )}
       </div>
 
-      <div className="shrink-0 px-4 pb-4 pt-2">
-        <div className="mx-auto w-full max-w-3xl rounded-2xl border bg-card shadow-sm transition-all focus-within:border-primary/50 focus-within:shadow-md focus-within:ring-1 focus-within:ring-primary/15">
+      <div className="shrink-0 px-6 pb-4 pt-2 lg:px-10">
+        <div className="w-full rounded-2xl border bg-card shadow-sm transition-all focus-within:border-primary/50 focus-within:shadow-md focus-within:ring-1 focus-within:ring-primary/15">
           <textarea
             ref={inputRef}
             value={input}
@@ -155,7 +155,7 @@ export default function AssistantPage() {
             </button>
           </div>
         </div>
-        <p className="mx-auto mt-2 max-w-3xl text-center text-[11px] text-muted-foreground">
+        <p className="mt-2 text-center text-[11px] text-muted-foreground">
           Iris proposes tasks — you decide. <kbd className="rounded border px-1 py-px font-sans text-[10px]">Enter</kbd> to send ·{" "}
           <kbd className="rounded border px-1 py-px font-sans text-[10px]">Shift</kbd>+
           <kbd className="rounded border px-1 py-px font-sans text-[10px]">Enter</kbd> for a new line
