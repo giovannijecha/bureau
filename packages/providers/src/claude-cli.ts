@@ -21,14 +21,16 @@ export type CliRunner = (
   args: string[],
   input: string,
   cwd?: string,
-  timeoutMs?: number
+  timeoutMs?: number,
+  /** Called with each raw stdout chunk as it arrives — for incremental streaming. */
+  onStdout?: (chunk: string) => void
 ) => Promise<CliResult>;
 
 /** Default runner: spawn the CLI, feed the prompt on stdin, collect stdout. The
  *  CLI runs in `cwd` (the task's worktree for edits) so its tools can't reach
  *  outside it. A wedged subprocess is killed after `timeoutMs` so a hung edit can
  *  never block a pipeline forever. */
-export const defaultCliRunner: CliRunner = (cli, args, input, cwd, timeoutMs) =>
+export const defaultCliRunner: CliRunner = (cli, args, input, cwd, timeoutMs, onStdout) =>
   new Promise<CliResult>((resolve) => {
     const child = spawn(cli, args, { stdio: ["pipe", "pipe", "pipe"], ...(cwd !== undefined ? { cwd } : {}) });
     let stdout = "";
@@ -42,7 +44,11 @@ export const defaultCliRunner: CliRunner = (cli, args, input, cwd, timeoutMs) =>
             setTimeout(() => child.kill("SIGKILL"), 2000).unref(); // hard-kill if it ignores SIGTERM
           }, timeoutMs)
         : undefined;
-    child.stdout.on("data", (d: Buffer) => (stdout += d.toString()));
+    child.stdout.on("data", (d: Buffer) => {
+      const s = d.toString();
+      stdout += s;
+      onStdout?.(s);
+    });
     child.stderr.on("data", (d: Buffer) => (stderr += d.toString()));
     child.on("error", (err: Error) => {
       if (timer) clearTimeout(timer);
@@ -134,10 +140,40 @@ export class ClaudeCliProvider implements Provider {
     onChunk: (chunk: string) => void,
     options?: SendOptions
   ): Promise<ProviderResponse> {
-    // Phase 1: no incremental CLI streaming yet — deliver the full answer once.
-    const result = await this.send(messages, options);
-    if (result.content) onChunk(result.content); // never emit an empty chunk (matches AnthropicProvider)
-    return result;
+    if (!messages.some((m) => m.role !== "system")) {
+      throw new Error("ClaudeCliProvider.stream requires at least one user/assistant message.");
+    }
+    const { system, prompt } = renderCliPrompt(messages);
+    const tools = options?.tools ?? this.tools;
+    // stream-json emits newline-delimited events as the agent works; -p mode
+    // requires --verbose with it. The edit flags (acceptEdits/add-dir/tools) all
+    // still apply — only the output FORMAT differs from send().
+    const args = ["-p", "--output-format", "stream-json", "--verbose", "--model", this.model];
+    if (system !== undefined) args.push("--append-system-prompt", system);
+    if (options?.acceptEdits) {
+      args.push("--permission-mode", "acceptEdits");
+      if (options.cwd !== undefined) args.push("--add-dir", options.cwd);
+    }
+    if (tools.length > 0) args.push("--tools", ...tools);
+
+    // Translate each COMPLETE json line into a human progress chunk as it arrives.
+    // stdout chunks don't align to line boundaries, so buffer until a newline.
+    let buffer = "";
+    const onStdout = (chunk: string): void => {
+      buffer += chunk;
+      let nl: number;
+      while ((nl = buffer.indexOf("\n")) >= 0) {
+        const line = buffer.slice(0, nl);
+        buffer = buffer.slice(nl + 1);
+        emitStreamChunk(line, onChunk);
+      }
+    };
+
+    const { stdout, stderr, code } = await this.run(this.cli, args, prompt, options?.cwd, this.timeoutMs, onStdout);
+    if (code !== 0) {
+      throw new Error(`claude CLI exited with code ${code}: ${stderr.trim() || "(no stderr)"}`);
+    }
+    return parseStreamJson(stdout, this.model);
   }
 }
 
@@ -161,6 +197,95 @@ export function renderCliPrompt(messages: Message[]): { system: string | undefin
     system: systemParts.length > 0 ? systemParts.join("\n\n") : undefined,
     prompt,
   };
+}
+
+/**
+ * Emit a human progress chunk from ONE stream-json line (assistant text + a compact
+ * line per tool call). Best-effort — empty, partial, or unknown lines are ignored,
+ * never thrown, so a single odd frame can't break a live edit.
+ */
+export function emitStreamChunk(line: string, onChunk: (chunk: string) => void): void {
+  const trimmed = line.trim();
+  if (trimmed === "") return;
+  let ev: unknown;
+  try {
+    ev = JSON.parse(trimmed);
+  } catch {
+    return; // a partial / non-JSON frame
+  }
+  const obj = ev as { type?: unknown; message?: { content?: unknown } };
+  if (obj.type !== "assistant" || !obj.message || !Array.isArray(obj.message.content)) return;
+  for (const block of obj.message.content as Array<Record<string, unknown>>) {
+    if (block.type === "text" && typeof block.text === "string" && block.text.trim() !== "") {
+      onChunk(block.text);
+    } else if (block.type === "tool_use" && typeof block.name === "string") {
+      onChunk(`\n→ ${describeTool(block.name, block.input)}\n`);
+    }
+  }
+}
+
+/** A compact one-line description of a tool call for the live stream. */
+function describeTool(name: string, input: unknown): string {
+  if (input && typeof input === "object") {
+    const i = input as Record<string, unknown>;
+    const path = i.file_path ?? i.path ?? i.notebook_path;
+    if (typeof path === "string") return `${name} ${path}`;
+    if (typeof i.command === "string") return `${name}: ${i.command.slice(0, 80)}`;
+    if (typeof i.pattern === "string") return `${name} "${String(i.pattern).slice(0, 60)}"`;
+  }
+  return name;
+}
+
+/**
+ * Parse the FULL stream-json output into a ProviderResponse. The final `result`
+ * event carries the answer text + token usage; the model comes from the assistant
+ * events. Falls back to the concatenated assistant text if there's no result event.
+ * Surfaces a CLI-reported error (non-success subtype / is_error) as a thrown error,
+ * mirroring parseCliJson — a capability must never treat an error string as output.
+ */
+export function parseStreamJson(stdout: string, fallbackModel: string): ProviderResponse {
+  let content = "";
+  let inputTokens = 0;
+  let outputTokens = 0;
+  let model: string | undefined;
+  const textParts: string[] = [];
+
+  for (const raw of stdout.split("\n")) {
+    const line = raw.trim();
+    if (line === "") continue;
+    let ev: unknown;
+    try {
+      ev = JSON.parse(line);
+    } catch {
+      continue;
+    }
+    const obj = ev as {
+      type?: unknown;
+      subtype?: unknown;
+      is_error?: unknown;
+      result?: unknown;
+      message?: { model?: unknown; content?: unknown };
+      usage?: { input_tokens?: unknown; output_tokens?: unknown };
+    };
+    if (obj.type === "assistant" && obj.message) {
+      if (typeof obj.message.model === "string") model = obj.message.model;
+      if (Array.isArray(obj.message.content)) {
+        for (const b of obj.message.content as Array<Record<string, unknown>>) {
+          if (b.type === "text" && typeof b.text === "string") textParts.push(b.text);
+        }
+      }
+    } else if (obj.type === "result") {
+      if (obj.is_error === true || (typeof obj.subtype === "string" && obj.subtype !== "success")) {
+        const detail = typeof obj.result === "string" ? obj.result.slice(0, 200) : String(obj.subtype ?? "error");
+        throw new Error(`claude CLI reported an error (${String(obj.subtype ?? "error")}): ${detail}`);
+      }
+      if (typeof obj.result === "string") content = obj.result;
+      if (typeof obj.usage?.input_tokens === "number") inputTokens = obj.usage.input_tokens;
+      if (typeof obj.usage?.output_tokens === "number") outputTokens = obj.usage.output_tokens;
+    }
+  }
+
+  return { content: content || textParts.join(""), inputTokens, outputTokens, model: model ?? fallbackModel };
 }
 
 /** Parse `claude --output-format json` stdout into a ProviderResponse. */

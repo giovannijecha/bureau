@@ -5,6 +5,8 @@ import {
   defaultCliRunner,
   renderCliPrompt,
   parseCliJson,
+  parseStreamJson,
+  emitStreamChunk,
   type CliRunner,
   type CliResult,
 } from "../src/claude-cli.js";
@@ -18,8 +20,9 @@ function fakeRunner(result: CliResult): {
   calls: { cli: string; args: string[]; input: string; cwd?: string }[];
 } {
   const calls: { cli: string; args: string[]; input: string; cwd?: string }[] = [];
-  const run: CliRunner = async (cli, args, input, cwd) => {
+  const run: CliRunner = async (cli, args, input, cwd, _timeoutMs, onStdout) => {
     calls.push({ cli, args, input, cwd });
+    onStdout?.(result.stdout); // simulate the CLI emitting its stdout (one chunk)
     return result;
   };
   return { run, calls };
@@ -27,6 +30,17 @@ function fakeRunner(result: CliResult): {
 
 const okJson = (result: string, input = 8, output = 4) =>
   JSON.stringify({ result, usage: { input_tokens: input, output_tokens: output } });
+
+/** A realistic stream-json transcript: system init, assistant turns, final result. */
+function streamJson(blocks: { text?: string; tool?: { name: string; input: unknown } }[], result: string, input = 12, output = 8) {
+  const lines = [JSON.stringify({ type: "system", subtype: "init" })];
+  for (const b of blocks) {
+    const content = b.text !== undefined ? [{ type: "text", text: b.text }] : [{ type: "tool_use", name: b.tool!.name, input: b.tool!.input }];
+    lines.push(JSON.stringify({ type: "assistant", message: { model: DEFAULT_MODEL, content } }));
+  }
+  lines.push(JSON.stringify({ type: "result", subtype: "success", result, usage: { input_tokens: input, output_tokens: output } }));
+  return lines.join("\n") + "\n";
+}
 
 describe("ClaudeCliProvider — send", () => {
   it("invokes the CLI with model + system-prompt and parses result + usage", async () => {
@@ -106,15 +120,87 @@ describe("ClaudeCliProvider — send", () => {
 });
 
 describe("ClaudeCliProvider — stream", () => {
-  it("falls back to a single chunk containing the full answer", async () => {
-    const { run } = fakeRunner({ stdout: okJson("whole answer", 5, 6), stderr: "", code: 0 });
+  it("uses stream-json (--verbose), streams text + tool-use lines, and parses the final result", async () => {
+    const stdout = streamJson(
+      [{ text: "Looking at the file." }, { tool: { name: "Edit", input: { file_path: "README.md" } } }, { text: "Done — added a section." }],
+      "Done — added a section.",
+      12,
+      8
+    );
+    const { run, calls } = fakeRunner({ stdout, stderr: "", code: 0 });
     const provider = new ClaudeCliProvider({ authStrategy: stubStrategy, run });
 
     const chunks: string[] = [];
-    const res = await provider.stream([{ role: "user", content: "hi" }], (c) => chunks.push(c));
+    const res = await provider.stream([{ role: "user", content: "edit" }], (c) => chunks.push(c), {
+      acceptEdits: true,
+      cwd: "/wt",
+      tools: ["Read", "Edit"],
+    });
 
-    expect(chunks).toEqual(["whole answer"]);
-    expect(res).toEqual({ content: "whole answer", inputTokens: 5, outputTokens: 6, model: DEFAULT_MODEL });
+    const joined = chunks.join("");
+    expect(joined).toContain("Looking at the file.");
+    expect(joined).toContain("→ Edit README.md"); // tool call surfaced compactly
+    expect(joined).toContain("Done — added a section.");
+    expect(res).toEqual({ content: "Done — added a section.", inputTokens: 12, outputTokens: 8, model: DEFAULT_MODEL });
+
+    const args = calls[0]!.args;
+    expect(args).toContain("stream-json");
+    expect(args).toContain("--verbose"); // required with stream-json in -p mode
+    expect(args).toContain("--add-dir"); // acceptEdits path keeps the worktree confinement
+  });
+
+  it("requires at least one non-system message", async () => {
+    const { run } = fakeRunner({ stdout: "", stderr: "", code: 0 });
+    const provider = new ClaudeCliProvider({ authStrategy: stubStrategy, run });
+    await expect(provider.stream([{ role: "system", content: "x" }], () => {})).rejects.toThrow(/at least one/);
+  });
+});
+
+describe("parseStreamJson", () => {
+  it("extracts the final result, usage, and model from the assistant turns", () => {
+    const stdout = streamJson([{ text: "hi" }], "final answer", 3, 9);
+    expect(parseStreamJson(stdout, "fallback")).toEqual({ content: "final answer", inputTokens: 3, outputTokens: 9, model: DEFAULT_MODEL });
+  });
+
+  it("throws on a non-success result subtype", () => {
+    const stdout =
+      JSON.stringify({ type: "assistant", message: { model: DEFAULT_MODEL, content: [{ type: "text", text: "…" }] } }) +
+      "\n" +
+      JSON.stringify({ type: "result", subtype: "error_max_turns", result: "ran out of turns" }) +
+      "\n";
+    expect(() => parseStreamJson(stdout, "m")).toThrow(/error_max_turns/);
+  });
+
+  it("falls back to assistant text and the fallback model when there is no result event", () => {
+    const stdout = JSON.stringify({ type: "assistant", message: { content: [{ type: "text", text: "partial" }] } }) + "\n";
+    expect(parseStreamJson(stdout, "m-fallback")).toEqual({ content: "partial", inputTokens: 0, outputTokens: 0, model: "m-fallback" });
+  });
+
+  it("ignores malformed lines without throwing", () => {
+    const stdout = "not json\n" + streamJson([{ text: "x" }], "ok");
+    expect(parseStreamJson(stdout, "m").content).toBe("ok");
+  });
+});
+
+describe("emitStreamChunk", () => {
+  it("emits assistant text", () => {
+    const out: string[] = [];
+    emitStreamChunk(JSON.stringify({ type: "assistant", message: { content: [{ type: "text", text: "thinking…" }] } }), (c) => out.push(c));
+    expect(out).toEqual(["thinking…"]);
+  });
+
+  it("emits a compact tool-use line", () => {
+    const out: string[] = [];
+    emitStreamChunk(JSON.stringify({ type: "assistant", message: { content: [{ type: "tool_use", name: "Read", input: { file_path: "a/b.ts" } }] } }), (c) => out.push(c));
+    expect(out.join("")).toContain("→ Read a/b.ts");
+  });
+
+  it("ignores non-assistant, empty, and malformed lines", () => {
+    const out: string[] = [];
+    emitStreamChunk(JSON.stringify({ type: "result", result: "x" }), (c) => out.push(c));
+    emitStreamChunk("", (c) => out.push(c));
+    emitStreamChunk("{not json", (c) => out.push(c));
+    expect(out).toEqual([]);
   });
 });
 
