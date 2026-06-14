@@ -11,15 +11,25 @@ export interface WorktreeHandle {
   readonly repoPath: string;
 }
 
-/** Create a new isolated worktree on a fresh branch off the clone's current HEAD. */
+/**
+ * Create a new isolated worktree on a fresh branch. Branches off `base` (a git
+ * ref, e.g. "origin/main") when given — so a task starts from the latest base
+ * rather than the clone's possibly-stale HEAD — otherwise off the clone's current
+ * HEAD. The worktree path stays behind `--`; an explicit base ref is validated
+ * and sits after the path, where `worktree add` reads its optional commit-ish.
+ */
 export async function createWorktree(
   canonicalClonePath: string,
   branch: string,
   worktreePath: string,
-  runner: Runner = defaultRunner
+  runner: Runner = defaultRunner,
+  base?: string
 ): Promise<WorktreeHandle> {
   assertSafeRef(branch, "branch");
-  await run(runner, "git", ["-C", canonicalClonePath, "worktree", "add", "-b", branch, "--", worktreePath]);
+  if (base !== undefined) assertSafeRef(base, "worktree base");
+  const args = ["-C", canonicalClonePath, "worktree", "add", "-b", branch, "--", worktreePath];
+  if (base !== undefined) args.push(base);
+  await run(runner, "git", args);
   return { path: worktreePath, branch, repoPath: canonicalClonePath };
 }
 

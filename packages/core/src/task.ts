@@ -46,7 +46,7 @@ export interface Gate {
 // Artifact — a file or diff produced by a capability
 // ---------------------------------------------------------------------------
 
-export type ArtifactKind = "diff" | "file" | "report" | "pr_url";
+export type ArtifactKind = "diff" | "file" | "report" | "pr_url" | "merge_error";
 
 export interface Artifact {
   readonly id: ArtifactId;

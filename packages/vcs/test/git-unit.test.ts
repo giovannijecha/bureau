@@ -1,7 +1,7 @@
 import { describe, it, expect } from "vitest";
 
 import { run, assertSafeRef, VcsError, type Runner, type ExecResult } from "../src/exec.js";
-import { push, openPr, mergePr, commitAll, getDiff, cloneRepo } from "../src/git.js";
+import { push, openPr, mergePr, commitAll, getDiff, cloneRepo, freshBase } from "../src/git.js";
 import { createWorktree, removeWorktree } from "../src/worktree.js";
 
 const ok = (stdout = ""): ExecResult => ({ stdout, stderr: "", code: 0 });
@@ -163,8 +163,42 @@ describe("createWorktree (args)", () => {
     expect(calls[0]!.args).toEqual(["-C", "/repo", "worktree", "add", "-b", "bureau/task-1", "--", "/wt"]);
   });
 
+  it("appends an explicit base ref after the worktree path", async () => {
+    const { run: r, calls } = makeRunner();
+    await createWorktree("/repo", "bureau/task-1", "/wt", r, "origin/main");
+    expect(calls[0]!.args).toEqual(["-C", "/repo", "worktree", "add", "-b", "bureau/task-1", "--", "/wt", "origin/main"]);
+  });
+
   it("rejects an unsafe branch", async () => {
     await expect(createWorktree("/repo", "--force", "/wt", makeRunner().run)).rejects.toThrow(/Unsafe branch/);
+  });
+
+  it("rejects an unsafe base ref", async () => {
+    await expect(createWorktree("/repo", "ok", "/wt", makeRunner().run, "--evil")).rejects.toThrow(/Unsafe worktree base/);
+  });
+});
+
+describe("freshBase", () => {
+  it("fetches origin and returns origin/<base> when it resolves", async () => {
+    const { run: r, calls } = makeRunner(() => ok());
+    const base = await freshBase("/repo", "main", r);
+    expect(base).toBe("origin/main");
+    expect(calls[0]!.args).toEqual(["-C", "/repo", "fetch", "origin", "main"]);
+    expect(calls[1]!.args).toEqual(["-C", "/repo", "rev-parse", "--verify", "--quiet", "origin/main"]);
+  });
+
+  it("returns undefined (fall back to HEAD) when the fetch fails — e.g. offline", async () => {
+    const r = makeRunner((_c, args) => (args.includes("fetch") ? { stdout: "", stderr: "no net", code: 1 } : ok())).run;
+    expect(await freshBase("/repo", "main", r)).toBeUndefined();
+  });
+
+  it("returns undefined when origin/<base> doesn't resolve after fetch", async () => {
+    const r = makeRunner((_c, args) => (args.includes("rev-parse") ? { stdout: "", stderr: "", code: 1 } : ok())).run;
+    expect(await freshBase("/repo", "main", r)).toBeUndefined();
+  });
+
+  it("rejects an unsafe base branch before running anything", async () => {
+    await expect(freshBase("/repo", "--evil", makeRunner().run)).rejects.toThrow(/Unsafe base branch/);
   });
 });
 

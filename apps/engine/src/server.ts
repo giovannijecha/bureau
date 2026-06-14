@@ -114,6 +114,7 @@ async function main(): Promise<void> {
       repoName: project.name,
       repoUrl: project.url,
       canonicalPath: project.canonicalPath,
+      baseBranch: project.baseBranch,
       author,
       runner,
     });

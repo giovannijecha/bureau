@@ -80,25 +80,31 @@ export default function GitPage() {
                 </a>
               </div>
               <div className="divide-y">
-                {ts.map((t) => (
-                  <Link key={t.id} href={`/tasks/${t.id}`} className="flex items-center gap-3 px-4 py-3 transition-colors hover:bg-muted/50">
-                    {t.status === "completed" ? (
-                      <GitMerge className="h-4 w-4 shrink-0 text-green-500" />
-                    ) : (
-                      <GitBranch className="h-4 w-4 shrink-0 text-amber-500" />
-                    )}
-                    <code className="shrink-0 font-mono text-xs text-muted-foreground">bureau/task-{t.id.slice(0, 8)}</code>
-                    <span className="min-w-0 flex-1 truncate text-sm">{t.goal}</span>
-                    <span
-                      className={cn(
-                        "shrink-0 rounded-full border px-2 py-0.5 text-xs font-medium",
-                        STATUS_COLOR[t.status] ?? "border-border text-muted-foreground"
+                {ts.map((t) => {
+                  // A completed task that didn't actually merge (conflicts / branch
+                  // protection) is shown honestly as "merge failed", never "merged".
+                  const mergeFailed = t.status === "completed" && !t.merged;
+                  const label = t.merged ? "merged" : mergeFailed ? "merge failed" : t.status.replace(/_/g, " ");
+                  const badge = t.merged
+                    ? STATUS_COLOR.completed
+                    : mergeFailed
+                      ? "border-red-500/40 text-red-500"
+                      : STATUS_COLOR[t.status] ?? "border-border text-muted-foreground";
+                  return (
+                    <Link key={t.id} href={`/tasks/${t.id}`} className="flex items-center gap-3 px-4 py-3 transition-colors hover:bg-muted/50">
+                      {t.merged ? (
+                        <GitMerge className="h-4 w-4 shrink-0 text-green-500" />
+                      ) : mergeFailed ? (
+                        <GitBranch className="h-4 w-4 shrink-0 text-red-500" />
+                      ) : (
+                        <GitBranch className="h-4 w-4 shrink-0 text-amber-500" />
                       )}
-                    >
-                      {t.status === "completed" ? "merged" : t.status.replace(/_/g, " ")}
-                    </span>
-                  </Link>
-                ))}
+                      <code className="shrink-0 font-mono text-xs text-muted-foreground">bureau/task-{t.id.slice(0, 8)}</code>
+                      <span className="min-w-0 flex-1 truncate text-sm">{t.goal}</span>
+                      <span className={cn("shrink-0 rounded-full border px-2 py-0.5 text-xs font-medium", badge)}>{label}</span>
+                    </Link>
+                  );
+                })}
               </div>
             </div>
           ))}

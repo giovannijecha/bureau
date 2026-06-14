@@ -36,11 +36,11 @@ function NavLink({ item, active }: { item: NavItem; active: boolean }) {
     <Link
       href={item.href}
       className={cn(
-        "flex items-center gap-3 rounded-lg px-3 py-2 text-sm font-medium transition-colors",
+        "flex items-center gap-3.5 rounded-lg px-3 py-2.5 text-[15px] font-medium transition-colors",
         active ? "bg-primary text-primary-foreground" : "text-muted-foreground hover:bg-muted hover:text-foreground"
       )}
     >
-      <Icon className="h-[18px] w-[18px] shrink-0" />
+      <Icon className="h-[22px] w-[22px] shrink-0" />
       <span>{item.title}</span>
       {item.soon && (
         <span className="ml-auto rounded-full border border-border px-1.5 py-px text-[10px] font-normal text-muted-foreground">
@@ -58,13 +58,13 @@ export function Sidebar() {
   return (
     <aside className="flex h-screen w-64 shrink-0 flex-col border-r bg-background">
       <div className="flex h-16 items-center gap-2.5 border-b px-5">
-        <div className="flex h-7 w-7 items-center justify-center rounded-md bg-foreground text-sm font-bold text-background">
+        <div className="flex h-8 w-8 items-center justify-center rounded-lg bg-foreground text-base font-bold text-background">
           B
         </div>
-        <span className="text-[15px] font-semibold tracking-tight">Bureau</span>
+        <span className="text-lg font-semibold tracking-tight">Bureau</span>
       </div>
 
-      <nav className="flex-1 space-y-1 overflow-y-auto px-2 py-3">
+      <nav className="flex-1 space-y-1 overflow-y-auto px-2.5 py-4">
         {NAV.map((item) => (
           <NavLink key={item.href} item={item} active={isActive(item.href)} />
         ))}

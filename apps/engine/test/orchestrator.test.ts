@@ -36,6 +36,7 @@ function fakeVcs() {
     removeWorktree: [] as { force: boolean }[],
   };
   let committed = true;
+  let mergeError: string | null = null;
   const vcs: VcsPort = {
     async ensureClone() {
       calls.ensureClone++;
@@ -61,13 +62,19 @@ function fakeVcs() {
     },
     async mergePr(branch) {
       calls.mergePr.push({ branch });
+      if (mergeError !== null) throw new Error(mergeError);
     },
     async removeWorktree(_ref, force) {
       calls.removeWorktree.push({ force });
     },
     chatCwd: () => "/tmp/clone",
   };
-  return { vcs, calls, setCommitted: (v: boolean) => void (committed = v) };
+  return {
+    vcs,
+    calls,
+    setCommitted: (v: boolean) => void (committed = v),
+    setMergeError: (v: string | null) => void (mergeError = v),
+  };
 }
 
 function fakeMessages(): MessageLog {
@@ -363,6 +370,36 @@ describe("confirmMerge", () => {
     const draft = orch.createTask(PROPOSAL);
     await expect(orch.confirmMerge(draft.id)).rejects.toMatchObject({ status: 409 });
     expect(vcs.calls.push).toHaveLength(0);
+  });
+
+  it("a successful merge is reported as merged with the PR url and no merge error", async () => {
+    const draft = orch.createTask(PROPOSAL);
+    await orch.startTask(draft.id);
+    await orch.settle(draft.id);
+    await orch.confirmMerge(draft.id);
+
+    const detail = toTaskDetail(store.load(draft.id)!);
+    expect(detail.merged).toBe(true);
+    expect(detail.mergeError).toBeNull();
+    expect(detail.prUrl).toBe("https://github.com/acme/widget/pull/1");
+  });
+
+  it("records an honest merge error (and keeps the PR link) when the squash-merge fails — never a false 'merged'", async () => {
+    vcs.setMergeError("merge conflict in README.md");
+    const draft = orch.createTask(PROPOSAL);
+    await orch.startTask(draft.id);
+    await orch.settle(draft.id);
+
+    const task = await orch.confirmMerge(draft.id);
+    // The PR was opened, so the merge was attempted (the wall opened) …
+    expect(vcs.calls.openPr).toHaveLength(1);
+    expect(vcs.calls.mergePr).toHaveLength(1);
+    // … but it didn't land: the task is honest about it.
+    const detail = toTaskDetail(task);
+    expect(detail.merged).toBe(false);
+    expect(detail.mergeError).toBe("merge conflict in README.md");
+    expect(detail.prUrl).toBe("https://github.com/acme/widget/pull/1"); // link to resolve
+    expect(vcs.calls.removeWorktree.some((c) => c.force)).toBe(true); // still cleaned up
   });
 });
 

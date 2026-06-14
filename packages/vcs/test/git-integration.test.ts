@@ -5,7 +5,7 @@ import { join } from "node:path";
 
 import { defaultRunner, run } from "../src/exec.js";
 import { createWorktree, removeWorktree } from "../src/worktree.js";
-import { cloneRepo, commitAll, currentBranch, getDiff, getWorkingDiff } from "../src/git.js";
+import { cloneRepo, commitAll, currentBranch, freshBase, getDiff, getWorkingDiff } from "../src/git.js";
 
 // These tests drive the REAL git binary against throwaway repos under the OS
 // temp dir — deterministic and fully offline (no network, no GitHub).
@@ -39,6 +39,28 @@ describe("createWorktree", () => {
     expect(handle).toEqual({ path: wtPath, branch: "task/abc", repoPath: canonical });
     expect(existsSync(join(wtPath, "README.md"))).toBe(true); // checked out the base content
     expect(await currentBranch(wtPath)).toBe("task/abc");
+  });
+});
+
+describe("freshBase + createWorktree — branch off the LATEST origin base", () => {
+  it("starts a task off origin's advanced main, not the clone's stale local copy", async () => {
+    // `canonical` here plays the role of the GitHub origin. Clone it (the engine's
+    // canonical clone), THEN advance origin's main — the clone is now stale.
+    const clone = join(tmpRoot, "clone-stale");
+    await cloneRepo(canonical, clone);
+    writeFileSync(join(canonical, "shipped.ts"), "export const shipped = true;\n");
+    await gitIn(canonical, ["add", "-A"]);
+    await gitIn(canonical, ["commit", "-m", "shipped by an earlier task"]);
+
+    // Without freshBase the worktree would branch off the stale clone HEAD and
+    // miss shipped.ts (→ avoidable conflicts at merge). With it, the base is
+    // origin/main and the new file is present.
+    const base = await freshBase(clone, "main");
+    expect(base).toBe("origin/main");
+
+    const wtPath = join(tmpRoot, "wt-fresh");
+    await createWorktree(clone, "task/fresh", wtPath, defaultRunner, base);
+    expect(existsSync(join(wtPath, "shipped.ts"))).toBe(true);
   });
 });
 

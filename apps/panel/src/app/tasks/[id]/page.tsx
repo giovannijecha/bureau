@@ -16,6 +16,7 @@ import {
   XCircle,
   ChevronDown,
   ChevronRight,
+  ExternalLink,
 } from "lucide-react";
 import type { TaskDetail, PipelineStep } from "@bureau/contracts";
 import { getTask, startTask, stopTask, mergeTask } from "../../../lib/api";
@@ -244,7 +245,24 @@ export default function TaskDetailPage({ params }: { params: { id: string } }) {
         </div>
       )}
 
-      {task.prUrl && (
+      {/* Merge failed — the CEO confirmed but it couldn't land. Honest, with the
+          PR link (if one was opened) so they can resolve it on GitHub. */}
+      {task.mergeError && (
+        <div className="mt-4 flex items-start gap-2.5 rounded-xl border border-red-500/30 bg-red-500/5 px-4 py-3 text-sm">
+          <XCircle className="mt-0.5 h-4 w-4 shrink-0 text-red-500" />
+          <div className="space-y-1">
+            <p className="text-foreground">The merge didn&apos;t complete — nothing landed on <code className="font-mono text-xs">main</code>.</p>
+            <p className="text-xs text-red-400">{task.mergeError}</p>
+            {task.prUrl && (
+              <a href={task.prUrl} target="_blank" rel="noreferrer" className="inline-flex items-center gap-1 text-xs font-medium text-foreground underline underline-offset-2">
+                Resolve the open PR on GitHub <ExternalLink className="h-3 w-3" />
+              </a>
+            )}
+          </div>
+        </div>
+      )}
+
+      {task.merged && task.prUrl && (
         <div className="mt-4 flex items-center gap-2 rounded-xl border bg-green-500/5 px-4 py-3 text-sm text-green-500">
           <CheckCircle2 className="h-4 w-4 shrink-0" />
           <span className="text-foreground">Merged to main —</span>

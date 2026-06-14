@@ -36,6 +36,28 @@ export interface CommitAuthor {
 }
 
 /**
+ * Refresh the base branch from origin and return the ref a new task branch should
+ * be created from — `origin/<baseBranch>` when it resolves, so every task starts
+ * off the LATEST main instead of the canonical clone's stale local copy. Without
+ * this, a clone made before earlier tasks merged would branch off an old main and
+ * force avoidable merge conflicts at confirm-merge time. Returns undefined (caller
+ * falls back to the clone's HEAD) when the remote ref can't be fetched/resolved —
+ * offline, no remote, or an empty repo — so worktree setup never hard-fails.
+ */
+export async function freshBase(
+  clonePath: string,
+  baseBranch: string,
+  runner: Runner = defaultRunner
+): Promise<string | undefined> {
+  assertSafeRef(baseBranch, "base branch");
+  const fetched = await runner("git", ["-C", clonePath, "fetch", "origin", baseBranch], {});
+  if (fetched.code !== 0) return undefined; // offline / no remote — use the local HEAD
+  const remoteRef = `origin/${baseBranch}`;
+  const verify = await runner("git", ["-C", clonePath, "rev-parse", "--verify", "--quiet", remoteRef], {});
+  return verify.code === 0 ? remoteRef : undefined;
+}
+
+/**
  * Stage everything and commit on the worktree's current branch. Returns true if
  * a commit was made, false if there was nothing to commit (a no-op edit) — the
  * empty-changeset case is benign, not an error. When `author` is given, the
