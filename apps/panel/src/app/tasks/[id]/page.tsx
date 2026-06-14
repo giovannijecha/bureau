@@ -39,6 +39,8 @@ export default function TaskDetailPage({ params }: { params: { id: string } }) {
   const [task, setTask] = useState<TaskDetail | null>(null);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  // Live worker output, accumulated per step from step_progress events.
+  const [live, setLive] = useState<Record<string, string>>({});
   const alive = useRef(true);
   useEffect(() => {
     alive.current = true;
@@ -60,9 +62,16 @@ export default function TaskDetailPage({ params }: { params: { id: string } }) {
     void load();
   }, [load]);
 
-  // Live progress: reload whenever the engine pushes an event for this task.
+  // Live progress. A step_progress event streams the worker's output — accumulate
+  // it into the live buffer (never reload, which would drop the stream). Every
+  // other task event reloads the authoritative state.
   useEngineEvents((e) => {
-    if ("taskId" in e && e.taskId === id) void load();
+    if (!("taskId" in e) || e.taskId !== id) return;
+    if (e.type === "step_progress") {
+      setLive((prev) => ({ ...prev, [e.stepId]: (prev[e.stepId] ?? "") + e.chunk }));
+      return;
+    }
+    void load();
   });
 
   async function act(fn: () => Promise<TaskDetail>) {
@@ -217,6 +226,7 @@ export default function TaskDetailPage({ params }: { params: { id: string } }) {
                   {s.failureReason}
                 </p>
               )}
+              <WorkerOutput status={s.status} summary={s.summary} live={live[s.id]} />
             </div>
           ))}
         </div>
@@ -281,6 +291,38 @@ function Back() {
       <ArrowLeft className="h-4 w-4" />
       Tasks
     </Link>
+  );
+}
+
+/** The worker's report — live stream while it works, persisted summary once done. */
+function WorkerOutput({ status, summary, live }: { status: PipelineStep["status"]; summary: string | null; live: string | undefined }) {
+  // While running, show the live stream. Once terminal, show ONLY the persisted
+  // summary — never the partial pre-failure stream, which would masquerade as a
+  // deliberate report under the red failure reason.
+  const streaming = status === "running";
+  const text = streaming ? live : summary;
+  if (!text) {
+    if (streaming) {
+      return (
+        <p className="ml-9 mt-2 flex items-center gap-1.5 text-xs text-muted-foreground">
+          <Loader2 className="h-3 w-3 animate-spin" /> Working…
+        </p>
+      );
+    }
+    return null;
+  }
+  if (streaming) {
+    return (
+      <pre className="ml-9 mt-2 max-h-48 overflow-auto whitespace-pre-wrap rounded-md border border-primary/20 bg-zinc-950 px-2.5 py-2 font-mono text-[11px] leading-relaxed text-zinc-300">
+        {text}
+        <span className="ml-0.5 inline-block h-3 w-1.5 animate-pulse bg-primary align-middle" />
+      </pre>
+    );
+  }
+  return (
+    <p className="ml-9 mt-2 rounded-md border bg-muted/40 px-2.5 py-1.5 text-xs text-muted-foreground">
+      <span className="font-medium text-foreground/70">Reported:</span> {text}
+    </p>
   );
 }
 

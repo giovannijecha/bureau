@@ -42,12 +42,12 @@ export async function runAgenticFileWorker(
     { role: "system", content: systemPrompt },
     { role: "user", content: buildEditPrompt(input) },
   ];
-  const response = await provider.send(messages, {
-    maxTokens: 8_000,
-    cwd: input.worktreePath,
-    tools: [...EDIT_TOOLS],
-    acceptEdits: true,
-  });
+  const opts = { maxTokens: 8_000, cwd: input.worktreePath, tools: [...EDIT_TOOLS], acceptEdits: true };
+  // Stream when the caller wants live progress (the engine pipes chunks to the
+  // panel); otherwise a plain send. Both edit the worktree directly + return usage.
+  const response = input.onChunk
+    ? await provider.stream(messages, input.onChunk, opts)
+    : await provider.send(messages, opts);
   // The worktree now holds the change; the model's final line summarizes it.
   return {
     artifacts: [],

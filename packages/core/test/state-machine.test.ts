@@ -212,6 +212,16 @@ describe("transition() — COMPLETE_STEP", () => {
     expect(next.steps[0]!.completedAt).not.toBeUndefined();
   });
 
+  it("persists the worker's summary when provided, and omits it when not", () => {
+    const task = makeTask({ status: "executing", steps: [makeStep({ id: sid("s1"), status: "running" })] });
+
+    const withSummary = transition(task, { type: "COMPLETE_STEP", stepId: sid("s1"), summary: "Added a Status section." });
+    expect(withSummary.steps[0]!.summary).toBe("Added a Status section.");
+
+    const without = transition(task, { type: "COMPLETE_STEP", stepId: sid("s1") });
+    expect(without.steps[0]!.summary).toBeUndefined();
+  });
+
   it.each(ALL_STATUSES.filter((s) => s !== "executing"))(
     "is illegal when task status is %s",
     (status) => {

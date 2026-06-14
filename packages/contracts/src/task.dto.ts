@@ -54,6 +54,8 @@ export const PipelineStepDto = z.object({
   status: StepStatusSchema,
   /** Why this step failed, when it did. */
   failureReason: z.string().nullable(),
+  /** The worker's own report of what it did (persisted), or null. */
+  summary: z.string().nullable(),
 });
 
 /** Engine status for the Settings panel. */

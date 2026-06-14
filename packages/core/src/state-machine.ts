@@ -20,7 +20,7 @@ export type TransitionEvent =
   | { type: "START_PLANNING" }
   | { type: "PLANNING_DONE" }
   | { type: "START_STEP"; stepId: StepId }
-  | { type: "COMPLETE_STEP"; stepId: StepId }
+  | { type: "COMPLETE_STEP"; stepId: StepId; summary?: string }
   | { type: "FAIL_STEP"; stepId: StepId; reason: string }
   | { type: "OPEN_GATE"; gateId: GateId }
   | { type: "DECIDE_GATE"; gateId: GateId; decision: HumanDecision; notes?: string }
@@ -112,6 +112,7 @@ export function transition(task: Task, event: TransitionEvent): Task {
       return patchStep(task, now, event.stepId, {
         status: step.gateAfter ? "blocked_on_gate" : "completed",
         completedAt: now,
+        ...(event.summary !== undefined ? { summary: event.summary } : {}),
       }, {
         type: "step_completed",
         at: now,

@@ -223,8 +223,9 @@ beforeEach(() => {
     kind: "edit",
     async execute(input) {
       captured = input;
+      input.onChunk?.("editing README.md…\nAdded a Status section.");
       if (editGate) await editGate;
-      return { artifacts: [], summary: "edited", usage: { inputTokens: 1000, outputTokens: 200, model: "claude-opus-4-8" } };
+      return { artifacts: [], summary: "Added a Status section.", usage: { inputTokens: 1000, outputTokens: 200, model: "claude-opus-4-8" } };
     },
   });
   events = [];
@@ -451,6 +452,20 @@ describe("confirmMerge", () => {
     await orch.confirmMerge(draft.id);
     expect(notifs.items.some((nft) => nft.kind === "merged" && nft.taskId === draft.id)).toBe(true);
     expect(orch.unreadNotifications()).toBeGreaterThan(0);
+  });
+
+  it("streams the worker's output (step_progress) and persists its summary on the step", async () => {
+    const draft = orch.createTask(PROPOSAL);
+    await orch.startTask(draft.id);
+    await orch.settle(draft.id);
+
+    const progress = events.filter((e) => e.type === "step_progress");
+    expect(progress.length).toBeGreaterThan(0);
+    expect(progress[0]).toMatchObject({ type: "step_progress", taskId: draft.id, capability: "edit" });
+    expect((progress[0] as { chunk: string }).chunk).toContain("Added a Status section.");
+
+    const detail = toTaskDetail(store.load(draft.id)!);
+    expect(detail.steps[0]!.summary).toBe("Added a Status section.");
   });
 
   it("records token usage for each worker step (scoped to the capability + task)", async () => {

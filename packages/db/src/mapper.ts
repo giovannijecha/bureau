@@ -75,6 +75,7 @@ export function taskToRows(task: Task): TaskRowBundle {
       startedAt: s.startedAt ?? null,
       completedAt: s.completedAt ?? null,
       failureReason: s.failureReason ?? null,
+      summary: s.summary ?? null,
     })),
     gates: task.gates.map((g, i) => ({
       id: g.id,
@@ -169,6 +170,7 @@ function rowToStep(r: StepSelect): Step {
     ...(r.startedAt !== null ? { startedAt: r.startedAt } : {}),
     ...(r.completedAt !== null ? { completedAt: r.completedAt } : {}),
     ...(r.failureReason !== null ? { failureReason: r.failureReason } : {}),
+    ...(r.summary !== null ? { summary: r.summary } : {}),
   };
 }
 

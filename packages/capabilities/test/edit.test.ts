@@ -69,6 +69,17 @@ describe("EditCapability.execute (agentic)", () => {
     expect(userMsg).toContain("the goal");
     expect(userMsg).toContain("exports hello()");
   });
+
+  it("streams its output via onChunk when the caller wants live progress", async () => {
+    const { provider } = fakeProvider("worked on it.\nAdded the module.");
+    const cap = new EditCapability({ provider });
+    const chunks: string[] = [];
+
+    const out = await cap.execute(input({ onChunk: (c) => chunks.push(c) }));
+
+    expect(chunks).toEqual(["worked on it.\nAdded the module."]); // the live stream was delivered
+    expect(out.summary).toBe("Added the module."); // and the final summary still parsed
+  });
 });
 
 describe("buildEditPrompt", () => {
