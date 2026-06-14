@@ -13,7 +13,7 @@
 
 import { randomUUID } from "node:crypto";
 import Anthropic from "@anthropic-ai/sdk";
-import { createDb, runMigrations, TaskRepo, MessageRepo } from "@bureau/db";
+import { createDb, runMigrations, TaskRepo, MessageRepo, ConversationRepo } from "@bureau/db";
 import { CapabilityRegistry, EditCapability } from "@bureau/capabilities";
 import {
   AnthropicProvider,
@@ -27,7 +27,7 @@ import type { WsEvent } from "@bureau/contracts";
 
 import { Orchestrator } from "./orchestrator.js";
 import { ProjectRegistry, projectsFromJson, slug, type ProjectConfig } from "./projects.js";
-import { RealVcs, DbMessageLog } from "./adapters.js";
+import { RealVcs, DbMessageLog, DbConversationStore } from "./adapters.js";
 import { WsHub } from "./ws.js";
 import { createHttpServer } from "./http.js";
 import type { EventSink, VcsPort } from "./ports.js";
@@ -110,6 +110,7 @@ function main(): void {
     });
 
   const messages = new DbMessageLog(new MessageRepo(db));
+  const conversations = new DbConversationStore(new ConversationRepo(db));
 
   // The orchestrator needs an EventSink, the WsHub needs the http server, and the
   // http server needs the orchestrator — so the sink forwards to the hub once it
@@ -125,9 +126,13 @@ function main(): void {
     vcs: vcsFor,
     events,
     messages,
+    conversations,
     ids: () => randomUUID(),
     clock: () => new Date().toISOString(),
   });
+
+  // Move any pre-thread chat into a conversation so it isn't lost.
+  orchestrator.migrateOrphanMessages();
 
   const server = createHttpServer({ orchestrator, store, messages });
   hub = new WsHub(server);

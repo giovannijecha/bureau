@@ -5,11 +5,11 @@ import type { Task } from "@bureau/core";
 import { CapabilityRegistry } from "@bureau/capabilities";
 import type { CapabilityInput } from "@bureau/capabilities";
 import type { Provider } from "@bureau/providers";
-import type { WsEvent, Message, TaskProposal } from "@bureau/contracts";
+import type { WsEvent, Message, TaskProposal, Conversation } from "@bureau/contracts";
 
 import { Orchestrator } from "../src/orchestrator.js";
 import { ProjectRegistry, type ProjectConfig } from "../src/projects.js";
-import type { TaskStore, VcsPort } from "../src/ports.js";
+import type { TaskStore, VcsPort, MessageLog, ConversationStore } from "../src/ports.js";
 import { toTaskDetail } from "../src/summary.js";
 
 // ── fakes ────────────────────────────────────────────────────────────────────
@@ -65,8 +65,41 @@ function fakeVcs() {
     async removeWorktree(_ref, force) {
       calls.removeWorktree.push({ force });
     },
+    chatCwd: () => "/tmp/clone",
   };
   return { vcs, calls, setCommitted: (v: boolean) => void (committed = v) };
+}
+
+function fakeMessages(): MessageLog {
+  let items: Message[] = [];
+  return {
+    append: (m) => void items.push(m),
+    list: () => items,
+    listByConversation: (cid) => items.filter((m) => m.conversationId === cid),
+    adoptOrphans: (cid) => {
+      let n = 0;
+      items = items.map((m) => (m.conversationId === undefined ? (n++, { ...m, conversationId: cid }) : m));
+      return n;
+    },
+  };
+}
+
+function fakeConversations(): ConversationStore {
+  const map = new Map<string, Conversation>();
+  return {
+    create: (c) => void map.set(c.id, c),
+    get: (id) => map.get(id) ?? null,
+    list: () => [...map.values()],
+    rename: (id, title, updatedAt) => {
+      const c = map.get(id);
+      if (c) map.set(id, { ...c, title, updatedAt });
+    },
+    touch: (id, updatedAt) => {
+      const c = map.get(id);
+      if (c) map.set(id, { ...c, updatedAt });
+    },
+    delete: (id) => void map.delete(id),
+  };
 }
 
 const PROPOSAL: TaskProposal = {
@@ -106,7 +139,6 @@ let vcs: ReturnType<typeof fakeVcs>;
 let prov: ReturnType<typeof fakeProvider>;
 let captured: CapabilityInput | null;
 let events: WsEvent[];
-let messages: Message[];
 let orch: Orchestrator;
 /** When set, the fake edit capability blocks on this until released — lets a test
  *  freeze the pipeline mid-step to exercise the stop-while-running race. */
@@ -137,7 +169,6 @@ beforeEach(() => {
     },
   });
   events = [];
-  messages = [];
   let n = 0;
   orch = new Orchestrator({
     store,
@@ -146,7 +177,8 @@ beforeEach(() => {
     projects: new ProjectRegistry([PROJECT]),
     vcs: () => vcs.vcs,
     events: { emit: (e) => void events.push(e) },
-    messages: { append: (m) => void messages.push(m), list: () => messages },
+    messages: fakeMessages(),
+    conversations: fakeConversations(),
     ids: () => `id-${++n}`,
     clock: () => "2026-06-13T00:00:00.000Z",
   });
@@ -179,7 +211,8 @@ describe("projects", () => {
         return vcs.vcs;
       },
       events: { emit: () => {} },
-      messages: { append: () => {}, list: () => [] },
+      messages: fakeMessages(),
+      conversations: fakeConversations(),
       ids: () => `r-${++k}`,
       clock: () => "2026-06-13T00:00:00.000Z",
     });
@@ -211,6 +244,40 @@ describe("chat", () => {
     const res = await orch.chat("hi");
     expect(res.reply.content).toBe("Tell me more.");
     expect(res.proposal).toBeUndefined();
+  });
+});
+
+// ── conversations ────────────────────────────────────────────────────────────
+
+describe("conversations", () => {
+  it("chat creates a thread, titles it from the first message, and returns its id", async () => {
+    const res = await orch.chat("add a quick start to the readme");
+    expect(res.conversationId).toBeTruthy();
+    expect(res.reply.conversationId).toBe(res.conversationId);
+    const convs = orch.listConversations();
+    expect(convs).toHaveLength(1);
+    expect(convs[0]!.title.toLowerCase()).toContain("add a quick start");
+  });
+
+  it("appends to an existing thread when given its id, and isolates threads", async () => {
+    const a = await orch.chat("hello");
+    const b = await orch.chat("again", undefined, a.conversationId);
+    expect(b.conversationId).toBe(a.conversationId);
+    expect(orch.listConversations()).toHaveLength(1);
+    expect(orch.messagesFor(a.conversationId)).toHaveLength(4); // 2 turns × (user + iris)
+
+    const other = await orch.chat("a different topic"); // no id → new thread
+    expect(other.conversationId).not.toBe(a.conversationId);
+    expect(orch.listConversations()).toHaveLength(2);
+    expect(orch.messagesFor(other.conversationId)).toHaveLength(2);
+  });
+
+  it("createConversation makes an empty thread; delete removes it", () => {
+    const c = orch.createConversation();
+    expect(orch.listConversations().map((x) => x.id)).toContain(c.id);
+    expect(orch.messagesFor(c.id)).toHaveLength(0);
+    orch.deleteConversation(c.id);
+    expect(orch.listConversations().map((x) => x.id)).not.toContain(c.id);
   });
 });
 

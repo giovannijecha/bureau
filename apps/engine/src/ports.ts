@@ -3,7 +3,7 @@
 // the canPush security gate — fully unit-testable with no DB, git, or network.
 
 import type { Task, TaskId } from "@bureau/core";
-import type { WsEvent, Message } from "@bureau/contracts";
+import type { WsEvent, Message, Conversation } from "@bureau/contracts";
 
 export interface TaskStore {
   save(task: Task): void;
@@ -34,6 +34,10 @@ export interface VcsPort {
   mergePr(branch: string): Promise<void>;
   /** Tear down a worktree (force = remove even if dirty, for aborts). */
   removeWorktree(ref: WorktreeRef, force: boolean): Promise<void>;
+  /** The directory Iris reads from in chat: the project's canonical clone if it
+   *  exists, else an empty scratch dir — so she never reads unrelated files (e.g.
+   *  the engine's own working directory). */
+  chatCwd(): string;
 }
 
 export interface EventSink {
@@ -42,5 +46,19 @@ export interface EventSink {
 
 export interface MessageLog {
   append(message: Message): void;
+  /** Every message across all conversations (used to migrate pre-thread messages). */
   list(): Message[];
+  /** Messages in one conversation, in order. */
+  listByConversation(conversationId: string): Message[];
+  /** Assign conversation-less (pre-thread) messages to a conversation; returns count. */
+  adoptOrphans(conversationId: string): number;
+}
+
+export interface ConversationStore {
+  create(conversation: Conversation): void;
+  get(id: string): Conversation | null;
+  list(): Conversation[];
+  rename(id: string, title: string, updatedAt: string): void;
+  touch(id: string, updatedAt: string): void;
+  delete(id: string): void;
 }

@@ -22,6 +22,13 @@
       "when": 1781382340495,
       "tag": "0002_melodic_siren",
       "breakpoints": true
+    },
+    {
+      "idx": 3,
+      "version": "6",
+      "when": 1781430792734,
+      "tag": "0003_slimy_famine",
+      "breakpoints": true
     }
   ]
 }

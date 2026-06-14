@@ -5,3 +5,4 @@ export * from "./task.dto.js";
 export * from "./message.dto.js";
 export * from "./ws.dto.js";
 export * from "./project.dto.js";
+export * from "./conversation.dto.js";

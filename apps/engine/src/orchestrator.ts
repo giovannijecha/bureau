@@ -23,10 +23,10 @@ import type {
 } from "@bureau/core";
 import type { CapabilityRegistry } from "@bureau/capabilities";
 import type { Provider } from "@bureau/providers";
-import type { Message, TaskProposal, ChatResponse, Project } from "@bureau/contracts";
+import type { Message, TaskProposal, ChatResponse, Project, Conversation } from "@bureau/contracts";
 import { join } from "node:path";
 
-import type { TaskStore, VcsPort, EventSink, MessageLog } from "./ports.js";
+import type { TaskStore, VcsPort, EventSink, MessageLog, ConversationStore } from "./ports.js";
 import { ProjectRegistry, toProjectDto, type ProjectConfig } from "./projects.js";
 import { OrchestratorError } from "./errors.js";
 import { irisRespond } from "./iris.js";
@@ -42,9 +42,12 @@ export interface OrchestratorDeps {
   readonly vcs: (project: ProjectConfig) => VcsPort;
   readonly events: EventSink;
   readonly messages: MessageLog;
+  readonly conversations: ConversationStore;
   readonly ids: () => string;
   readonly clock: () => string;
 }
+
+const DEFAULT_CONVERSATION_TITLE = "New chat";
 
 export class Orchestrator {
   /** In-flight background pipelines, keyed by task id (for settle / graceful drain). */
@@ -57,14 +60,80 @@ export class Orchestrator {
     return this.d.projects.list().map(toProjectDto);
   }
 
-  /** A conversation turn with Iris, scoped to a project. Returns her reply and,
-   *  maybe, a task proposal. */
-  async chat(content: string, projectId?: string): Promise<ChatResponse> {
+  /** A conversation turn with Iris, scoped to a project + conversation thread.
+   *  Creates a new conversation when none is given. */
+  async chat(content: string, projectId?: string, conversationId?: string): Promise<ChatResponse> {
     const project = this.d.projects.resolve(projectId);
-    this.appendMessage("user", content);
-    const turn = await irisRespond(this.d.provider, this.d.messages.list(), project);
-    const reply = this.appendMessage("iris", turn.reply);
-    return turn.proposal ? { reply, proposal: turn.proposal } : { reply };
+    const conversation = this.ensureConversation(conversationId, project);
+
+    this.appendChatMessage(conversation.id, "user", content);
+    if (conversation.title === DEFAULT_CONVERSATION_TITLE) {
+      this.d.conversations.rename(conversation.id, titleFrom(content), this.d.clock());
+    }
+
+    // Iris reads the ACTIVE project's clone (never the engine's own working dir),
+    // so she answers about the repo accurately instead of describing unrelated files.
+    const cwd = this.d.vcs(project).chatCwd();
+    const history = this.d.messages.listByConversation(conversation.id);
+    const turn = await irisRespond(this.d.provider, history, project, cwd);
+
+    const reply = this.appendChatMessage(conversation.id, "iris", turn.reply);
+    this.d.conversations.touch(conversation.id, this.d.clock());
+    return turn.proposal
+      ? { reply, conversationId: conversation.id, proposal: turn.proposal }
+      : { reply, conversationId: conversation.id };
+  }
+
+  /** The CEO's chat threads, most-recent first. */
+  listConversations(): Conversation[] {
+    return this.d.conversations.list();
+  }
+
+  /** Start a fresh, empty conversation. */
+  createConversation(projectId?: string): Conversation {
+    const project = this.d.projects.resolve(projectId);
+    const now = this.d.clock();
+    const conversation: Conversation = {
+      id: this.d.ids(),
+      title: DEFAULT_CONVERSATION_TITLE,
+      projectId: project.id,
+      createdAt: now,
+      updatedAt: now,
+    };
+    this.d.conversations.create(conversation);
+    return conversation;
+  }
+
+  deleteConversation(id: string): void {
+    this.d.conversations.delete(id);
+  }
+
+  /** Messages in a conversation. */
+  messagesFor(conversationId: string): Message[] {
+    return this.d.messages.listByConversation(conversationId);
+  }
+
+  /** Move pre-thread messages into one conversation so the old chat isn't lost. */
+  migrateOrphanMessages(): void {
+    if (!this.d.messages.list().some((m) => m.conversationId === undefined)) return;
+    const now = this.d.clock();
+    const conversation: Conversation = {
+      id: this.d.ids(),
+      title: "Earlier conversation",
+      projectId: null,
+      createdAt: now,
+      updatedAt: now,
+    };
+    this.d.conversations.create(conversation);
+    this.d.messages.adoptOrphans(conversation.id);
+  }
+
+  private ensureConversation(conversationId: string | undefined, project: ProjectConfig): Conversation {
+    if (conversationId !== undefined) {
+      const existing = this.d.conversations.get(conversationId);
+      if (existing) return existing;
+    }
+    return this.createConversation(project.id);
   }
 
   /** Await the in-flight pipeline for a task (no-op if none). Used by tests and shutdown. */
@@ -91,7 +160,6 @@ export class Orchestrator {
           reason: "The engine restarted while this task was running.",
         });
         this.emitTaskUpdated(aborted);
-        this.appendMessage("iris", `"${task.goal}" was interrupted by an engine restart and has been stopped.`, task.id);
         if (aborted.worktreePath !== undefined) {
           const vcs = this.vcsForTask(aborted);
           if (vcs) await vcs.removeWorktree({ path: aborted.worktreePath, branch: this.branchFor(task.id) }, true).catch(() => {});
@@ -146,7 +214,6 @@ export class Orchestrator {
     };
     this.save(task);
     this.emitTaskUpdated(task);
-    this.appendMessage("iris", `Created task "${proposal.title}" in ${project.owner}/${project.name}. Open it in Tasks and press Start when you're ready.`, task.id);
     return task;
   }
 
@@ -162,7 +229,6 @@ export class Orchestrator {
 
     task = this.drive(task, { type: "START_PLANNING" });
     this.emitTaskUpdated(task);
-    this.appendMessage("iris", `On it — setting up an isolated workspace and starting the pipeline for "${task.goal}".`, taskId);
 
     const promise = this.runPipeline(taskId);
     this.running.set(taskId, promise);
@@ -243,7 +309,6 @@ export class Orchestrator {
       task = this.drive(task, { type: "OPEN_GATE", gateId: gate.id });
       this.d.events.emit({ type: "gate_opened", taskId, gateId: gate.id, gateKind: "pr_approval" });
       this.emitTaskUpdated(task);
-      this.appendMessage("iris", `Done — the branch for "${task.goal}" is ready for your review.`, taskId);
     } catch (err) {
       await this.failPipeline(taskId, currentStepId, err);
     }
@@ -266,7 +331,6 @@ export class Orchestrator {
       }
       task = this.drive(task, { type: "ABORT_TASK", reason: errMessage(err) });
       this.emitTaskUpdated(task);
-      this.appendMessage("iris", `"${task.goal}" hit a problem and stopped: ${errMessage(err)}.`, taskId);
       if (task.worktreePath !== undefined) {
         const vcs = this.vcsForTask(task);
         if (vcs) {
@@ -288,7 +352,6 @@ export class Orchestrator {
     if (task.status === "completed" || task.status === "aborted") return task; // already resolved
     task = this.drive(task, { type: "ABORT_TASK", reason: "Stopped by the CEO." });
     this.emitTaskUpdated(task);
-    this.appendMessage("iris", `Stopped "${task.goal}".`, taskId);
     if (task.worktreePath !== undefined) {
       const vcs = this.vcsForTask(task);
       if (vcs) {
@@ -325,7 +388,7 @@ export class Orchestrator {
 
     // ── THE SECURITY WALL ──────────────────────────────────────────────────
     if (!canPush(task)) {
-      this.appendMessage("iris", "Approved, but the push gate isn't satisfied — nothing was merged.", task.id);
+      console.warn(`[engine] confirmMerge: canPush is false for task ${task.id} — nothing pushed.`);
       return task;
     }
     // Resolve push + PR/merge from ONE project (the task's stable id), so the
@@ -349,13 +412,10 @@ export class Orchestrator {
           createdAt: this.d.clock(),
         },
       ]);
-      this.appendMessage("iris", `Merged to main — ${prUrl}. Branch deleted, repo clean.`, task.id);
     } catch (err) {
-      const detail =
-        prUrl !== undefined
-          ? `The PR is open at ${prUrl} — you can complete the merge on GitHub.`
-          : `The branch ${branch} may be pushed — check GitHub.`;
-      this.appendMessage("iris", `The merge didn't complete: ${errMessage(err)}. ${detail}`, task.id);
+      console.error(
+        `[engine] merge failed for task ${task.id}: ${errMessage(err)}${prUrl !== undefined ? ` (PR opened: ${prUrl})` : ""}`
+      );
     } finally {
       // Always release the local worktree (the work now lives on the branch / PR).
       await vcs.removeWorktree({ path: worktreePath, branch }, true).catch(() => {});
@@ -416,12 +476,12 @@ export class Orchestrator {
     this.d.events.emit({ type: "task_updated", taskId: task.id, status: task.status });
   }
 
-  private appendMessage(role: Message["role"], content: string, taskId?: string): Message {
+  private appendChatMessage(conversationId: string, role: Message["role"], content: string): Message {
     const message: Message = {
       id: this.d.ids(),
+      conversationId,
       role,
       content,
-      ...(taskId !== undefined ? { taskId } : {}),
       createdAt: this.d.clock(),
     };
     this.d.messages.append(message);
@@ -445,6 +505,13 @@ function requireWorktree(task: Task): string {
 
 function truncate(s: string): string {
   return s.length > 72 ? `${s.slice(0, 69)}...` : s;
+}
+
+/** A conversation title derived from its first user message. */
+function titleFrom(content: string): string {
+  const oneLine = content.replace(/\s+/g, " ").trim();
+  if (oneLine === "") return "New chat";
+  return oneLine.length > 48 ? `${oneLine.slice(0, 47)}…` : oneLine;
 }
 
 function prBody(goal: string): string {
