@@ -39,7 +39,7 @@ pnpm test            # run every package's test suite
 pnpm quality         # build + boundaries + tests (the merge gate)
 ```
 
-**CI:** a ready GitHub Actions config lives at [`docs/ci-workflow.yml`](docs/ci-workflow.yml). Copy it to `.github/workflows/ci.yml` to run the quality gate on every push/PR. (Adding a workflow file needs a token with the `workflow` scope — `gh auth refresh -s workflow`.)
+**CI:** [`.github/workflows/ci.yml`](.github/workflows/ci.yml) runs the quality gate (build + boundaries + tests + panel typecheck) on every push and PR.
 
 ### Project layout
 
