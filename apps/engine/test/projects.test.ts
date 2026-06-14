@@ -57,6 +57,21 @@ describe("projectsFromJson", () => {
     expect(cfgs[0]!.baseBranch).toBe("dev");
   });
 
+  it("parses a testCommand argv array, and omits it when absent", () => {
+    const withTests = projectsFromJson(JSON.stringify([{ owner: "a", name: "b", url: "u", testCommand: ["npm", "test"] }]), "/r");
+    expect(withTests[0]!.testCommand).toEqual(["npm", "test"]);
+    const without = projectsFromJson(JSON.stringify([{ owner: "a", name: "b", url: "u" }]), "/r");
+    expect("testCommand" in without[0]!).toBe(false); // omitted, not undefined
+  });
+
+  it("rejects an unsafe / malformed testCommand", () => {
+    const bad = (tc: unknown) => () => projectsFromJson(JSON.stringify([{ owner: "a", name: "b", url: "u", testCommand: tc }]), "/r");
+    expect(bad("npm test")).toThrow(/JSON array/); // a bare string is rejected (no string-splitting)
+    expect(bad([])).toThrow(/non-empty/);
+    expect(bad(["npm", ""])).toThrow(/non-empty string/);
+    expect(bad(["--evil", "x"])).toThrow(/must be a program, not a flag/); // argv[0] flag = argument-injection defense
+  });
+
   it("rejects a malformed project shape", () => {
     expect(() => projectsFromJson(JSON.stringify([{ owner: "a" }]), "/r")).toThrow();
     expect(() => projectsFromJson(JSON.stringify([]), "/r")).toThrow();

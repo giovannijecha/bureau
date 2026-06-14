@@ -207,6 +207,7 @@ const PROJECT: ProjectConfig = {
   baseBranch: "main",
   canonicalPath: "/tmp/acme/widget/repo",
   worktreesDir: "/tmp/acme/widget/worktrees",
+  testCommand: ["npm", "test"],
 };
 
 let store: TaskStore;
@@ -217,6 +218,8 @@ let notifs: ReturnType<typeof fakeNotifications>;
 let prov: ReturnType<typeof fakeProvider>;
 let captured: CapabilityInput | null;
 let reviewInput: CapabilityInput | null;
+let testInput: CapabilityInput | null;
+let testSummary = "✓ Tests passed — `npm test` exited 0.";
 let events: WsEvent[];
 let orch: Orchestrator;
 /** When set, the fake edit capability blocks on this until released — lets a test
@@ -264,6 +267,15 @@ beforeEach(() => {
     kind: "plan",
     async execute() {
       return { artifacts: [], summary: "PLAN: edit README.md and add a Status section." };
+    },
+  });
+  testInput = null;
+  testSummary = "✓ Tests passed — `npm test` exited 0.";
+  registry.register({
+    kind: "test",
+    async execute(input) {
+      testInput = input;
+      return { artifacts: [], summary: testSummary };
     },
   });
   events = [];
@@ -588,6 +600,30 @@ describe("decideGate", () => {
     await expect(orch.decideGate(draft.id, "approved")).rejects.toMatchObject({ status: 409 });
   });
 
+  it("re-runs the test step on a request-changes revision and re-notifies on a fresh ✗", async () => {
+    const proposal: TaskProposal = {
+      title: "Edit then test",
+      summary: "x",
+      steps: [
+        { capability: "edit", description: "make the change" },
+        { capability: "test", description: "run the tests" },
+      ],
+    };
+    const draft = orch.createTask(proposal);
+    await orch.startTask(draft.id);
+    await orch.settle(draft.id); // first run (tests pass)
+    testInput = null;
+    testSummary = "✗ Tests FAILED — `npm test` exited 1."; // the revision breaks the suite
+
+    await orch.decideGate(draft.id, "request_changes", "tweak it");
+    await orch.settle(draft.id);
+
+    expect(testInput?.testCommand).toEqual(["npm", "test"]); // the test ran again on the re-run
+    expect(store.load(draft.id)!.status).toBe("awaiting_human"); // still advisory — parks for review
+    expect(notifs.items.filter((n) => n.subject === "Tests failed" && n.taskId === draft.id).length).toBeGreaterThan(0);
+    expect(vcs.calls.push).toHaveLength(0); // nothing pushed across the loop
+  });
+
   it("a successful merge is reported as merged with the PR url and no merge error", async () => {
     const draft = orch.createTask(PROPOSAL);
     await orch.startTask(draft.id);
@@ -609,6 +645,43 @@ describe("decideGate", () => {
     await orch.confirmMerge(draft.id);
     expect(notifs.items.some((nft) => nft.kind === "merged" && nft.taskId === draft.id)).toBe(true);
     expect(orch.unreadNotifications()).toBeGreaterThan(0);
+  });
+
+  it("passes the project's configured test command to a test step + parks for review (test makes no diff)", async () => {
+    const proposal: TaskProposal = {
+      title: "Edit then test",
+      summary: "make a change and run the suite",
+      steps: [
+        { capability: "edit", description: "make the change" },
+        { capability: "test", description: "run the tests" },
+      ],
+    };
+    const draft = orch.createTask(proposal);
+    await orch.startTask(draft.id);
+    await orch.settle(draft.id);
+
+    expect(testInput?.testCommand).toEqual(["npm", "test"]); // the CEO-configured argv
+    const t = store.load(draft.id)!;
+    expect(t.status).toBe("awaiting_human"); // a passing test still parks for the human (advisory)
+    expect(vcs.calls.push).toHaveLength(0); // and pushes nothing
+  });
+
+  it("a ✗ test result is advisory — the task still parks for review and fires a 'Tests failed' notification, never blocks", async () => {
+    testSummary = "✗ Tests FAILED — `npm test` exited 1.\n1 failing";
+    const proposal: TaskProposal = {
+      title: "Edit then failing test",
+      summary: "x",
+      steps: [
+        { capability: "edit", description: "make the change" },
+        { capability: "test", description: "run the tests" },
+      ],
+    };
+    const draft = orch.createTask(proposal);
+    await orch.startTask(draft.id);
+    await orch.settle(draft.id);
+
+    expect(store.load(draft.id)!.status).toBe("awaiting_human"); // NOT aborted — the human still decides
+    expect(notifs.items.some((n) => n.subject === "Tests failed" && n.taskId === draft.id)).toBe(true);
   });
 
   it("threads an earlier step's summary into a later step's context (plan → edit)", async () => {
@@ -760,16 +833,16 @@ describe("stopTask", () => {
 describe("capability integrity", () => {
   it("rejects creating a task whose capability isn't registered (no silent no-op)", () => {
     expect(() =>
-      orch.createTask({ title: "T", summary: "S", steps: [{ capability: "test", description: "d" }] })
+      orch.createTask({ title: "T", summary: "S", steps: [{ capability: "document", description: "d" }] })
     ).toThrow(expect.objectContaining({ status: 400 }));
   });
 
   it("fails LOUD (aborts, step failed, no commit) if a step's capability is unregistered at run time", async () => {
     const draft = orch.createTask(PROPOSAL); // valid edit step
     // Tamper past createTask's guard: swap to an unregistered capability in the store
-    // ("test" is not registered in this harness; edit/review/document are).
+    // ("document" is not registered in this harness; edit/review/plan/test are).
     const t = store.load(draft.id)!;
-    store.save({ ...t, steps: t.steps.map((s) => ({ ...s, capability: "test" as const })) });
+    store.save({ ...t, steps: t.steps.map((s) => ({ ...s, capability: "document" as const })) });
 
     await orch.startTask(draft.id);
     await orch.settle(draft.id);

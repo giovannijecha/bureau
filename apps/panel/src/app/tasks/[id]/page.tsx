@@ -237,7 +237,7 @@ export default function TaskDetailPage({ params }: { params: { id: string } }) {
                   {s.failureReason}
                 </p>
               )}
-              <WorkerOutput status={s.status} summary={s.summary} live={live[s.id]} />
+              <WorkerOutput status={s.status} summary={s.summary} live={live[s.id]} capability={s.capability} />
             </div>
           ))}
         </div>
@@ -292,7 +292,17 @@ function Back() {
 }
 
 /** The worker's report — live stream while it works, persisted summary once done. */
-function WorkerOutput({ status, summary, live }: { status: PipelineStep["status"]; summary: string | null; live: string | undefined }) {
+function WorkerOutput({
+  status,
+  summary,
+  live,
+  capability,
+}: {
+  status: PipelineStep["status"];
+  summary: string | null;
+  live: string | undefined;
+  capability: PipelineStep["capability"];
+}) {
   // While running, show the live stream. Once terminal, show ONLY the persisted
   // summary — never the partial pre-failure stream, which would masquerade as a
   // deliberate report under the red failure reason.
@@ -316,10 +326,20 @@ function WorkerOutput({ status, summary, live }: { status: PipelineStep["status"
       </pre>
     );
   }
+  // ONLY a test step's verdict gets the green/red treatment (keyed on capability so
+  // another worker's summary that happens to start with ✓/✗ never mis-renders).
+  const passed = capability === "test" && text.startsWith("✓");
+  const failed = capability === "test" && (text.startsWith("✗") || text.startsWith("⚠"));
   return (
-    <p className="ml-9 mt-2 rounded-md border bg-muted/40 px-2.5 py-1.5 text-xs text-muted-foreground">
-      <span className="font-medium text-foreground/70">Reported:</span> {text}
-    </p>
+    <pre
+      className={cn(
+        "ml-9 mt-2 max-h-48 overflow-auto whitespace-pre-wrap rounded-md border px-2.5 py-1.5 text-xs",
+        failed ? "border-red-500/30 bg-red-500/5 text-red-400" : passed ? "border-green-500/30 bg-green-500/5 text-green-500" : "bg-muted/40 text-muted-foreground"
+      )}
+    >
+      {!passed && !failed && <span className="font-medium text-foreground/70">Reported: </span>}
+      {text}
+    </pre>
   );
 }
 

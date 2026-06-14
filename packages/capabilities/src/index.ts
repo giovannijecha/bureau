@@ -8,3 +8,5 @@ export { EditCapability, runAgenticFileWorker, buildEditPrompt, summarize, EDIT_
 export { DocumentCapability, type DocumentCapabilityDeps } from "./document.js";
 export { ReviewCapability, buildReviewPrompt, REVIEW_TOOLS, type ReviewCapabilityDeps } from "./review.js";
 export { PlanCapability, buildPlanPrompt, PLAN_TOOLS, type PlanCapabilityDeps } from "./plan.js";
+export { TestCapability, DEFAULT_TEST_TIMEOUT_MS, type TestCapabilityDeps } from "./test.js";
+export { defaultCommandRunner, type CommandRunner, type CommandResult } from "./run-command.js";

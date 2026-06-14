@@ -5,7 +5,7 @@ import type { Message } from "@bureau/contracts";
 
 import { parseIris, irisRespond } from "../src/iris.js";
 
-const PROJECT = { owner: "acme", name: "widget", baseBranch: "main" };
+const PROJECT = { owner: "acme", name: "widget", baseBranch: "main", hasTests: false };
 
 const PROPOSAL_JSON = JSON.stringify({
   reply: "Sure!",
@@ -110,5 +110,25 @@ describe("irisRespond", () => {
     await irisRespond(provider, user("which branches exist?"), PROJECT, undefined, "Repository git state: Branches: main, feature-x");
     expect(systemSeen).toContain("Repository git state");
     expect(systemSeen).toContain("feature-x");
+  });
+
+  it("tells Iris whether the project has a configured test suite (gates test-step proposals)", async () => {
+    let systemSeen = "";
+    const provider: Provider = {
+      name: "fake",
+      authStrategy: { kind: "api-key", isAvailable: () => true },
+      async send(messages) {
+        systemSeen = messages.find((m) => m.role === "system")?.content ?? "";
+        return { content: JSON.stringify({ reply: "ok" }), inputTokens: 0, outputTokens: 0 };
+      },
+      async stream() {
+        return { content: "", inputTokens: 0, outputTokens: 0 };
+      },
+    };
+    await irisRespond(provider, user("hi"), { ...PROJECT, hasTests: true });
+    expect(systemSeen).toContain("HAS a configured test suite");
+    systemSeen = "";
+    await irisRespond(provider, user("hi"), { ...PROJECT, hasTests: false });
+    expect(systemSeen).toMatch(/NO test command|do NOT propose a "test"/);
   });
 });

@@ -18,6 +18,10 @@ export interface ProjectConfig {
   readonly canonicalPath: string;
   /** Root under which this project's task worktrees live. */
   readonly worktreesDir: string;
+  /** CEO-configured argv for the `test` worker (e.g. ["npm","test"]). Already
+   *  tokenized — the runtime NEVER parses a string into a command. Undefined ⇒ the
+   *  project has no test suite and a test step degrades to a skip. */
+  readonly testCommand?: readonly string[];
 }
 
 /** Public, panel-facing view of a project (no urls or on-disk paths). */
@@ -78,6 +82,23 @@ function requireStr(value: unknown, field: string): string {
   return value;
 }
 
+/** Parse a CEO-configured test command — a JSON array of non-empty strings (already
+ *  tokenized; the runtime never splits a string). Rejects an argv[0] that looks like
+ *  a flag (argument-injection defense, echoing assertSafeRef's precedent). Returns
+ *  undefined when absent so the field can be spread-omitted (exactOptionalPropertyTypes). */
+export function parseTestCommand(value: unknown, field: string): readonly string[] | undefined {
+  if (value === undefined || value === null) return undefined;
+  if (!Array.isArray(value) || value.length === 0) {
+    throw new Error(`${field} must be a non-empty JSON array of strings (e.g. ["npm","test"])`);
+  }
+  const argv = value.map((v, i) => {
+    if (typeof v !== "string" || v.trim() === "") throw new Error(`${field}[${i}] must be a non-empty string`);
+    return v;
+  });
+  if (argv[0]!.startsWith("-")) throw new Error(`${field}[0] ("${argv[0]}") must be a program, not a flag`);
+  return argv;
+}
+
 /** Build project configs from BUREAU_PROJECTS (JSON array), deriving on-disk paths
  *  under reposRoot. Validates the operator-supplied shape and fails fast. */
 export function projectsFromJson(json: string, reposRoot: string): ProjectConfig[] {
@@ -96,6 +117,7 @@ export function projectsFromJson(json: string, reposRoot: string): ProjectConfig
     // Derive from owner+name (not name alone) so two repos that share a name under
     // different owners don't collide.
     const id = typeof r.id === "string" && r.id.trim() !== "" ? slug(r.id) : slug(`${owner}-${name}`);
+    const testCommand = parseTestCommand(r.testCommand, `projects[${i}].testCommand`);
     return {
       id,
       owner,
@@ -104,6 +126,7 @@ export function projectsFromJson(json: string, reposRoot: string): ProjectConfig
       baseBranch,
       canonicalPath: join(reposRoot, id, "repo"),
       worktreesDir: join(reposRoot, id, "worktrees"),
+      ...(testCommand !== undefined ? { testCommand } : {}),
     };
   });
 }

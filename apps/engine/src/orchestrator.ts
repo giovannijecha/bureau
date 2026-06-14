@@ -154,6 +154,22 @@ export class Orchestrator {
     return this.d.usage.summary(sinceDay);
   }
 
+  /** A test step that completed with a ✗ verdict → an advisory red flag in the
+   *  inbox, so the CEO sees it before opening the task. NEVER blocks (the test
+   *  result is advisory; the human still decides at the gate). Best-effort. */
+  private notifyTestFailure(taskId: string, capability: string, summary: string): void {
+    // ✗ (failed/timed out) or ⚠ (couldn't run) — both mean "tests didn't pass".
+    if (capability !== "test" || !(summary.startsWith("✗") || summary.startsWith("⚠"))) return;
+    const goal = (() => {
+      try {
+        return truncate(this.requireTask(taskId).goal);
+      } catch {
+        return taskId;
+      }
+    })();
+    this.notify("failed", taskId, "Tests failed", `“${goal}” — ${summary.split("\n")[0]} Review carefully before merging.`);
+  }
+
   /** Record a provider round-trip's spend. No-ops on a zero-token usage (or none). */
   private recordUsage(scope: string, taskId: string | null, usage?: { inputTokens: number; outputTokens: number; model: string }): void {
     if (!usage || (usage.inputTokens === 0 && usage.outputTokens === 0)) return;
@@ -232,7 +248,8 @@ export class Orchestrator {
     // so without this she can't answer about branches/history.
     const repo = await port.repoInfo(8).catch(() => null);
     const history = this.d.messages.listByConversation(conversation.id);
-    const turn = await irisRespond(this.d.provider, history, project, cwd, repo ? buildRepoContext(repo) : undefined);
+    const irisProject = { owner: project.owner, name: project.name, baseBranch: project.baseBranch, hasTests: project.testCommand !== undefined };
+    const turn = await irisRespond(this.d.provider, history, irisProject, cwd, repo ? buildRepoContext(repo) : undefined);
 
     const reply = this.appendChatMessage(conversation.id, "iris", turn.reply);
     this.recordUsage("iris", null, turn.usage);
@@ -439,11 +456,13 @@ export class Orchestrator {
         // too (where earlier work is already committed), not just the increment.
         const reviewDiff =
           step.capability === "review" ? await vcs.reviewDiff(worktreePath, `origin/${project.baseBranch}`) : undefined;
+        const testCommand = step.capability === "test" ? project.testCommand : undefined;
         const out = await this.d.capabilities.get(step.capability).execute({
           step,
           worktreePath,
           context: this.stepContext(taskId, planned.id),
           ...(reviewDiff !== undefined ? { diff: reviewDiff } : {}),
+          ...(testCommand !== undefined ? { testCommand } : {}),
           // Pipe the worker's live output to the panel as it works.
           onChunk: (chunk) =>
             this.d.events.emit({ type: "step_progress", taskId, stepId: planned.id, capability: step.capability, chunk }),
@@ -456,6 +475,7 @@ export class Orchestrator {
         this.drive(this.requireTask(taskId), { type: "COMPLETE_STEP", stepId: planned.id, summary: out.summary });
         currentStepId = undefined;
         this.d.events.emit({ type: "step_completed", taskId, stepId: planned.id });
+        this.notifyTestFailure(taskId, step.capability, out.summary); // advisory red flag, never blocks
       }
 
       // Capture the diff (incl. new files), then commit it locally on the branch.
@@ -551,11 +571,13 @@ export class Orchestrator {
         }
         const reviewDiff =
           step.capability === "review" ? await vcs.reviewDiff(worktreePath, `origin/${project.baseBranch}`) : undefined;
+        const testCommand = step.capability === "test" ? project.testCommand : undefined;
         const out = await this.d.capabilities.get(step.capability).execute({
           step,
           worktreePath,
           context: this.stepContext(taskId, planned.id, changeRequest),
           ...(reviewDiff !== undefined ? { diff: reviewDiff } : {}),
+          ...(testCommand !== undefined ? { testCommand } : {}),
           onChunk: (chunk) =>
             this.d.events.emit({ type: "step_progress", taskId, stepId: planned.id, capability: step.capability, chunk }),
         });
@@ -565,6 +587,7 @@ export class Orchestrator {
         this.drive(this.requireTask(taskId), { type: "COMPLETE_STEP", stepId: planned.id, summary: out.summary });
         currentStepId = undefined;
         this.d.events.emit({ type: "step_completed", taskId, stepId: planned.id });
+        this.notifyTestFailure(taskId, step.capability, out.summary);
       }
 
       if (this.requireTask(taskId).status !== "executing") return; // stopped before commit
