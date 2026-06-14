@@ -19,6 +19,7 @@ import { chat, createTask, listConversations, deleteConversation, messagesFor } 
 import { useProjects } from "../lib/useProjects";
 import { ProjectPicker } from "../components/ProjectPicker";
 import { ConversationsRail } from "../components/ConversationsRail";
+import { Markdown } from "../components/Markdown";
 import { cn } from "../lib/utils";
 
 const ASSIGNEE: Record<string, string> = {
@@ -236,27 +237,35 @@ function ChatBubble({ message }: { message: Message }) {
       </div>
     );
   }
+  const isUser = message.role === "user";
   return (
-    <div className={cn("flex", message.role === "user" ? "justify-end" : "justify-start")}>
+    <div className={cn("flex", isUser ? "justify-end" : "justify-start")}>
       <div
         className={cn(
           "max-w-[82%] rounded-2xl px-4 py-2.5 text-sm leading-relaxed",
-          message.role === "user" ? "bg-primary text-primary-foreground" : "border bg-card"
+          isUser ? "whitespace-pre-wrap bg-primary text-primary-foreground" : "border bg-card"
         )}
       >
-        {message.content}
+        {/* Iris replies are markdown (bold, lists, code, links); the CEO's own
+            messages are shown verbatim. */}
+        {isUser ? message.content : <Markdown source={message.content} />}
       </div>
     </div>
   );
 }
 
 function TypingIndicator() {
+  // Iris refreshes the repo clone and reads it before answering — say so, like a
+  // good assistant, so the wait reads as "working", not "stuck".
   return (
     <div className="flex justify-start">
-      <div className="flex items-center gap-1 rounded-2xl border bg-card px-4 py-3.5">
-        <span className="h-1.5 w-1.5 animate-bounce rounded-full bg-muted-foreground/70 [animation-delay:-0.3s]" />
-        <span className="h-1.5 w-1.5 animate-bounce rounded-full bg-muted-foreground/70 [animation-delay:-0.15s]" />
-        <span className="h-1.5 w-1.5 animate-bounce rounded-full bg-muted-foreground/70" />
+      <div className="flex items-center gap-2 rounded-2xl border bg-card px-4 py-3">
+        <span className="flex items-center gap-1">
+          <span className="h-1.5 w-1.5 animate-bounce rounded-full bg-muted-foreground/70 [animation-delay:-0.3s]" />
+          <span className="h-1.5 w-1.5 animate-bounce rounded-full bg-muted-foreground/70 [animation-delay:-0.15s]" />
+          <span className="h-1.5 w-1.5 animate-bounce rounded-full bg-muted-foreground/70" />
+        </span>
+        <span className="text-xs text-muted-foreground">Iris is reading the repo…</span>
       </div>
     </div>
   );

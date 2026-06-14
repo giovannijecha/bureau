@@ -183,9 +183,12 @@ export class Orchestrator {
       this.d.conversations.rename(conversation.id, titleFrom(content), this.d.clock());
     }
 
-    // Iris reads the ACTIVE project's clone (never the engine's own working dir),
-    // so she answers about the repo accurately instead of describing unrelated files.
-    const cwd = this.d.vcs(project).chatCwd();
+    // Iris reads the ACTIVE project's clone (never the engine's own working dir).
+    // Refresh it to the LIVE main FIRST so she describes the current repo, not a
+    // stale snapshot from clone time. Best-effort — a fetch hiccup never fails chat.
+    const port = this.d.vcs(project);
+    await port.syncClone().catch(() => {});
+    const cwd = port.chatCwd();
     const history = this.d.messages.listByConversation(conversation.id);
     const turn = await irisRespond(this.d.provider, history, project, cwd);
 

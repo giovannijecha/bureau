@@ -28,6 +28,7 @@ function fakeStore() {
 function fakeVcs() {
   const calls = {
     ensureClone: 0,
+    syncClone: 0,
     workingDiff: 0,
     setupWorktree: [] as { branch: string; path: string }[],
     commitAll: [] as { path: string; message: string }[],
@@ -41,6 +42,9 @@ function fakeVcs() {
   const vcs: VcsPort = {
     async ensureClone() {
       calls.ensureClone++;
+    },
+    async syncClone() {
+      calls.syncClone++;
     },
     async setupWorktree(branch, path) {
       calls.setupWorktree.push({ branch, path });
@@ -306,13 +310,14 @@ describe("projects", () => {
 // ── chat ─────────────────────────────────────────────────────────────────────
 
 describe("chat", () => {
-  it("returns Iris's reply and a proposal, and never touches the repo", async () => {
+  it("syncs the clone so Iris reads the live repo, returns the reply + proposal, and starts no task", async () => {
     const res = await orch.chat("add a quick start to the readme");
     expect(res.reply.role).toBe("iris");
     expect(res.reply.content).toBe("Sure!");
     expect(res.proposal).toEqual(PROPOSAL);
-    expect(vcs.calls.ensureClone).toBe(0); // chatting creates nothing
-    expect(store.list()).toHaveLength(0);
+    expect(vcs.calls.syncClone).toBe(1); // refreshed the clone to the live repo first
+    expect(vcs.calls.commitAll).toHaveLength(0); // chatting changes nothing
+    expect(store.list()).toHaveLength(0); // and creates no task
   });
 
   it("returns just a reply when Iris is only chatting (no proposal)", async () => {

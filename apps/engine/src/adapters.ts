@@ -7,6 +7,7 @@ import {
   cloneRepo,
   createWorktree,
   freshBase,
+  syncToBase,
   getWorkingDiff,
   commitAll,
   push,
@@ -52,6 +53,13 @@ export class RealVcs implements VcsPort {
   async ensureClone(): Promise<void> {
     if (existsSync(join(this.cfg.canonicalPath, ".git"))) return; // already cloned
     await cloneRepo(this.cfg.repoUrl, this.cfg.canonicalPath, this.runner);
+  }
+
+  async syncClone(): Promise<void> {
+    await this.ensureClone();
+    // Refresh the clone's main working tree to origin's base so Iris reads the
+    // LIVE repo, not a stale snapshot from clone time. Best-effort (no-op offline).
+    await syncToBase(this.cfg.canonicalPath, this.cfg.baseBranch, this.runner);
   }
 
   async setupWorktree(branch: string, worktreePath: string): Promise<WorktreeRef> {

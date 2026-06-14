@@ -36,6 +36,36 @@ export interface CommitAuthor {
 }
 
 /**
+ * Bring the canonical clone's OWN working tree up to the latest origin base, so a
+ * reader of it (Iris, in chat) sees the current repository — not a stale snapshot
+ * from when it was cloned. Fetches origin/<baseBranch>, switches the clone to the
+ * base branch, and hard-resets it to the fetched tip. Returns false (a no-op) when
+ * offline / the ref doesn't resolve, so a transient network blip never breaks chat.
+ *
+ * SAFE w.r.t. running tasks: this touches ONLY the clone's main working tree, which
+ * Bureau uses solely for reading + as the parent of task worktrees. Tasks run on
+ * their own separate worktrees and branches (bureau/task-*), so nothing in flight
+ * is disturbed; and the clone's main tree is never edited (edits are confined to
+ * worktrees), so a hard reset discards nothing real.
+ */
+export async function syncToBase(
+  clonePath: string,
+  baseBranch: string,
+  runner: Runner = defaultRunner
+): Promise<boolean> {
+  assertSafeRef(baseBranch, "base branch");
+  const fetched = await runner("git", ["-C", clonePath, "fetch", "origin", baseBranch], {});
+  if (fetched.code !== 0) return false; // offline / no remote — keep what we have
+  const remoteRef = `origin/${baseBranch}`;
+  const resolves = await runner("git", ["-C", clonePath, "rev-parse", "--verify", "--quiet", remoteRef], {});
+  if (resolves.code !== 0) return false;
+  const checkedOut = await runner("git", ["-C", clonePath, "checkout", baseBranch], {});
+  if (checkedOut.code !== 0) return false;
+  const reset = await runner("git", ["-C", clonePath, "reset", "--hard", remoteRef], {});
+  return reset.code === 0;
+}
+
+/**
  * Refresh the base branch from origin and return the ref a new task branch should
  * be created from — `origin/<baseBranch>` when it resolves, so every task starts
  * off the LATEST main instead of the canonical clone's stale local copy. Without

@@ -5,6 +5,7 @@ import { BrainCircuit, Search, Plus, FileText, BookText, Loader2, X, Save } from
 import type { NoteSummary, Note } from "@bureau/contracts";
 import { listNotes, getNote, saveNote } from "../../lib/api";
 import { useEngineEvents } from "../../lib/useEngineEvents";
+import { Markdown } from "../../components/Markdown";
 import { cn } from "../../lib/utils";
 
 type Pane = { mode: "view"; note: Note } | { mode: "new" } | { mode: "empty" };
@@ -202,48 +203,3 @@ function Composer({ onCancel, onSaved }: { onCancel: () => void; onSaved: (n: No
   );
 }
 
-/** A tiny, dependency-free markdown renderer — enough for journals & notes
- *  (headings, bullets, bold, inline code, rules). */
-function Markdown({ source }: { source: string }) {
-  const lines = source.split("\n");
-  const out: React.ReactNode[] = [];
-  let list: string[] = [];
-  const flush = () => {
-    if (list.length) {
-      out.push(
-        <ul key={`ul-${out.length}`} className="my-2 list-disc space-y-1 pl-5 text-sm">
-          {list.map((li, i) => (
-            <li key={i}>{inline(li)}</li>
-          ))}
-        </ul>
-      );
-      list = [];
-    }
-  };
-  lines.forEach((raw, i) => {
-    const l = raw.trimEnd();
-    if (l.startsWith("- ")) {
-      list.push(l.slice(2));
-      return;
-    }
-    flush();
-    if (l.startsWith("# ")) out.push(<h1 key={i} className="mb-3 text-2xl font-bold tracking-tight">{inline(l.slice(2))}</h1>);
-    else if (l.startsWith("## ")) out.push(<h2 key={i} className="mb-2 mt-5 text-sm font-semibold uppercase tracking-wide text-muted-foreground">{inline(l.slice(3))}</h2>);
-    else if (l.startsWith("### ")) out.push(<h3 key={i} className="mb-1 mt-4 font-semibold">{inline(l.slice(4))}</h3>);
-    else if (l === "---") out.push(<hr key={i} className="my-4 border-border" />);
-    else if (l.trim() === "") out.push(<div key={i} className="h-2" />);
-    else out.push(<p key={i} className="text-sm leading-relaxed">{inline(l)}</p>);
-  });
-  flush();
-  return <div>{out}</div>;
-}
-
-/** Inline **bold** and `code`. */
-function inline(text: string): React.ReactNode {
-  const parts = text.split(/(\*\*[^*]+\*\*|`[^`]+`)/g).filter(Boolean);
-  return parts.map((p, i) => {
-    if (p.startsWith("**") && p.endsWith("**")) return <strong key={i} className="font-semibold">{p.slice(2, -2)}</strong>;
-    if (p.startsWith("`") && p.endsWith("`")) return <code key={i} className="rounded bg-muted px-1 py-0.5 font-mono text-xs">{p.slice(1, -1)}</code>;
-    return <span key={i}>{p}</span>;
-  });
-}
