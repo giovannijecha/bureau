@@ -27,7 +27,7 @@ import type { WsEvent } from "@bureau/contracts";
 
 import { Orchestrator } from "./orchestrator.js";
 import { ProjectRegistry, projectsFromJson, slug, type ProjectConfig } from "./projects.js";
-import { RealVcs, DbMessageLog, DbConversationStore } from "./adapters.js";
+import { RealVcs, DbMessageLog, DbConversationStore, VaultStore } from "./adapters.js";
 import { WsHub } from "./ws.js";
 import { createHttpServer } from "./http.js";
 import type { EventSink, VcsPort } from "./ports.js";
@@ -121,6 +121,8 @@ async function main(): Promise<void> {
 
   const messages = new DbMessageLog(new MessageRepo(db));
   const conversations = new DbConversationStore(new ConversationRepo(db));
+  // System Memory vault — an on-disk markdown directory (default ./bureau-vault).
+  const memory = new VaultStore(env("BUREAU_VAULT", "./bureau-vault"));
 
   // The orchestrator needs an EventSink, the WsHub needs the http server, and the
   // http server needs the orchestrator — so the sink forwards to the hub once it
@@ -137,6 +139,7 @@ async function main(): Promise<void> {
     events,
     messages,
     conversations,
+    memory,
     ids: () => randomUUID(),
     clock: () => new Date().toISOString(),
   });

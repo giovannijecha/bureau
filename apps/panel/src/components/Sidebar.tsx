@@ -10,6 +10,8 @@ import {
   GitBranch,
   Bot,
   Settings,
+  Activity,
+  BrainCircuit,
   type LucideIcon,
 } from "lucide-react";
 import { cn } from "../lib/utils";
@@ -24,10 +26,12 @@ interface NavItem {
 const NAV: NavItem[] = [
   { title: "Overview", href: "/overview", icon: LayoutDashboard },
   { title: "Assistant", href: "/", icon: Sparkles },
+  { title: "Hub", href: "/hub", icon: Activity },
   { title: "Projects", href: "/projects", icon: FolderGit2 },
   { title: "Tasks", href: "/tasks", icon: ListTodo },
   { title: "Git", href: "/git", icon: GitBranch },
   { title: "Agents", href: "/agents", icon: Bot },
+  { title: "Memory", href: "/memory", icon: BrainCircuit },
 ];
 
 function NavLink({ item, active }: { item: NavItem; active: boolean }) {

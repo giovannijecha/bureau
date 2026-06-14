@@ -9,7 +9,7 @@ import type { WsEvent, Message, TaskProposal, Conversation } from "@bureau/contr
 
 import { Orchestrator } from "../src/orchestrator.js";
 import { ProjectRegistry, type ProjectConfig } from "../src/projects.js";
-import type { TaskStore, VcsPort, MessageLog, ConversationStore } from "../src/ports.js";
+import type { TaskStore, VcsPort, MessageLog, ConversationStore, MemoryPort } from "../src/ports.js";
 import { toTaskDetail } from "../src/summary.js";
 
 // ── fakes ────────────────────────────────────────────────────────────────────
@@ -109,6 +109,27 @@ function fakeConversations(): ConversationStore {
   };
 }
 
+function fakeMemory() {
+  const journals: { path: string; markdown: string }[] = [];
+  const saved: { title: string; body: string }[] = [];
+  const memory: MemoryPort = {
+    async list() {
+      return [];
+    },
+    async get() {
+      return null;
+    },
+    async saveNote(title, body) {
+      saved.push({ title, body });
+      return { path: `notes/${title}.md`, title, kind: "note", updatedAt: "t", excerpt: "", body };
+    },
+    async writeJournal(path, markdown) {
+      journals.push({ path, markdown });
+    },
+  };
+  return { memory, journals, saved };
+}
+
 const PROPOSAL: TaskProposal = {
   title: "Add a Quick Start to the README",
   summary: "Document how to run the project",
@@ -143,6 +164,7 @@ const PROJECT: ProjectConfig = {
 
 let store: TaskStore;
 let vcs: ReturnType<typeof fakeVcs>;
+let mem: ReturnType<typeof fakeMemory>;
 let prov: ReturnType<typeof fakeProvider>;
 let captured: CapabilityInput | null;
 let events: WsEvent[];
@@ -163,6 +185,7 @@ async function until(pred: () => boolean, ms = 1000): Promise<void> {
 beforeEach(() => {
   store = fakeStore().store;
   vcs = fakeVcs();
+  mem = fakeMemory();
   prov = fakeProvider(JSON.stringify({ reply: "Sure!", proposal: PROPOSAL }));
   const registry = new CapabilityRegistry();
   captured = null;
@@ -186,6 +209,7 @@ beforeEach(() => {
     events: { emit: (e) => void events.push(e) },
     messages: fakeMessages(),
     conversations: fakeConversations(),
+    memory: mem.memory,
     ids: () => `id-${++n}`,
     clock: () => "2026-06-13T00:00:00.000Z",
   });
@@ -382,6 +406,18 @@ describe("confirmMerge", () => {
     expect(detail.merged).toBe(true);
     expect(detail.mergeError).toBeNull();
     expect(detail.prUrl).toBe("https://github.com/acme/widget/pull/1");
+  });
+
+  it("writes a task journal to System Memory on merge", async () => {
+    const draft = orch.createTask(PROPOSAL);
+    await orch.startTask(draft.id);
+    await orch.settle(draft.id);
+    await orch.confirmMerge(draft.id);
+
+    expect(mem.journals).toHaveLength(1);
+    expect(mem.journals[0]!.path).toMatch(/^journals\/.*\.md$/);
+    expect(mem.journals[0]!.markdown).toContain(draft.goal);
+    expect(mem.journals[0]!.markdown).toContain("Merged to main");
   });
 
   it("records an honest merge error (and keeps the PR link) when the squash-merge fails — never a false 'merged'", async () => {

@@ -12,12 +12,16 @@
     }
   },
   "scripts": {
-    "build": "tsc --build"
+    "build": "tsc --build",
+    "test": "vitest run"
   },
   "dependencies": {
     "@bureau/core": "workspace:*"
   },
   "devDependencies": {
-    "typescript": "*"
+    "@types/node": "^24.0.0",
+    "@vitest/coverage-v8": "^2.1.0",
+    "typescript": "*",
+    "vitest": "^2.1.0"
   }
 }

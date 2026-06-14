@@ -52,7 +52,19 @@ function fakeMessages(): MessageLog {
 
 function fakeOrchestrator(
   over: Partial<
-    Record<"chat" | "createTask" | "startTask" | "stopTask" | "confirmMerge" | "listProjects", (...a: never[]) => unknown>
+    Record<
+      | "chat"
+      | "createTask"
+      | "startTask"
+      | "stopTask"
+      | "confirmMerge"
+      | "listProjects"
+      | "hub"
+      | "listNotes"
+      | "getNote"
+      | "saveNote",
+      (...a: never[]) => unknown
+    >
   > = {}
 ) {
   return {
@@ -62,6 +74,11 @@ function fakeOrchestrator(
     startTask: over.startTask ?? (async () => makeTask()),
     stopTask: over.stopTask ?? (async () => makeTask()),
     confirmMerge: over.confirmMerge ?? (async () => makeTask()),
+    hub: over.hub ?? (() => ({ workers: [], activity: [], awaitingReview: [], stats: { activeTasks: 0, awaitingReview: 0, merged: 0 } })),
+    listNotes: over.listNotes ?? (async () => []),
+    getNote: over.getNote ?? (async () => null),
+    saveNote:
+      over.saveNote ?? (async (title: string, body: string) => ({ path: `notes/${title}.md`, title, kind: "note", updatedAt: "t", excerpt: "", body })),
   } as unknown as Orchestrator;
 }
 
@@ -168,5 +185,60 @@ describe("task actions", () => {
     const url = await listen({ orchestrator, store: fakeStore(), messages: fakeMessages() });
     const res = await post(`${url}/api/tasks/t1/merge`, {});
     expect(res.status).toBe(409);
+  });
+});
+
+describe("GET /api/hub", () => {
+  it("returns the hub bundle", async () => {
+    const url = await listen({ orchestrator: fakeOrchestrator(), store: fakeStore(), messages: fakeMessages() });
+    const res = await fetch(`${url}/api/hub`);
+    expect(res.status).toBe(200);
+    const body = (await res.json()) as { workers: unknown[]; stats: { merged: number } };
+    expect(Array.isArray(body.workers)).toBe(true);
+    expect(body.stats.merged).toBe(0);
+  });
+});
+
+describe("System Memory", () => {
+  it("GET /api/memory lists notes (passes ?q through)", async () => {
+    const seen: (string | undefined)[] = [];
+    const orchestrator = fakeOrchestrator({
+      listNotes: (async (q?: string) => {
+        seen.push(q);
+        return [{ path: "notes/x.md", title: "X", kind: "note", updatedAt: "t", excerpt: "e" }];
+      }) as never,
+    });
+    const url = await listen({ orchestrator, store: fakeStore(), messages: fakeMessages() });
+    const res = await fetch(`${url}/api/memory?q=hello`);
+    expect(res.status).toBe(200);
+    expect((await res.json())[0].title).toBe("X");
+    expect(seen).toEqual(["hello"]);
+  });
+
+  it("POST /api/memory creates a note → 201", async () => {
+    const url = await listen({ orchestrator: fakeOrchestrator(), store: fakeStore(), messages: fakeMessages() });
+    const res = await post(`${url}/api/memory`, { title: "Standards", body: "Use tabs" });
+    expect(res.status).toBe(201);
+    expect((await res.json()).title).toBe("Standards");
+  });
+
+  it("POST /api/memory rejects an empty title → 400", async () => {
+    const url = await listen({ orchestrator: fakeOrchestrator(), store: fakeStore(), messages: fakeMessages() });
+    expect((await post(`${url}/api/memory`, { title: "", body: "x" })).status).toBe(400);
+  });
+
+  it("GET /api/memory/:path returns 404 for a missing note", async () => {
+    const url = await listen({ orchestrator: fakeOrchestrator(), store: fakeStore(), messages: fakeMessages() });
+    expect((await fetch(`${url}/api/memory/notes/none.md`)).status).toBe(404);
+  });
+
+  it("GET /api/memory/:path returns a note when it exists", async () => {
+    const orchestrator = fakeOrchestrator({
+      getNote: (async (p: string) => ({ path: p, title: "Found", kind: "note", updatedAt: "t", excerpt: "e", body: "# Found" })) as never,
+    });
+    const url = await listen({ orchestrator, store: fakeStore(), messages: fakeMessages() });
+    const res = await fetch(`${url}/api/memory/notes/found.md`);
+    expect(res.status).toBe(200);
+    expect((await res.json()).title).toBe("Found");
   });
 });

@@ -10,6 +10,8 @@ import {
   GitBranch,
   Bot,
   Settings,
+  Activity,
+  BrainCircuit,
   type LucideIcon,
 } from "lucide-react";
 import { useEngineOnline } from "../lib/useEngineOnline";
@@ -28,6 +30,8 @@ interface SectionMeta {
 const SECTIONS: SectionMeta[] = [
   { match: (p) => p === "/", title: "Assistant", subtitle: "Talk with Iris — she turns it into a task", icon: Sparkles },
   { match: (p) => p.startsWith("/overview"), title: "Overview", subtitle: "Your team at a glance", icon: LayoutDashboard },
+  { match: (p) => p.startsWith("/hub"), title: "Hub", subtitle: "The live work floor across every task", icon: Activity },
+  { match: (p) => p.startsWith("/memory"), title: "Memory", subtitle: "The org's durable brain — journals & notes", icon: BrainCircuit },
   { match: (p) => p.startsWith("/projects"), title: "Projects", subtitle: "The repositories Bureau works on", icon: FolderGit2 },
   { match: (p) => p === "/tasks", title: "Tasks", subtitle: "Every task Iris has run", icon: ListTodo },
   { match: (p) => p.startsWith("/tasks/"), title: "Task", subtitle: "Pipeline, diff, and review", icon: ListTodo },

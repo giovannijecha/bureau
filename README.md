@@ -62,7 +62,7 @@ BUREAU_AUTHOR_NAME="Bureau" BUREAU_AUTHOR_EMAIL="you@example.com" \
 node apps/engine/dist/server.js               # listens on :4319 (HTTP + ws:/ws)
 ```
 
-Provider: set `ANTHROPIC_API_KEY` to use the API directly, otherwise the engine delegates to the local `claude` CLI. Optional: `PORT` (4319), `BUREAU_DB` (`./bureau.db`), `BUREAU_GIT_PATH`. A single repo can also be configured with the legacy `BUREAU_REPO_OWNER` / `BUREAU_REPO_NAME` / `BUREAU_REPO_URL` / `BUREAU_CANONICAL` / `BUREAU_WORKTREES` vars.
+Provider: set `ANTHROPIC_API_KEY` to use the API directly, otherwise the engine delegates to the local `claude` CLI. Optional: `PORT` (4319), `BUREAU_DB` (`./bureau.db`), `BUREAU_VAULT` (`./bureau-vault` — the System Memory markdown vault), `BUREAU_GIT_PATH`. A single repo can also be configured with the legacy `BUREAU_REPO_OWNER` / `BUREAU_REPO_NAME` / `BUREAU_REPO_URL` / `BUREAU_CANONICAL` / `BUREAU_WORKTREES` vars.
 
 Then run the panel (`apps/panel`) with `pnpm dev` and open it on localhost.
 
@@ -148,5 +148,5 @@ Imports only ever point inward. `core` and `contracts` depend on no other `@bure
 ## Roadmap
 
 - **Phase 1–4 — Foundations + vertical slice ✅:** core types, state machine (`transition()` + `canPush()`), DB schema, provider adapters, VCS wrapper; chat → Task → isolated worktree change → diff review → real squash-merged PR on GitHub.
-- **Phase 5 — Team + polished panel (current) ✅:** `edit` + `document` workers with multi-step pipelines; ChatGPT-style conversations; live progress over WebSocket; the full panel (Overview, Assistant, Projects, Tasks with search/filter/sort, Git, Agents, Settings) with light/dark themes.
+- **Phase 5 — Team + polished panel (current) ✅:** `edit` + `document` workers with multi-step pipelines; ChatGPT-style conversations; live progress over WebSocket; the full panel (Overview, Assistant, **Hub**, Projects, Tasks with search/filter/sort, Git, Agents, **Memory**, Settings) with light/dark themes. The **Hub** is a live work floor over the capability workers + a cross-task activity feed + a "waiting on you" review queue. **System Memory** is an Obsidian-style markdown vault: every finished task auto-writes a journal (goal, pipeline, outcome) and the CEO can pin notes Iris should remember. Tasks report an **honest merge state** — a confirmed merge that hits conflicts shows "merge failed" with the open-PR link, never a false "merged".
 - **Next:** the `plan` / `test` / `review` workers (with mid-pipeline gates), parallel-task concurrency, and a persisted secrets store.

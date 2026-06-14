@@ -23,13 +23,15 @@ import type {
 } from "@bureau/core";
 import type { CapabilityRegistry } from "@bureau/capabilities";
 import type { Provider } from "@bureau/providers";
-import type { Message, TaskProposal, ChatResponse, Project, Conversation, EngineInfo } from "@bureau/contracts";
+import type { Message, TaskProposal, ChatResponse, Project, Conversation, EngineInfo, Hub, Note, NoteSummary } from "@bureau/contracts";
 import { join } from "node:path";
 
-import type { TaskStore, VcsPort, EventSink, MessageLog, ConversationStore } from "./ports.js";
+import type { TaskStore, VcsPort, EventSink, MessageLog, ConversationStore, MemoryPort } from "./ports.js";
 import { ProjectRegistry, toProjectDto, type ProjectConfig } from "./projects.js";
 import { OrchestratorError } from "./errors.js";
 import { irisRespond } from "./iris.js";
+import { buildHub } from "./hub.js";
+import { journalPath, journalMarkdown } from "./memory.js";
 
 export { OrchestratorError };
 
@@ -43,6 +45,7 @@ export interface OrchestratorDeps {
   readonly events: EventSink;
   readonly messages: MessageLog;
   readonly conversations: ConversationStore;
+  readonly memory: MemoryPort;
   readonly ids: () => string;
   readonly clock: () => string;
 }
@@ -58,6 +61,39 @@ export class Orchestrator {
   /** The projects the CEO can work on. */
   listProjects(): Project[] {
     return this.d.projects.list().map(toProjectDto);
+  }
+
+  /** The Agent-Activity Hub: live capability-worker status, a cross-task activity
+   *  feed, and the "waiting on you" review queue — built from the live task set. */
+  hub(): Hub {
+    return buildHub(this.d.store.list(), (k) => this.d.capabilities.has(k), 40);
+  }
+
+  // ── System Memory ───────────────────────────────────────────────────────────
+
+  /** Vault notes (task journals + CEO notes), newest first; filtered when a query is given. */
+  listNotes(query?: string): Promise<NoteSummary[]> {
+    return this.d.memory.list(query);
+  }
+
+  /** One vault note (with body), or null. */
+  getNote(path: string): Promise<Note | null> {
+    return this.d.memory.get(path);
+  }
+
+  /** Create/update a free-form CEO note. */
+  saveNote(title: string, body: string): Promise<Note> {
+    return this.d.memory.saveNote(title, body);
+  }
+
+  /** Auto-write a finished task's journal to the vault. Best-effort — a vault
+   *  write must never fail a merge/stop/abort. */
+  private async journalTask(task: Task): Promise<void> {
+    try {
+      await this.d.memory.writeJournal(journalPath(task), journalMarkdown(task, this.d.clock()));
+    } catch (err) {
+      console.warn(`[engine] could not journal task ${task.id}: ${errMessage(err)}`);
+    }
   }
 
   /** Engine status for the Settings panel. provider availability is cached — the
@@ -350,6 +386,7 @@ export class Orchestrator {
       }
       task = this.drive(task, { type: "ABORT_TASK", reason: errMessage(err) });
       this.emitTaskUpdated(task);
+      await this.journalTask(task);
       if (task.worktreePath !== undefined) {
         const vcs = this.vcsForTask(task);
         if (vcs) {
@@ -371,6 +408,7 @@ export class Orchestrator {
     if (task.status === "completed" || task.status === "aborted") return task; // already resolved
     task = this.drive(task, { type: "ABORT_TASK", reason: "Stopped by the CEO." });
     this.emitTaskUpdated(task);
+    await this.journalTask(task);
     if (task.worktreePath !== undefined) {
       const vcs = this.vcsForTask(task);
       if (vcs) {
@@ -445,6 +483,7 @@ export class Orchestrator {
       // Always release the local worktree (the work now lives on the branch / PR).
       await vcs.removeWorktree({ path: worktreePath, branch }, true).catch(() => {});
     }
+    await this.journalTask(task); // record the outcome in the vault
     return task;
   }
 

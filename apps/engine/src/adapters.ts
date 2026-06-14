@@ -17,9 +17,11 @@ import {
   type Runner,
   type CommitAuthor,
 } from "@bureau/vcs";
+import { readNote, writeNote, listNotes, noteModifiedAt } from "@bureau/mind";
 import { MessageRepo, ConversationRepo, type MessageRow, type ConversationRow } from "@bureau/db";
-import type { Message, Conversation } from "@bureau/contracts";
-import type { VcsPort, WorktreeRef, MessageLog, ConversationStore } from "./ports.js";
+import type { Message, Conversation, Note, NoteSummary } from "@bureau/contracts";
+import type { VcsPort, WorktreeRef, MessageLog, ConversationStore, MemoryPort } from "./ports.js";
+import { noteSummary, notePath } from "./memory.js";
 
 export interface RealVcsConfig {
   readonly repoOwner: string;
@@ -190,4 +192,80 @@ export class DbConversationStore implements ConversationStore {
 
 function toConversation(r: ConversationRow): Conversation {
   return { id: r.id, title: r.title, projectId: r.projectId, createdAt: r.createdAt, updatedAt: r.updatedAt };
+}
+
+/** System Memory backed by an on-disk markdown vault (@bureau/mind). */
+export class VaultStore implements MemoryPort {
+  constructor(private readonly vaultPath: string) {}
+
+  async list(query?: string): Promise<NoteSummary[]> {
+    const paths = await listNotes(this.vaultPath);
+    const notes = await Promise.all(paths.map((p) => this.read(p)));
+    const q = query?.trim().toLowerCase();
+    return notes
+      .filter((n): n is Note => n !== null)
+      .filter((n) => !q || `${n.title}\n${n.path}\n${n.body}`.toLowerCase().includes(q))
+      .sort((a, b) => (a.updatedAt < b.updatedAt ? 1 : a.updatedAt > b.updatedAt ? -1 : 0))
+      .map(({ body: _body, ...summary }) => summary);
+  }
+
+  async get(path: string): Promise<Note | null> {
+    return this.read(path);
+  }
+
+  async saveNote(title: string, body: string): Promise<Note> {
+    const path = notePath(title);
+    // Store with an H1 title so the note round-trips with a stable title.
+    const content = `# ${title}\n\n${body.trim()}\n`;
+    await writeNote(this.vaultPath, path, content);
+    const note = await this.read(path);
+    if (!note) throw new Error(`Failed to read back note ${path} after saving.`);
+    return note;
+  }
+
+  async writeJournal(path: string, markdown: string): Promise<void> {
+    await writeNote(this.vaultPath, path, markdown);
+  }
+
+  private async read(path: string): Promise<Note | null> {
+    let content: string;
+    try {
+      content = await readNote(this.vaultPath, path);
+    } catch {
+      return null;
+    }
+    const updatedAt = (await noteModifiedAt(this.vaultPath, path)) ?? new Date(0).toISOString();
+    return { ...noteSummary(path, content, updatedAt), body: content };
+  }
+}
+
+/** In-memory vault for tests / ephemeral runs. */
+export class InMemoryMemory implements MemoryPort {
+  private readonly notes = new Map<string, { content: string; updatedAt: string }>();
+  constructor(private readonly clock: () => string = () => new Date().toISOString()) {}
+
+  async list(query?: string): Promise<NoteSummary[]> {
+    const q = query?.trim().toLowerCase();
+    return [...this.notes.entries()]
+      .map(([path, v]) => ({ ...noteSummary(path, v.content, v.updatedAt), body: v.content }))
+      .filter((n) => !q || `${n.title}\n${n.path}\n${n.body}`.toLowerCase().includes(q))
+      .sort((a, b) => (a.updatedAt < b.updatedAt ? 1 : a.updatedAt > b.updatedAt ? -1 : 0))
+      .map(({ body: _body, ...summary }) => summary);
+  }
+
+  async get(path: string): Promise<Note | null> {
+    const v = this.notes.get(path);
+    return v ? { ...noteSummary(path, v.content, v.updatedAt), body: v.content } : null;
+  }
+
+  async saveNote(title: string, body: string): Promise<Note> {
+    const path = notePath(title);
+    const content = `# ${title}\n\n${body.trim()}\n`;
+    this.notes.set(path, { content, updatedAt: this.clock() });
+    return (await this.get(path))!;
+  }
+
+  async writeJournal(path: string, markdown: string): Promise<void> {
+    this.notes.set(path, { content: markdown, updatedAt: this.clock() });
+  }
 }

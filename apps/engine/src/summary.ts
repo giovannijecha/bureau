@@ -4,7 +4,7 @@ import type { Task, CapabilityKind } from "@bureau/core";
 import type { TaskSummary, TaskDetail } from "@bureau/contracts";
 
 /** Each capability maps to a worker persona — who Iris hands that piece to. */
-const ASSIGNEE: Record<CapabilityKind, string> = {
+export const ASSIGNEE: Record<CapabilityKind, string> = {
   plan: "Planner",
   edit: "Editor",
   test: "Tester",

@@ -1,6 +1,18 @@
 // Typed client for the Bureau engine API. The panel imports ONLY @bureau/contracts.
 
-import type { TaskDetail, TaskSummary, ChatResponse, TaskProposal, Project, Message, Conversation, EngineInfo } from "@bureau/contracts";
+import type {
+  TaskDetail,
+  TaskSummary,
+  ChatResponse,
+  TaskProposal,
+  Project,
+  Message,
+  Conversation,
+  EngineInfo,
+  Hub,
+  NoteSummary,
+  Note,
+} from "@bureau/contracts";
 
 export const ENGINE_URL = process.env.NEXT_PUBLIC_ENGINE_URL ?? "http://localhost:4319";
 const BASE = ENGINE_URL;
@@ -28,6 +40,26 @@ export async function listProjects(): Promise<Project[]> {
 /** Engine status (provider availability + counts) for Settings. */
 export async function getConfig(): Promise<EngineInfo> {
   return json(await fetch(`${BASE}/api/config`));
+}
+
+/** The Agent-Activity Hub: worker status + cross-task activity + review queue. */
+export async function getHub(): Promise<Hub> {
+  return json(await fetch(`${BASE}/api/hub`));
+}
+
+/** System Memory — the vault's notes (task journals + CEO/Iris notes). */
+export async function listNotes(q?: string): Promise<NoteSummary[]> {
+  const suffix = q && q.trim() !== "" ? `?q=${encodeURIComponent(q)}` : "";
+  return json(await fetch(`${BASE}/api/memory${suffix}`));
+}
+
+export async function getNote(path: string): Promise<Note> {
+  return json(await fetch(`${BASE}/api/memory/${path.split("/").map(encodeURIComponent).join("/")}`));
+}
+
+/** Create or update a free-form CEO/Iris note. */
+export async function saveNote(title: string, body: string): Promise<Note> {
+  return json(await postJson("/api/memory", { title, body }));
 }
 
 /** The CEO's chat threads, most-recent first. */

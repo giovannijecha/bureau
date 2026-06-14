@@ -3,7 +3,7 @@
 // the canPush security gate — fully unit-testable with no DB, git, or network.
 
 import type { Task, TaskId } from "@bureau/core";
-import type { WsEvent, Message, Conversation } from "@bureau/contracts";
+import type { WsEvent, Message, Conversation, Note, NoteSummary } from "@bureau/contracts";
 
 export interface TaskStore {
   save(task: Task): void;
@@ -61,4 +61,17 @@ export interface ConversationStore {
   rename(id: string, title: string, updatedAt: string): void;
   touch(id: string, updatedAt: string): void;
   delete(id: string): void;
+}
+
+/** System Memory — the org's durable vault of markdown notes (task journals +
+ *  free-form CEO/Iris notes). Backed by @bureau/mind on disk; faked in tests. */
+export interface MemoryPort {
+  /** Notes, newest first; filtered by a lexical query when given. */
+  list(query?: string): Promise<NoteSummary[]>;
+  /** One note (with body), or null if it doesn't exist. */
+  get(path: string): Promise<Note | null>;
+  /** Create/update a free-form CEO note from a title + body; returns the saved note. */
+  saveNote(title: string, body: string): Promise<Note>;
+  /** Persist a task journal at a deterministic path (best-effort, idempotent). */
+  writeJournal(path: string, markdown: string): Promise<void>;
 }
