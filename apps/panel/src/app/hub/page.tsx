@@ -47,6 +47,8 @@ const ACTIVITY: Record<string, { icon: LucideIcon; tint: string }> = {
 
 export default function HubPage() {
   const [hub, setHub] = useState<Hub | null>(null);
+  // Latest live output line per capability, from step_progress events.
+  const [liveChunk, setLiveChunk] = useState<Record<string, string>>({});
   const alive = useRef(true);
   useEffect(() => {
     alive.current = true;
@@ -68,8 +70,28 @@ export default function HubPage() {
     void load();
   }, [load]);
 
-  // Live: any task lifecycle event re-pulls the floor.
-  useEngineEvents(() => void load());
+  // Drop the live line for any worker that isn't running right now, so a freshly
+  // started step of the same capability never momentarily shows the PREVIOUS
+  // task's last output before its own first chunk arrives.
+  useEffect(() => {
+    if (!hub) return;
+    const liveCaps = new Set<string>(hub.workers.filter((w) => w.live).map((w) => w.capability));
+    setLiveChunk((prev) => {
+      const next: Record<string, string> = {};
+      for (const cap of Object.keys(prev)) if (liveCaps.has(cap)) next[cap] = prev[cap]!;
+      return next;
+    });
+  }, [hub]);
+
+  // Live: a step_progress chunk updates the worker's latest line in place (no
+  // refetch); any other lifecycle event re-pulls the floor.
+  useEngineEvents((e) => {
+    if (e.type === "step_progress") {
+      setLiveChunk((prev) => ({ ...prev, [e.capability]: lastLine(e.chunk) || prev[e.capability] || "" }));
+      return;
+    }
+    void load();
+  });
 
   if (!hub) return <div className="h-full overflow-y-auto p-6"><p className="text-sm text-muted-foreground">Loading…</p></div>;
 
@@ -89,7 +111,7 @@ export default function HubPage() {
         </h2>
         <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-5">
           {hub.workers.map((w) => (
-            <WorkerCard key={w.capability} w={w} />
+            <WorkerCard key={w.capability} w={w} live={liveChunk[w.capability]} />
           ))}
         </div>
       </div>
@@ -143,7 +165,7 @@ export default function HubPage() {
   );
 }
 
-function WorkerCard({ w }: { w: WorkerStatus }) {
+function WorkerCard({ w, live }: { w: WorkerStatus; live: string | undefined }) {
   const Icon = WORKER_ICON[w.capability] ?? Pencil;
   return (
     <div className={cn("rounded-xl border bg-card p-4 transition-colors", w.live ? "border-blue-500/40" : "hover:border-foreground/15")}>
@@ -167,6 +189,11 @@ function WorkerCard({ w }: { w: WorkerStatus }) {
           {w.live ? `${w.runningStepCount} running` : "idle"}
         </span>
       </div>
+      {w.live && live && (
+        <p className="mt-2 truncate border-t pt-2 font-mono text-[11px] text-muted-foreground" title={live}>
+          {live}
+        </p>
+      )}
     </div>
   );
 }
@@ -214,6 +241,12 @@ function Pulse({
       </div>
     </div>
   );
+}
+
+/** The last non-empty line of a chunk — a compact "what it's doing now" line. */
+function lastLine(chunk: string): string {
+  const lines = chunk.split("\n").map((l) => l.trim()).filter(Boolean);
+  return lines[lines.length - 1] ?? "";
 }
 
 /** Compact relative time ("3m", "2h", "5d") from an ISO timestamp. */

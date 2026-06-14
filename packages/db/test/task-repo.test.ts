@@ -73,6 +73,7 @@ function richTask(): Task {
       startedAt: "2026-01-01T01:00:00.000Z",
       completedAt: "2026-01-01T02:00:00.000Z",
       failureReason: "n/a but persisted",
+      summary: "edited the files and reported it",
     },
     {
       id: sid("s2"),
@@ -183,6 +184,7 @@ describe("TaskRepo — optional-field absence is preserved", () => {
     expect("startedAt" in loaded.steps[0]!).toBe(false);
     expect("completedAt" in loaded.steps[0]!).toBe(false);
     expect("failureReason" in loaded.steps[0]!).toBe(false);
+    expect("summary" in loaded.steps[0]!).toBe(false);
     expect("decidedAt" in loaded.gates[0]!).toBe(false);
     expect("decision" in loaded.gates[0]!).toBe(false);
     expect("notes" in loaded.gates[0]!).toBe(false);

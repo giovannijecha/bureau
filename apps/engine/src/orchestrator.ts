@@ -393,12 +393,16 @@ export class Orchestrator {
           step,
           worktreePath,
           context: task.goal,
+          // Pipe the worker's live output to the panel as it works.
+          onChunk: (chunk) =>
+            this.d.events.emit({ type: "step_progress", taskId, stepId: planned.id, capability: step.capability, chunk }),
         });
         this.recordUsage(step.capability, taskId, out.usage); // tokens were spent regardless of a concurrent stop
         if (this.requireTask(taskId).status !== "executing") return; // stopped during the step
         if (out.artifacts.length > 0) this.addArtifacts(this.requireTask(taskId), out.artifacts);
 
-        this.drive(this.requireTask(taskId), { type: "COMPLETE_STEP", stepId: planned.id });
+        // Persist the worker's report so it survives the live stream + reloads.
+        this.drive(this.requireTask(taskId), { type: "COMPLETE_STEP", stepId: planned.id, summary: out.summary });
         currentStepId = undefined;
         this.d.events.emit({ type: "step_completed", taskId, stepId: planned.id });
       }

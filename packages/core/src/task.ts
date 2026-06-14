@@ -90,6 +90,9 @@ export interface Step {
   readonly startedAt?: string;
   readonly completedAt?: string;
   readonly failureReason?: string;
+  /** The worker's own report of what it did — its final summary line, persisted so
+   *  it's visible after the live stream ends and across reloads. */
+  readonly summary?: string;
 }
 
 // ---------------------------------------------------------------------------

@@ -60,6 +60,7 @@ export const steps = sqliteTable(
     startedAt: text("started_at"),
     completedAt: text("completed_at"),
     failureReason: text("failure_reason"),
+    summary: text("summary"),
   },
   (t) => [primaryKey({ columns: [t.taskId, t.id] }), index("steps_by_task").on(t.taskId, t.orderIdx)]
 );

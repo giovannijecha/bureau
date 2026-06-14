@@ -4,6 +4,8 @@ export interface CapabilityInput {
   readonly step: Step;
   readonly worktreePath: string;
   readonly context: string;
+  /** When set, the worker streams its output here as it works (live progress). */
+  readonly onChunk?: (chunk: string) => void;
 }
 
 export interface CapabilityOutput {
