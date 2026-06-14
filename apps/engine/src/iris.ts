@@ -41,11 +41,14 @@ export async function irisRespond(
   provider: Provider,
   history: Message[],
   project: IrisProject,
-  cwd?: string
+  cwd?: string,
+  /** A read-only snapshot of the repo's git state (branches, recent commits) so
+   *  Iris can answer about history/branches without running git (she has no shell). */
+  repoContext?: string
 ): Promise<IrisTurn> {
   const system = `${IRIS_SYSTEM}
 
-You are currently working on the repository ${project.owner}/${project.name} (default branch "${project.baseBranch}"). Scope every proposal to this repository — the work happens there. Your working directory is that repository's checkout: you can READ its files to answer accurately about its contents. NEVER invent or guess file names, structure, or contents — if you haven't actually read something, say so plainly instead of describing it.`;
+You are currently working on the repository ${project.owner}/${project.name} (default branch "${project.baseBranch}"). Scope every proposal to this repository — the work happens there. Your working directory is that repository's checkout: you can READ its files to answer accurately about its contents. NEVER invent or guess file names, structure, or contents — if you haven't actually read something, say so plainly instead of describing it.${repoContext ? `\n\n${repoContext}` : ""}`;
   const messages: ProviderMessage[] = [
     { role: "system", content: system },
     ...history.map(toProviderMessage),

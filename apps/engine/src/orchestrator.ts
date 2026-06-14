@@ -26,7 +26,7 @@ import type { Provider } from "@bureau/providers";
 import type { Message, TaskProposal, ChatResponse, Project, Conversation, EngineInfo, Hub, Note, NoteSummary, UsageSummary, Notification, NotificationKind, GitInfo } from "@bureau/contracts";
 import { join } from "node:path";
 
-import type { TaskStore, VcsPort, EventSink, MessageLog, ConversationStore, MemoryPort, UsagePort, NotificationStore } from "./ports.js";
+import type { TaskStore, VcsPort, EventSink, MessageLog, ConversationStore, MemoryPort, UsagePort, NotificationStore, RepoView } from "./ports.js";
 import { ProjectRegistry, toProjectDto, type ProjectConfig } from "./projects.js";
 import { OrchestratorError } from "./errors.js";
 import { irisRespond } from "./iris.js";
@@ -210,8 +210,11 @@ export class Orchestrator {
     const port = this.d.vcs(project);
     await port.syncClone().catch(() => {});
     const cwd = port.chatCwd();
+    // Hand Iris the repo's git state (branches + recent commits) — she has no shell,
+    // so without this she can't answer about branches/history.
+    const repo = await port.repoInfo(8).catch(() => null);
     const history = this.d.messages.listByConversation(conversation.id);
-    const turn = await irisRespond(this.d.provider, history, project, cwd);
+    const turn = await irisRespond(this.d.provider, history, project, cwd, repo ? buildRepoContext(repo) : undefined);
 
     const reply = this.appendChatMessage(conversation.id, "iris", turn.reply);
     this.recordUsage("iris", null, turn.usage);
@@ -679,6 +682,28 @@ function titleFrom(content: string): string {
 
 function prBody(goal: string): string {
   return `${goal}\n\n🤖 Opened by Bureau.`;
+}
+
+/** A concise, read-only summary of the repo's git state for Iris's context — so she
+ *  can answer about branches and history without a shell (she has only Read tools). */
+export function buildRepoContext(view: RepoView): string {
+  if (!view.cloned) return "";
+  const real = view.branches.filter((b) => !b.startsWith("bureau/"));
+  const internal = view.branches.filter((b) => b.startsWith("bureau/"));
+  const lines = ["Repository git state (read-only, current — provided to you so you do NOT need to run git):"];
+  if (view.branch) lines.push(`- Checked-out branch: ${view.branch}`);
+  lines.push(
+    `- Branches: ${real.join(", ") || "(none)"}` +
+      (internal.length > 0 ? ` — plus ${internal.length} leftover Bureau task branch(es): ${internal.join(", ")}` : "")
+  );
+  if (view.commits.length > 0) {
+    lines.push("- Recent commits (newest first):");
+    for (const c of view.commits.slice(0, 8)) lines.push(`  - ${c.hash} ${c.subject} (${c.author}, ${c.date})`);
+  }
+  lines.push(
+    "Use this to answer about branches and history accurately — do NOT claim you can't see them. You still cannot run git or push/delete branches (branch administration is the CEO's job); if asked to delete branches, explain that and offer the exact git commands."
+  );
+  return lines.join("\n");
 }
 
 function errMessage(err: unknown): string {
