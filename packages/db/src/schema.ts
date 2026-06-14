@@ -117,22 +117,33 @@ export const decisionLog = sqliteTable(
   (t) => [primaryKey({ columns: [t.taskId, t.orderIdx] })]
 );
 
-// The chat log between the CEO and Iris. Not part of the Task aggregate — it's a
-// flat, append-only stream (a message may reference a task). `seq` is an
-// autoincrement insertion order so the log always reads back exactly as written,
-// even when several messages share a millisecond timestamp. The role union is
-// inlined (not imported from contracts) to keep db importing @bureau/core only.
+// A conversation between the CEO and Iris (ChatGPT-style threads). Messages belong
+// to a conversation; a conversation may be scoped to the project it was started in.
+export const conversations = sqliteTable("conversations", {
+  id: text("id").primaryKey(),
+  title: text("title").notNull(),
+  projectId: text("project_id"),
+  createdAt: text("created_at").notNull(),
+  updatedAt: text("updated_at").notNull(),
+});
+
+// The chat log between the CEO and Iris. A flat, append-only stream within a
+// conversation (a message may reference a task). `seq` is an autoincrement
+// insertion order so the log always reads back exactly as written, even when
+// several messages share a millisecond timestamp. The role union is inlined (not
+// imported from contracts) to keep db importing @bureau/core only.
 export const messages = sqliteTable(
   "messages",
   {
     seq: integer("seq").primaryKey({ autoIncrement: true }),
     id: text("id").notNull().unique(),
+    conversationId: text("conversation_id"),
     role: text("role").notNull().$type<"user" | "iris" | "system">(),
     content: text("content").notNull(),
     taskId: text("task_id"),
     createdAt: text("created_at").notNull(),
   },
-  (t) => [index("messages_by_seq").on(t.seq)]
+  (t) => [index("messages_by_seq").on(t.seq), index("messages_by_conversation").on(t.conversationId, t.seq)]
 );
 
-export const schema = { tasks, steps, gates, artifacts, decisionLog, messages };
+export const schema = { tasks, steps, gates, artifacts, decisionLog, conversations, messages };

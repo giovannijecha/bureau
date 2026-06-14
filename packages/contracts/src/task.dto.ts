@@ -74,6 +74,8 @@ export const TaskProposalDto = z.object({
 /** Iris's reply to a chat turn, optionally carrying a task proposal. */
 export const ChatResponseDto = z.object({
   reply: MessageDto,
+  /** The conversation this turn belongs to (created on the fly when none was given). */
+  conversationId: z.string(),
   proposal: TaskProposalDto.optional(),
 });
 

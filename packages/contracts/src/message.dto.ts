@@ -7,6 +7,7 @@ export const MessageDto = z.object({
   role: MessageRole,
   content: z.string(),
   taskId: z.string().optional(),
+  conversationId: z.string().optional(),
   createdAt: z.string(),
 });
 
@@ -14,6 +15,8 @@ export const SendMessageRequestDto = z.object({
   content: z.string().min(1).max(32_000),
   /** Which project the conversation is about (defaults to the first project). */
   projectId: z.string().optional(),
+  /** Which conversation to append to (a new one is created when omitted). */
+  conversationId: z.string().optional(),
 });
 
 export type Message = z.infer<typeof MessageDto>;

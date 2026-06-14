@@ -1,6 +1,6 @@
 // Typed client for the Bureau engine API. The panel imports ONLY @bureau/contracts.
 
-import type { TaskDetail, TaskSummary, ChatResponse, TaskProposal, Project, Message } from "@bureau/contracts";
+import type { TaskDetail, TaskSummary, ChatResponse, TaskProposal, Project, Message, Conversation } from "@bureau/contracts";
 
 const BASE = process.env.NEXT_PUBLIC_ENGINE_URL ?? "http://localhost:4319";
 
@@ -24,14 +24,29 @@ export async function listProjects(): Promise<Project[]> {
   return json(await fetch(`${BASE}/api/projects`));
 }
 
-/** The persisted chat log (survives restarts). */
-export async function listMessages(): Promise<Message[]> {
-  return json(await fetch(`${BASE}/api/messages`));
+/** The CEO's chat threads, most-recent first. */
+export async function listConversations(): Promise<Conversation[]> {
+  return json(await fetch(`${BASE}/api/conversations`));
 }
 
-/** A conversation turn with Iris, scoped to the active project. */
-export async function chat(content: string, projectId?: string): Promise<ChatResponse> {
-  return json(await postJson("/api/chat", { content, projectId }));
+/** Start a new, empty conversation. */
+export async function createConversation(projectId?: string): Promise<Conversation> {
+  return json(await postJson("/api/conversations", { projectId }));
+}
+
+export async function deleteConversation(id: string): Promise<void> {
+  const res = await fetch(`${BASE}/api/conversations/${encodeURIComponent(id)}`, { method: "DELETE" });
+  if (!res.ok) throw new Error(`engine responded ${res.status}`);
+}
+
+/** Messages in one conversation. */
+export async function messagesFor(conversationId: string): Promise<Message[]> {
+  return json(await fetch(`${BASE}/api/conversations/${encodeURIComponent(conversationId)}/messages`));
+}
+
+/** A conversation turn with Iris, scoped to the active project + thread. */
+export async function chat(content: string, projectId?: string, conversationId?: string): Promise<ChatResponse> {
+  return json(await postJson("/api/chat", { content, projectId, conversationId }));
 }
 
 /** Materialize a proposal into a draft task in the active project. */

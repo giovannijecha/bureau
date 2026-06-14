@@ -70,14 +70,43 @@ async function handle(deps: HttpDeps, req: IncomingMessage, res: ServerResponse)
     return;
   }
 
-  // POST /api/chat — a conversation turn with Iris, scoped to a project.
+  // POST /api/chat — a conversation turn with Iris, scoped to a project + thread.
   if (method === "POST" && path === "/api/chat") {
     const body = SendMessageRequestDto.parse(await readJson(req));
-    sendJson(res, 200, await deps.orchestrator.chat(body.content, body.projectId));
+    sendJson(res, 200, await deps.orchestrator.chat(body.content, body.projectId, body.conversationId));
     return;
   }
 
-  // GET /api/messages — the chat log.
+  // GET /api/conversations — the CEO's chat threads, most-recent first.
+  if (method === "GET" && path === "/api/conversations") {
+    sendJson(res, 200, deps.orchestrator.listConversations());
+    return;
+  }
+
+  // POST /api/conversations — start a new, empty thread.
+  if (method === "POST" && path === "/api/conversations") {
+    const body = (await readJson(req)) as { projectId?: unknown };
+    const projectId = typeof body.projectId === "string" ? body.projectId : undefined;
+    sendJson(res, 201, deps.orchestrator.createConversation(projectId));
+    return;
+  }
+
+  // GET /api/conversations/:id/messages  and  DELETE /api/conversations/:id
+  const convMatch = /^\/api\/conversations\/([^/]+?)(\/messages)?$/.exec(path);
+  if (convMatch) {
+    const id = decodeURIComponent(convMatch[1]!);
+    if (method === "GET" && convMatch[2]) {
+      sendJson(res, 200, deps.orchestrator.messagesFor(id));
+      return;
+    }
+    if (method === "DELETE" && !convMatch[2]) {
+      deps.orchestrator.deleteConversation(id);
+      res.writeHead(204).end();
+      return;
+    }
+  }
+
+  // GET /api/messages — the full chat log (all threads).
   if (method === "GET" && path === "/api/messages") {
     sendJson(res, 200, deps.messages.list());
     return;
@@ -137,7 +166,7 @@ async function readJson(req: IncomingMessage): Promise<unknown> {
 
 function setCors(res: ServerResponse): void {
   res.setHeader("Access-Control-Allow-Origin", "*"); // localhost-only daemon
-  res.setHeader("Access-Control-Allow-Methods", "GET, POST, OPTIONS");
+  res.setHeader("Access-Control-Allow-Methods", "GET, POST, DELETE, OPTIONS");
   res.setHeader("Access-Control-Allow-Headers", "Content-Type");
 }
 

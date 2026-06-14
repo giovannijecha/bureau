@@ -38,17 +38,19 @@ const RETRY_NUDGE =
 export async function irisRespond(
   provider: Provider,
   history: Message[],
-  project: IrisProject
+  project: IrisProject,
+  cwd?: string
 ): Promise<IrisTurn> {
   const system = `${IRIS_SYSTEM}
 
-You are currently working on the repository ${project.owner}/${project.name} (default branch "${project.baseBranch}"). Scope every proposal to this repository — the work happens there.`;
+You are currently working on the repository ${project.owner}/${project.name} (default branch "${project.baseBranch}"). Scope every proposal to this repository — the work happens there. Your working directory is that repository's checkout: you can READ its files to answer accurately about its contents. NEVER invent or guess file names, structure, or contents — if you haven't actually read something, say so plainly instead of describing it.`;
   const messages: ProviderMessage[] = [
     { role: "system", content: system },
     ...history.map(toProviderMessage),
   ];
+  const opts = { maxTokens: 4000, ...(cwd !== undefined ? { cwd } : {}) };
 
-  let raw = (await provider.send(messages, { maxTokens: 4000 })).content;
+  let raw = (await provider.send(messages, opts)).content;
 
   // The model occasionally ignores the JSON contract and emits prose / reasoning.
   // If there's no JSON object at all, nudge it once — a single retry recovers the
@@ -59,7 +61,7 @@ You are currently working on the repository ${project.owner}/${project.name} (de
       { role: "assistant", content: raw },
       { role: "user", content: RETRY_NUDGE },
     ];
-    const retried = (await provider.send(retry, { maxTokens: 4000 })).content;
+    const retried = (await provider.send(retry, opts)).content;
     if (extractJsonObject(retried) !== null) raw = retried;
   }
 
