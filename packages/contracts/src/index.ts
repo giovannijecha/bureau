@@ -6,3 +6,5 @@ export * from "./message.dto.js";
 export * from "./ws.dto.js";
 export * from "./project.dto.js";
 export * from "./conversation.dto.js";
+export * from "./hub.dto.js";
+export * from "./memory.dto.js";

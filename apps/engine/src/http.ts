@@ -13,7 +13,7 @@
 //   POST /api/tasks/:id/merge     the final confirm: push → PR → squash-merge
 
 import { createServer, type IncomingMessage, type ServerResponse, type Server } from "node:http";
-import { SendMessageRequestDto, CreateTaskRequestDto } from "@bureau/contracts";
+import { SendMessageRequestDto, CreateTaskRequestDto, SaveNoteRequestDto } from "@bureau/contracts";
 import type { TaskId } from "@bureau/core";
 import { Orchestrator, OrchestratorError } from "./orchestrator.js";
 import type { TaskStore, MessageLog } from "./ports.js";
@@ -73,6 +73,38 @@ async function handle(deps: HttpDeps, req: IncomingMessage, res: ServerResponse)
   // GET /api/config — engine status for Settings.
   if (method === "GET" && path === "/api/config") {
     sendJson(res, 200, deps.orchestrator.engineInfo());
+    return;
+  }
+
+  // GET /api/hub — the Agent-Activity Hub (worker status + activity + review queue).
+  if (method === "GET" && path === "/api/hub") {
+    sendJson(res, 200, deps.orchestrator.hub());
+    return;
+  }
+
+  // GET /api/memory — vault notes (optionally ?q= filtered).  POST creates a note.
+  if (path === "/api/memory") {
+    if (method === "GET") {
+      const q = url.searchParams.get("q") ?? undefined;
+      sendJson(res, 200, await deps.orchestrator.listNotes(q));
+      return;
+    }
+    if (method === "POST") {
+      const body = SaveNoteRequestDto.parse(await readJson(req));
+      sendJson(res, 201, await deps.orchestrator.saveNote(body.title, body.body));
+      return;
+    }
+  }
+
+  // GET /api/memory/:path — one note (path may contain slashes, e.g. notes/foo.md).
+  if (method === "GET" && path.startsWith("/api/memory/")) {
+    const notePath = decodeURIComponent(path.slice("/api/memory/".length));
+    const note = await deps.orchestrator.getNote(notePath);
+    if (!note) {
+      sendJson(res, 404, { error: "note not found" });
+      return;
+    }
+    sendJson(res, 200, note);
     return;
   }
 

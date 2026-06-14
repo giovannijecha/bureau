@@ -191,9 +191,18 @@ importers:
         specifier: workspace:*
         version: link:../core
     devDependencies:
+      '@types/node':
+        specifier: ^24.0.0
+        version: 24.13.2
+      '@vitest/coverage-v8':
+        specifier: ^2.1.0
+        version: 2.1.9(vitest@2.1.9(@types/node@24.13.2)(lightningcss@1.32.0))
       typescript:
         specifier: '*'
         version: 5.9.3
+      vitest:
+        specifier: ^2.1.0
+        version: 2.1.9(@types/node@24.13.2)(lightningcss@1.32.0)
 
   packages/providers:
     dependencies:
