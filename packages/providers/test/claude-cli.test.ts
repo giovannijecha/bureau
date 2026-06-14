@@ -39,7 +39,7 @@ describe("ClaudeCliProvider — send", () => {
     ];
     const res = await provider.send(messages);
 
-    expect(res).toEqual({ content: "delegated answer", inputTokens: 8, outputTokens: 4 });
+    expect(res).toEqual({ content: "delegated answer", inputTokens: 8, outputTokens: 4, model: DEFAULT_MODEL });
     const call = calls[0]!;
     expect(call.cli).toBe("claude");
     expect(call.args).toEqual([
@@ -114,7 +114,7 @@ describe("ClaudeCliProvider — stream", () => {
     const res = await provider.stream([{ role: "user", content: "hi" }], (c) => chunks.push(c));
 
     expect(chunks).toEqual(["whole answer"]);
-    expect(res).toEqual({ content: "whole answer", inputTokens: 5, outputTokens: 6 });
+    expect(res).toEqual({ content: "whole answer", inputTokens: 5, outputTokens: 6, model: DEFAULT_MODEL });
   });
 });
 

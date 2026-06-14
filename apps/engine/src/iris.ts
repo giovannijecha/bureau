@@ -23,6 +23,8 @@ When you are only chatting (no task), omit "proposal" entirely:
 export interface IrisTurn {
   reply: string;
   proposal?: TaskProposal;
+  /** Token spend for this turn (summed across the send + any JSON-retry), for usage/cost. */
+  usage?: { inputTokens: number; outputTokens: number; model: string };
 }
 
 /** The active project, scoped into Iris's system prompt so her proposals target it. */
@@ -50,7 +52,11 @@ You are currently working on the repository ${project.owner}/${project.name} (de
   ];
   const opts = { maxTokens: 4000, ...(cwd !== undefined ? { cwd } : {}) };
 
-  let raw = (await provider.send(messages, opts)).content;
+  const first = await provider.send(messages, opts);
+  let raw = first.content;
+  let inputTokens = first.inputTokens;
+  let outputTokens = first.outputTokens;
+  let model = first.model ?? provider.name;
 
   // The model occasionally ignores the JSON contract and emits prose / reasoning.
   // If there's no JSON object at all, nudge it once — a single retry recovers the
@@ -61,11 +67,14 @@ You are currently working on the repository ${project.owner}/${project.name} (de
       { role: "assistant", content: raw },
       { role: "user", content: RETRY_NUDGE },
     ];
-    const retried = (await provider.send(retry, opts)).content;
-    if (extractJsonObject(retried) !== null) raw = retried;
+    const retried = await provider.send(retry, opts);
+    inputTokens += retried.inputTokens;
+    outputTokens += retried.outputTokens;
+    model = retried.model ?? model;
+    if (extractJsonObject(retried.content) !== null) raw = retried.content;
   }
 
-  return parseIris(raw);
+  return { ...parseIris(raw), usage: { inputTokens, outputTokens, model } };
 }
 
 function toProviderMessage(m: Message): ProviderMessage {

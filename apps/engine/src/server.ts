@@ -13,7 +13,7 @@
 
 import { randomUUID } from "node:crypto";
 import Anthropic from "@anthropic-ai/sdk";
-import { createDb, runMigrations, TaskRepo, MessageRepo, ConversationRepo } from "@bureau/db";
+import { createDb, runMigrations, TaskRepo, MessageRepo, ConversationRepo, UsageRepo } from "@bureau/db";
 import { CapabilityRegistry, EditCapability, DocumentCapability } from "@bureau/capabilities";
 import {
   AnthropicProvider,
@@ -27,7 +27,7 @@ import type { WsEvent } from "@bureau/contracts";
 
 import { Orchestrator } from "./orchestrator.js";
 import { ProjectRegistry, projectsFromJson, slug, type ProjectConfig } from "./projects.js";
-import { RealVcs, DbMessageLog, DbConversationStore, VaultStore } from "./adapters.js";
+import { RealVcs, DbMessageLog, DbConversationStore, VaultStore, DbUsage } from "./adapters.js";
 import { WsHub } from "./ws.js";
 import { createHttpServer } from "./http.js";
 import type { EventSink, VcsPort } from "./ports.js";
@@ -123,6 +123,7 @@ async function main(): Promise<void> {
   const conversations = new DbConversationStore(new ConversationRepo(db));
   // System Memory vault — an on-disk markdown directory (default ./bureau-vault).
   const memory = new VaultStore(env("BUREAU_VAULT", "./bureau-vault"));
+  const usage = new DbUsage(new UsageRepo(db));
 
   // The orchestrator needs an EventSink, the WsHub needs the http server, and the
   // http server needs the orchestrator — so the sink forwards to the hub once it
@@ -140,6 +141,7 @@ async function main(): Promise<void> {
     messages,
     conversations,
     memory,
+    usage,
     ids: () => randomUUID(),
     clock: () => new Date().toISOString(),
   });

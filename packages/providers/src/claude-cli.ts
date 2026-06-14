@@ -124,7 +124,9 @@ export class ClaudeCliProvider implements Provider {
     if (code !== 0) {
       throw new Error(`claude CLI exited with code ${code}: ${stderr.trim() || "(no stderr)"}`);
     }
-    return parseCliJson(stdout);
+    const result = parseCliJson(stdout);
+    // The CLI reports the model it used; fall back to the configured one.
+    return { ...result, model: result.model ?? this.model };
   }
 
   async stream(
@@ -173,6 +175,7 @@ export function parseCliJson(stdout: string): ProviderResponse {
     result?: unknown;
     is_error?: unknown;
     subtype?: unknown;
+    model?: unknown;
     usage?: { input_tokens?: unknown; output_tokens?: unknown };
   };
   // The CLI exits 0 even when the run itself failed (max turns, in-session error)
@@ -187,5 +190,6 @@ export function parseCliJson(stdout: string): ProviderResponse {
     content: typeof obj.result === "string" ? obj.result : "",
     inputTokens: typeof obj.usage?.input_tokens === "number" ? obj.usage.input_tokens : 0,
     outputTokens: typeof obj.usage?.output_tokens === "number" ? obj.usage.output_tokens : 0,
+    ...(typeof obj.model === "string" ? { model: obj.model } : {}),
   };
 }

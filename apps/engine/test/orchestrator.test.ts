@@ -9,7 +9,7 @@ import type { WsEvent, Message, TaskProposal, Conversation } from "@bureau/contr
 
 import { Orchestrator } from "../src/orchestrator.js";
 import { ProjectRegistry, type ProjectConfig } from "../src/projects.js";
-import type { TaskStore, VcsPort, MessageLog, ConversationStore, MemoryPort } from "../src/ports.js";
+import type { TaskStore, VcsPort, MessageLog, ConversationStore, MemoryPort, UsagePort, UsageEvent } from "../src/ports.js";
 import { toTaskDetail } from "../src/summary.js";
 
 // ── fakes ────────────────────────────────────────────────────────────────────
@@ -130,6 +130,15 @@ function fakeMemory() {
   return { memory, journals, saved };
 }
 
+function fakeUsage() {
+  const events: UsageEvent[] = [];
+  const usage: UsagePort = {
+    record: (e) => void events.push(e),
+    summary: () => ({ totals: { inputTokens: 0, outputTokens: 0, costUsd: 0, events: 0 }, byScope: [], byModel: [], byDay: [], sinceDay: null }),
+  };
+  return { usage, events };
+}
+
 const PROPOSAL: TaskProposal = {
   title: "Add a Quick Start to the README",
   summary: "Document how to run the project",
@@ -165,6 +174,7 @@ const PROJECT: ProjectConfig = {
 let store: TaskStore;
 let vcs: ReturnType<typeof fakeVcs>;
 let mem: ReturnType<typeof fakeMemory>;
+let usage: ReturnType<typeof fakeUsage>;
 let prov: ReturnType<typeof fakeProvider>;
 let captured: CapabilityInput | null;
 let events: WsEvent[];
@@ -186,6 +196,7 @@ beforeEach(() => {
   store = fakeStore().store;
   vcs = fakeVcs();
   mem = fakeMemory();
+  usage = fakeUsage();
   prov = fakeProvider(JSON.stringify({ reply: "Sure!", proposal: PROPOSAL }));
   const registry = new CapabilityRegistry();
   captured = null;
@@ -195,7 +206,7 @@ beforeEach(() => {
     async execute(input) {
       captured = input;
       if (editGate) await editGate;
-      return { artifacts: [], summary: "edited" };
+      return { artifacts: [], summary: "edited", usage: { inputTokens: 1000, outputTokens: 200, model: "claude-opus-4-8" } };
     },
   });
   events = [];
@@ -210,6 +221,7 @@ beforeEach(() => {
     messages: fakeMessages(),
     conversations: fakeConversations(),
     memory: mem.memory,
+    usage: usage.usage,
     ids: () => `id-${++n}`,
     clock: () => "2026-06-13T00:00:00.000Z",
   });
@@ -406,6 +418,17 @@ describe("confirmMerge", () => {
     expect(detail.merged).toBe(true);
     expect(detail.mergeError).toBeNull();
     expect(detail.prUrl).toBe("https://github.com/acme/widget/pull/1");
+  });
+
+  it("records token usage for each worker step (scoped to the capability + task)", async () => {
+    const draft = orch.createTask(PROPOSAL);
+    await orch.startTask(draft.id);
+    await orch.settle(draft.id);
+
+    const editEvents = usage.events.filter((e) => e.scope === "edit");
+    expect(editEvents).toHaveLength(1);
+    expect(editEvents[0]).toMatchObject({ scope: "edit", taskId: draft.id, model: "claude-opus-4-8", inputTokens: 1000, outputTokens: 200 });
+    expect(editEvents[0]!.day).toMatch(/^\d{4}-\d\d-\d\d$/);
   });
 
   it("writes a task journal to System Memory on merge", async () => {

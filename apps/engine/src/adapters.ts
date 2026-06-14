@@ -18,10 +18,11 @@ import {
   type CommitAuthor,
 } from "@bureau/vcs";
 import { readNote, writeNote, listNotes, noteModifiedAt } from "@bureau/mind";
-import { MessageRepo, ConversationRepo, type MessageRow, type ConversationRow } from "@bureau/db";
-import type { Message, Conversation, Note, NoteSummary } from "@bureau/contracts";
-import type { VcsPort, WorktreeRef, MessageLog, ConversationStore, MemoryPort } from "./ports.js";
+import { MessageRepo, ConversationRepo, UsageRepo, type MessageRow, type ConversationRow } from "@bureau/db";
+import type { Message, Conversation, Note, NoteSummary, UsageSummary } from "@bureau/contracts";
+import type { VcsPort, WorktreeRef, MessageLog, ConversationStore, MemoryPort, UsagePort, UsageEvent } from "./ports.js";
 import { noteSummary, notePath } from "./memory.js";
+import { summarizeUsage } from "./usage.js";
 
 export interface RealVcsConfig {
   readonly repoOwner: string;
@@ -192,6 +193,19 @@ export class DbConversationStore implements ConversationStore {
 
 function toConversation(r: ConversationRow): Conversation {
   return { id: r.id, title: r.title, projectId: r.projectId, createdAt: r.createdAt, updatedAt: r.updatedAt };
+}
+
+/** Usage & Cost backed by the SQLite usage_events table. */
+export class DbUsage implements UsagePort {
+  constructor(private readonly repo: UsageRepo) {}
+
+  record(event: UsageEvent): void {
+    this.repo.record({ ...event });
+  }
+
+  summary(sinceDay: string | null): UsageSummary {
+    return summarizeUsage(this.repo.since(sinceDay ?? undefined), sinceDay);
+  }
 }
 
 /** System Memory backed by an on-disk markdown vault (@bureau/mind). */

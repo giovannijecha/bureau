@@ -8,3 +8,4 @@ export * from "./project.dto.js";
 export * from "./conversation.dto.js";
 export * from "./hub.dto.js";
 export * from "./memory.dto.js";
+export * from "./usage.dto.js";

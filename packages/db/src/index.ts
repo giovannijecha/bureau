@@ -7,3 +7,4 @@ export * from "./mapper.js";
 export * from "./repo.js";
 export * from "./message-repo.js";
 export * from "./conversation-repo.js";
+export * from "./usage-repo.js";
