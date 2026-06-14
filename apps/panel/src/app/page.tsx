@@ -108,6 +108,7 @@ export default function AssistantPage() {
   }
 
   async function removeConv(id: string) {
+    if (typeof window !== "undefined" && !window.confirm("Delete this conversation? This can't be undone.")) return;
     try {
       await deleteConversation(id);
     } catch {

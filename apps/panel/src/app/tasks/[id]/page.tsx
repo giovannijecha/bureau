@@ -14,6 +14,8 @@ import {
   Circle,
   GitBranch,
   XCircle,
+  ChevronDown,
+  ChevronRight,
 } from "lucide-react";
 import type { TaskDetail, PipelineStep } from "@bureau/contracts";
 import { getTask, startTask, stopTask, mergeTask } from "../../../lib/api";
@@ -198,18 +200,22 @@ export default function TaskDetailPage({ params }: { params: { id: string } }) {
         </div>
         <div className="divide-y">
           {task.steps.map((s, i) => (
-            <div
-              key={s.id}
-              className={cn("flex items-center gap-3 px-4 py-3 transition-colors", s.status === "running" && "bg-primary/5")}
-            >
-              <span className="flex h-6 w-6 shrink-0 items-center justify-center rounded-full bg-muted text-[11px] font-medium text-muted-foreground">
-                {i + 1}
-              </span>
-              <StepIcon status={s.status} />
-              <span className="text-sm font-medium">{s.assignee}</span>
-              <span className="rounded-md border bg-muted/50 px-1.5 py-0.5 text-[11px] text-muted-foreground">{s.capability}</span>
-              <span className="truncate text-sm text-muted-foreground">{s.description}</span>
-              <span className="ml-auto shrink-0 text-xs text-muted-foreground">{s.status.replace(/_/g, " ")}</span>
+            <div key={s.id} className={cn("px-4 py-3 transition-colors", s.status === "running" && "bg-primary/5")}>
+              <div className="flex items-center gap-3">
+                <span className="flex h-6 w-6 shrink-0 items-center justify-center rounded-full bg-muted text-[11px] font-medium text-muted-foreground">
+                  {i + 1}
+                </span>
+                <StepIcon status={s.status} />
+                <span className="text-sm font-medium">{s.assignee}</span>
+                <span className="rounded-md border bg-muted/50 px-1.5 py-0.5 text-[11px] text-muted-foreground">{s.capability}</span>
+                <span className="min-w-0 flex-1 truncate text-sm text-muted-foreground">{s.description}</span>
+                <span className="shrink-0 text-xs text-muted-foreground">{s.status.replace(/_/g, " ")}</span>
+              </div>
+              {s.failureReason && (
+                <p className="ml-9 mt-2 rounded-md border border-red-500/30 bg-red-500/5 px-2.5 py-1.5 text-xs text-red-400">
+                  {s.failureReason}
+                </p>
+              )}
             </div>
           ))}
         </div>
@@ -268,11 +274,64 @@ function StepIcon({ status }: { status: PipelineStep["status"] }) {
   return <Circle className="h-4 w-4 text-muted-foreground/50" />;
 }
 
+interface DiffFile {
+  path: string;
+  lines: string[];
+  added: number;
+  removed: number;
+}
+
+function parseDiff(diff: string): DiffFile[] {
+  const files: DiffFile[] = [];
+  let cur: DiffFile | null = null;
+  for (const line of diff.split("\n")) {
+    if (line.startsWith("diff --git")) {
+      if (cur) files.push(cur);
+      const m = / b\/(.+)$/.exec(line);
+      cur = { path: m ? m[1]! : "file", lines: [], added: 0, removed: 0 };
+    }
+    if (!cur) continue;
+    cur.lines.push(line);
+    if (line.startsWith("+") && !line.startsWith("+++")) cur.added++;
+    else if (line.startsWith("-") && !line.startsWith("---")) cur.removed++;
+  }
+  if (cur) files.push(cur);
+  return files;
+}
+
 function DiffView({ diff }: { diff: string }) {
   if (diff.trim() === "") return <pre className="px-4 py-6 text-center font-mono text-xs text-muted-foreground">(no changes)</pre>;
-  const lines = diff.split("\n");
+  const files = parseDiff(diff);
+  if (files.length === 0) return <DiffLines lines={diff.split("\n")} />;
   return (
-    <pre className="max-h-[460px] overflow-auto bg-black/40 px-4 py-3 font-mono text-xs leading-relaxed">
+    <div className="divide-y">
+      {files.map((f) => (
+        <FileDiff key={f.path} file={f} defaultOpen={files.length <= 2} />
+      ))}
+    </div>
+  );
+}
+
+function FileDiff({ file, defaultOpen }: { file: DiffFile; defaultOpen: boolean }) {
+  const [open, setOpen] = useState(defaultOpen);
+  return (
+    <div>
+      <button onClick={() => setOpen((o) => !o)} className="flex w-full items-center gap-2 px-4 py-2.5 text-left transition-colors hover:bg-muted/40">
+        {open ? <ChevronDown className="h-3.5 w-3.5 shrink-0 text-muted-foreground" /> : <ChevronRight className="h-3.5 w-3.5 shrink-0 text-muted-foreground" />}
+        <code className="truncate font-mono text-xs">{file.path}</code>
+        <span className="ml-auto flex shrink-0 items-center gap-2 text-[11px] font-medium">
+          <span className="text-green-500">+{file.added}</span>
+          <span className="text-red-400">-{file.removed}</span>
+        </span>
+      </button>
+      {open && <DiffLines lines={file.lines} />}
+    </div>
+  );
+}
+
+function DiffLines({ lines }: { lines: string[] }) {
+  return (
+    <pre className="max-h-[420px] overflow-auto bg-black/40 px-4 py-3 font-mono text-xs leading-relaxed">
       {lines.map((line, i) => {
         const cls =
           line.startsWith("+") && !line.startsWith("+++")
