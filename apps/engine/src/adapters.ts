@@ -6,6 +6,7 @@ import { join } from "node:path";
 import {
   cloneRepo,
   createWorktree,
+  freshBase,
   getWorkingDiff,
   commitAll,
   push,
@@ -26,6 +27,9 @@ export interface RealVcsConfig {
   /** A `git clone`-able source for the canonical clone (https/ssh/local path). */
   readonly repoUrl: string;
   readonly canonicalPath: string;
+  /** The branch tasks merge into — every task branches off the LATEST of this
+   *  (fetched from origin), not the clone's stale local copy. */
+  readonly baseBranch: string;
   /** Author identity for commits (so commits don't depend on global git config). */
   readonly author: CommitAuthor;
   readonly runner?: Runner;
@@ -48,7 +52,11 @@ export class RealVcs implements VcsPort {
   }
 
   async setupWorktree(branch: string, worktreePath: string): Promise<WorktreeRef> {
-    const handle = await createWorktree(this.cfg.canonicalPath, branch, worktreePath, this.runner);
+    // Branch off the LATEST base (fetched from origin) so the task doesn't start
+    // from a stale local main and hit avoidable conflicts at merge time. Falls
+    // back to the clone's HEAD when origin is unreachable.
+    const base = await freshBase(this.cfg.canonicalPath, this.cfg.baseBranch, this.runner);
+    const handle = await createWorktree(this.cfg.canonicalPath, branch, worktreePath, this.runner, base);
     return { path: handle.path, branch: handle.branch };
   }
 

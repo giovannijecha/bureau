@@ -26,6 +26,8 @@ export const TaskSummaryDto = z.object({
   stepCount: z.number().int().nonnegative(),
   completedStepCount: z.number().int().nonnegative(),
   pendingGates: z.number().int().nonnegative(),
+  /** True only when the task genuinely landed on main (completed + PR + no merge error). */
+  merged: z.boolean(),
 });
 
 export const GateDecisionRequestDto = z.object({
@@ -70,6 +72,8 @@ export const TaskDetailDto = TaskSummaryDto.extend({
   prUrl: z.string().nullable(),
   /** A human-readable note when the task stopped (abort reason / failed step). */
   statusNote: z.string().nullable(),
+  /** Why a confirmed merge didn't land (conflicts, branch protection), or null. */
+  mergeError: z.string().nullable(),
   steps: z.array(PipelineStepDto),
   gates: z.array(GateViewDto),
 });

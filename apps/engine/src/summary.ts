@@ -24,7 +24,25 @@ export function toTaskSummary(task: Task): TaskSummary {
     stepCount: task.steps.length,
     completedStepCount: task.steps.filter((s) => s.status === "completed").length,
     pendingGates: task.gates.filter((g) => g.status === "pending" || g.status === "open").length,
+    merged: isMerged(task),
   };
+}
+
+/** The merge-failure reason (conflicts, branch protection, …), or null. Set when
+ *  the CEO confirmed the merge but it couldn't land — so the panel never claims a
+ *  task "merged" when it didn't. */
+export function mergeError(task: Task): string | null {
+  for (let i = task.artifacts.length - 1; i >= 0; i--) {
+    const a = task.artifacts[i]!;
+    if (a.kind === "merge_error") return a.ref;
+  }
+  return null;
+}
+
+/** True only when the task genuinely landed on main: completed, has a PR URL, and
+ *  no recorded merge error. Distinguishes a real merge from a confirmed-but-failed one. */
+export function isMerged(task: Task): boolean {
+  return task.status === "completed" && prUrl(task) !== null && mergeError(task) === null;
 }
 
 /** The most recently produced diff for a task, or null if none yet. */
@@ -63,6 +81,7 @@ export function toTaskDetail(task: Task): TaskDetail {
     diff: latestDiff(task),
     prUrl: prUrl(task),
     statusNote: statusNote(task),
+    mergeError: mergeError(task),
     steps: task.steps.map((s) => ({
       id: s.id,
       capability: s.capability,

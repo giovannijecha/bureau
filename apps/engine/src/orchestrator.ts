@@ -417,24 +417,30 @@ export class Orchestrator {
     const worktreePath = requireWorktree(task);
     const branch = this.branchFor(task.id);
     const title = `Bureau: ${truncate(task.goal)}`;
+    const lastStep = task.steps[task.steps.length - 1]!.id;
     let prUrl: string | undefined;
     try {
       await vcs.push(worktreePath, branch);
       prUrl = await vcs.openPr(branch, title, prBody(task.goal));
       await vcs.mergePr(branch);
+      // Full success — the change is on main. Record the merged PR.
       task = this.addArtifacts(task, [
-        {
-          id: this.d.ids() as ArtifactId,
-          kind: "pr_url",
-          ref: prUrl,
-          producedByStep: task.steps[task.steps.length - 1]!.id,
-          createdAt: this.d.clock(),
-        },
+        { id: this.d.ids() as ArtifactId, kind: "pr_url", ref: prUrl, producedByStep: lastStep, createdAt: this.d.clock() },
       ]);
     } catch (err) {
-      console.error(
-        `[engine] merge failed for task ${task.id}: ${errMessage(err)}${prUrl !== undefined ? ` (PR opened: ${prUrl})` : ""}`
-      );
+      // The merge didn't complete (e.g. conflicts, branch protection). Record an
+      // honest merge_error so the panel shows "merge failed" instead of a false
+      // "merged" — and keep the PR link (if one was opened) so the CEO can resolve
+      // it on GitHub. The task stays `completed` (the CEO approved + did their part),
+      // but `merged` is now derived from the absence of this error.
+      console.error(`[engine] merge failed for task ${task.id}: ${errMessage(err)}${prUrl !== undefined ? ` (PR opened: ${prUrl})` : ""}`);
+      task = this.addArtifacts(task, [
+        ...(prUrl !== undefined
+          ? [{ id: this.d.ids() as ArtifactId, kind: "pr_url" as const, ref: prUrl, producedByStep: lastStep, createdAt: this.d.clock() }]
+          : []),
+        { id: this.d.ids() as ArtifactId, kind: "merge_error", ref: errMessage(err), producedByStep: lastStep, createdAt: this.d.clock() },
+      ]);
+      this.emitTaskUpdated(task);
     } finally {
       // Always release the local worktree (the work now lives on the branch / PR).
       await vcs.removeWorktree({ path: worktreePath, branch }, true).catch(() => {});
