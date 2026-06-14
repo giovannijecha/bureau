@@ -96,7 +96,7 @@ Stateless operatives that Iris delegates Task steps to. Each is replaceable — 
 | `edit` | Editor | Apply a code change directly in an isolated worktree | ✅ Live |
 | `document` | Scribe | Update docs / README / changelog for the change | ✅ Live |
 | `review` | Reviewer | Read-only — inspect the diff and flag issues before human review | ✅ Live |
-| `test` | Tester | Run the repo's test suite against the change | Planned |
+| `test` | Tester | Run the project's configured test suite in the worktree (opt-in, advisory) | ✅ Live |
 
 `edit`, `document`, and `review` are **agentic** — the model works the worktree files directly (confined to that directory; no shell). `edit`/`document` mutate; `review` is strictly read-only (read tools, no auto-accept) and its assessment is shown to you at the gate. Iris composes them into a multi-step pipeline (e.g. edit → document → review) that produces one reviewed diff. Workers are registered in the `CapabilityRegistry`; `createTask` refuses any capability that isn't registered, so an unbuilt worker can never silently no-op.
 
@@ -144,6 +144,8 @@ Imports only ever point inward. `core` and `contracts` depend on no other `@bure
 `canPush()` lives in `packages/core` and is the **only** gate before any `push`, `openPr`, or `mergePr`. These three run from exactly one place — the CEO's final confirm-merge — inside an `if (canPush(task))` branch; the background pipeline only ever commits locally. The human gate realized today is `pr_approval` (the diff-review-and-merge confirmation); `plan_review` and `diff_review` are defined in the type system and reserved for later phases. A gate only clears on an explicit human decision — the agent proposes, the human decides.
 
 **Secrets:** the Anthropic API key is supplied via `ANTHROPIC_API_KEY` at launch (or the local `claude` CLI is used instead); GitHub auth is held by `gh` itself. Bureau persists **no** secrets — the database stores tasks, conversations, and the chat, never credentials.
+
+**The `test` worker (command execution).** Four of the five workers are shell-free by design — they only read/edit files. The `test` worker is the one exception: it runs your project's test suite. It is therefore **opt-in** (only the per-project `testCommand` you configure ever runs — never anything an LLM, the chat, or a diff could inject), spawned **argv-only with no shell** (metacharacters are inert), confined to the task's worktree, with a timeout + kill and a capped output. Its result is **advisory** — a pass or fail is shown to you at the gate (it never auto-merges, and a failure never blocks or hides the diff), so `canPush()` remains the sole gate. Bureau's own credentials (`ANTHROPIC_API_KEY`, `GH_TOKEN`, `GITHUB_TOKEN`) are stripped from the test process's environment; other env vars are inherited (your test suite runs with the same trust as you running it in your own terminal). Configure it per project: `"testCommand": ["npm","test"]` in `BUREAU_PROJECTS` (or `BUREAU_TEST_COMMAND` for the single-repo path). On Windows, point it at a non-shim binary (e.g. `["node","node_modules/.bin/vitest","run"]`), since `npm`/`pnpm` shims can't be spawned without a shell.
 
 ## Roadmap
 

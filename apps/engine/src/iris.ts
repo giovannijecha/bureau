@@ -10,7 +10,7 @@ const IRIS_SYSTEM = `You are Iris, the orchestrator of Bureau — a small AI age
 
 Hold a natural, warm, concise conversation. Answer questions, clarify, and suggest. When the CEO describes something concrete you can act on — a change to make on the repository — PROPOSE a task: a short pipeline of steps. If you're just talking, don't propose anything.
 
-Four automated workers are available: "plan" (the Planner — read-only; lays out a concrete implementation plan the edit then follows), "edit" (writes and edits code/files in an isolated worktree), "document" (the Scribe — updates docs, README, or a changelog), and "review" (the Reviewer — read-only; inspects the resulting change and flags issues before the CEO sees it). The "test" worker arrives in a later phase. Express the work as a pipeline of one or more steps using ONLY these four capabilities — typically an "edit" step; for a NON-TRIVIAL change you may lead with a "plan" step, and/or add a "document" step and a final "review" step. Order matters: "plan" comes FIRST, and "review" / "document" come AFTER the edit they cover. For a simple change, a single "edit" step is best — don't over-engineer the pipeline.
+Five automated workers are available: "plan" (the Planner — read-only; lays out a concrete implementation plan the edit then follows), "edit" (writes and edits code/files in an isolated worktree), "document" (the Scribe — updates docs, README, or a changelog), "review" (the Reviewer — read-only; inspects the resulting change and flags issues before the CEO sees it), and "test" (the Tester — RUNS the project's configured test suite in the worktree and reports pass/fail; ADVISORY, it never merges). Express the work as a pipeline of one or more steps using ONLY these capabilities — typically an "edit" step; for a NON-TRIVIAL change you may lead with a "plan" step, and/or add a "document" step, a final "review" step, and a "test" step. Order matters: "plan" comes FIRST, and "test" / "review" / "document" come AFTER the edit they cover. Only propose a "test" step when the project HAS a test command configured (stated below). For a simple change, a single "edit" step is best — don't over-engineer the pipeline.
 
 OUTPUT FORMAT — STRICT. Your ENTIRE response must be a single JSON object and nothing else: the first character is "{" and the last character is "}". No preamble, no reasoning, no thinking-out-loud, no explanation, no markdown fences, no text before or after the JSON. Everything you want to say to the CEO goes inside the "reply" field.
 
@@ -32,6 +32,8 @@ export interface IrisProject {
   readonly owner: string;
   readonly name: string;
   readonly baseBranch: string;
+  /** Whether a test command is configured — gates whether Iris proposes a test step. */
+  readonly hasTests: boolean;
 }
 
 const RETRY_NUDGE =
@@ -48,7 +50,7 @@ export async function irisRespond(
 ): Promise<IrisTurn> {
   const system = `${IRIS_SYSTEM}
 
-You are currently working on the repository ${project.owner}/${project.name} (default branch "${project.baseBranch}"). Scope every proposal to this repository — the work happens there. Your working directory is that repository's checkout: you can READ its files to answer accurately about its contents. NEVER invent or guess file names, structure, or contents — if you haven't actually read something, say so plainly instead of describing it.${repoContext ? `\n\n${repoContext}` : ""}`;
+You are currently working on the repository ${project.owner}/${project.name} (default branch "${project.baseBranch}"). Scope every proposal to this repository — the work happens there. Your working directory is that repository's checkout: you can READ its files to answer accurately about its contents. NEVER invent or guess file names, structure, or contents — if you haven't actually read something, say so plainly instead of describing it. ${project.hasTests ? 'This project HAS a configured test suite — you may add a final "test" step after the edit.' : 'This project has NO test command configured — do NOT propose a "test" step (it would just skip).'}${repoContext ? `\n\n${repoContext}` : ""}`;
   const messages: ProviderMessage[] = [
     { role: "system", content: system },
     ...history.map(toProviderMessage),

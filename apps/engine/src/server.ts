@@ -14,7 +14,7 @@
 import { randomUUID } from "node:crypto";
 import Anthropic from "@anthropic-ai/sdk";
 import { createDb, runMigrations, TaskRepo, MessageRepo, ConversationRepo, UsageRepo, NotificationRepo } from "@bureau/db";
-import { CapabilityRegistry, EditCapability, DocumentCapability, ReviewCapability, PlanCapability } from "@bureau/capabilities";
+import { CapabilityRegistry, EditCapability, DocumentCapability, ReviewCapability, PlanCapability, TestCapability } from "@bureau/capabilities";
 import {
   AnthropicProvider,
   ClaudeCliProvider,
@@ -26,7 +26,7 @@ import { makeRunner, type CommitAuthor } from "@bureau/vcs";
 import type { WsEvent } from "@bureau/contracts";
 
 import { Orchestrator } from "./orchestrator.js";
-import { ProjectRegistry, projectsFromJson, slug, type ProjectConfig } from "./projects.js";
+import { ProjectRegistry, projectsFromJson, parseTestCommand, slug, type ProjectConfig } from "./projects.js";
 import { RealVcs, DbMessageLog, DbConversationStore, VaultStore, DbUsage, DbNotifications } from "./adapters.js";
 import { WsHub } from "./ws.js";
 import { createHttpServer } from "./http.js";
@@ -64,6 +64,18 @@ function buildRegistry(): ProjectRegistry {
   }
   const name = env("BUREAU_REPO_NAME");
   const owner = env("BUREAU_REPO_OWNER");
+  // Optional: a test command as a JSON argv array, e.g. BUREAU_TEST_COMMAND='["npm","test"]'.
+  const testRaw = process.env.BUREAU_TEST_COMMAND;
+  let testCommand: readonly string[] | undefined;
+  if (testRaw && testRaw.trim() !== "") {
+    let parsed: unknown;
+    try {
+      parsed = JSON.parse(testRaw);
+    } catch {
+      throw new Error('BUREAU_TEST_COMMAND must be a JSON array, e.g. ["npm","test"]');
+    }
+    testCommand = parseTestCommand(parsed, "BUREAU_TEST_COMMAND");
+  }
   const project: ProjectConfig = {
     id: slug(`${owner}-${name}`),
     owner,
@@ -72,6 +84,7 @@ function buildRegistry(): ProjectRegistry {
     baseBranch: env("BUREAU_BASE_BRANCH", "main"),
     canonicalPath: env("BUREAU_CANONICAL"),
     worktreesDir: env("BUREAU_WORKTREES"),
+    ...(testCommand !== undefined ? { testCommand } : {}),
   };
   return new ProjectRegistry([project]);
 }
@@ -97,6 +110,9 @@ async function main(): Promise<void> {
   capabilities.register(new EditCapability({ provider }));
   capabilities.register(new DocumentCapability({ provider }));
   capabilities.register(new ReviewCapability({ provider }));
+  // The Tester runs the project's CONFIGURED test command (opt-in per project); with
+  // none configured a test step just skips. The only worker that executes a command.
+  capabilities.register(new TestCapability());
 
   const runner = makeRunner({
     ...(process.env.BUREAU_GIT_PATH !== undefined ? { gitPath: process.env.BUREAU_GIT_PATH } : {}),
