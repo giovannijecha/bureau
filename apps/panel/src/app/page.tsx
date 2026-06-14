@@ -36,6 +36,7 @@ export default function AssistantPage() {
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const inputRef = useRef<HTMLTextAreaElement>(null);
+  const bottomRef = useRef<HTMLDivElement>(null);
 
   // Load the persisted conversation on mount so the chat survives reloads/restarts.
   useEffect(() => {
@@ -47,6 +48,11 @@ export default function AssistantPage() {
       .catch(() => {});
     return () => void (alive = false);
   }, []);
+
+  // Keep the newest message in view as the log grows or Iris is replying.
+  useEffect(() => {
+    bottomRef.current?.scrollIntoView({ behavior: "smooth", block: "end" });
+  }, [log, busy, proposal]);
 
   async function onSend() {
     const content = input.trim();
@@ -115,6 +121,7 @@ export default function AssistantPage() {
             {log.map((m) => (
               <ChatBubble key={m.id} message={m} />
             ))}
+            {busy && <TypingIndicator />}
             {proposal && <ProposalCard proposal={proposal} busy={busy} onCreate={create} onRefine={refine} onKeep={() => setProposal(null)} />}
             {error && (
               <div className="flex items-center gap-1.5 text-sm text-destructive">
@@ -122,6 +129,7 @@ export default function AssistantPage() {
                 {error}
               </div>
             )}
+            <div ref={bottomRef} />
           </div>
         )}
       </div>
@@ -188,6 +196,18 @@ function ChatBubble({ message }: { message: Message }) {
         )}
       >
         {message.content}
+      </div>
+    </div>
+  );
+}
+
+function TypingIndicator() {
+  return (
+    <div className="flex justify-start">
+      <div className="flex items-center gap-1 rounded-2xl border bg-card px-4 py-3.5">
+        <span className="h-1.5 w-1.5 animate-bounce rounded-full bg-muted-foreground/70 [animation-delay:-0.3s]" />
+        <span className="h-1.5 w-1.5 animate-bounce rounded-full bg-muted-foreground/70 [animation-delay:-0.15s]" />
+        <span className="h-1.5 w-1.5 animate-bounce rounded-full bg-muted-foreground/70" />
       </div>
     </div>
   );

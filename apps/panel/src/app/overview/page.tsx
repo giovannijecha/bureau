@@ -22,7 +22,12 @@ export default function OverviewPage() {
   const { active } = useProjects();
   const [tasks, setTasks] = useState<TaskSummary[] | null>(null);
   const alive = useRef(true);
-  useEffect(() => () => void (alive.current = false), []);
+  useEffect(() => {
+    alive.current = true;
+    return () => {
+      alive.current = false;
+    };
+  }, []);
 
   const load = useCallback(async () => {
     try {
