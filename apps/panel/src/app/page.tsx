@@ -92,19 +92,6 @@ export default function AssistantPage() {
 
   return (
     <div className="flex h-full flex-col">
-      <div className="flex items-center gap-2.5 border-b px-6 py-4">
-        <Sparkles className="h-5 w-5 text-primary" />
-        <div>
-          <h1 className="text-base font-semibold leading-none">Assistant</h1>
-          <p className="mt-1.5 text-xs text-muted-foreground">
-            Talk with Iris. When you&apos;re aligned, she proposes a task you can create and run.
-          </p>
-        </div>
-        <div className="ml-auto">
-          <ProjectPicker projects={projects} active={active} onChange={setActiveId} />
-        </div>
-      </div>
-
       <div className="flex-1 overflow-y-auto">
         {empty ? (
           <div className="flex min-h-full flex-col items-center justify-center gap-3 px-6 py-10 text-center">
@@ -139,8 +126,8 @@ export default function AssistantPage() {
         )}
       </div>
 
-      <div className="shrink-0 px-4 pb-4 pt-1">
-        <div className="mx-auto w-full max-w-3xl rounded-xl border bg-card shadow-sm transition-colors focus-within:border-primary/60">
+      <div className="shrink-0 px-4 pb-4 pt-2">
+        <div className="mx-auto w-full max-w-3xl rounded-2xl border bg-card shadow-sm transition-all focus-within:border-primary/50 focus-within:shadow-md focus-within:ring-1 focus-within:ring-primary/15">
           <textarea
             ref={inputRef}
             value={input}
@@ -152,21 +139,27 @@ export default function AssistantPage() {
                 onSend();
               }
             }}
-            rows={2}
-            placeholder="Talk to Iris… (Enter to send, Shift+Enter for a new line)"
-            className="min-h-[56px] w-full resize-none bg-transparent px-3.5 py-3 text-sm outline-none placeholder:text-muted-foreground"
+            rows={1}
+            placeholder="Message Iris…"
+            className="max-h-44 min-h-[48px] w-full resize-none bg-transparent px-4 pt-3.5 text-sm leading-relaxed outline-none placeholder:text-muted-foreground"
           />
-          <div className="flex items-center justify-end px-2 pb-2">
+          <div className="flex items-center justify-between gap-2 px-2.5 pb-2.5 pt-1">
+            <ProjectPicker compact projects={projects} active={active} onChange={setActiveId} />
             <button
               onClick={onSend}
               disabled={busy || !input.trim()}
               aria-label="Send"
-              className="flex h-8 w-8 items-center justify-center rounded-md bg-primary text-primary-foreground transition-colors hover:bg-primary/90 disabled:opacity-40"
+              className="flex h-8 w-8 items-center justify-center rounded-lg bg-primary text-primary-foreground transition-colors hover:bg-primary/90 disabled:opacity-40"
             >
               {busy ? <Loader2 className="h-4 w-4 animate-spin" /> : <Send className="h-4 w-4" />}
             </button>
           </div>
         </div>
+        <p className="mx-auto mt-2 max-w-3xl text-center text-[11px] text-muted-foreground">
+          Iris proposes tasks — you decide. <kbd className="rounded border px-1 py-px font-sans text-[10px]">Enter</kbd> to send ·{" "}
+          <kbd className="rounded border px-1 py-px font-sans text-[10px]">Shift</kbd>+
+          <kbd className="rounded border px-1 py-px font-sans text-[10px]">Enter</kbd> for a new line
+        </p>
       </div>
     </div>
   );
