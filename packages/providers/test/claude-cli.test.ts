@@ -2,6 +2,7 @@ import { describe, it, expect } from "vitest";
 
 import {
   ClaudeCliProvider,
+  defaultCliRunner,
   renderCliPrompt,
   parseCliJson,
   type CliRunner,
@@ -114,6 +115,15 @@ describe("ClaudeCliProvider — stream", () => {
 
     expect(chunks).toEqual(["whole answer"]);
     expect(res).toEqual({ content: "whole answer", inputTokens: 5, outputTokens: 6 });
+  });
+});
+
+describe("defaultCliRunner — timeout", () => {
+  it("kills a wedged subprocess after timeoutMs and reports a timeout", async () => {
+    // node sleeps far longer than the timeout; the runner must kill it and report.
+    const res = await defaultCliRunner("node", ["-e", "setTimeout(() => {}, 60000)"], "", undefined, 300);
+    expect(res.code).toBe(-1);
+    expect(res.stderr).toMatch(/timed out after 300ms/);
   });
 });
 

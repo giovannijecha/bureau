@@ -77,9 +77,45 @@ export class Orchestrator {
     await Promise.allSettled([...this.running.values()]);
   }
 
+  /** On boot, clean up tasks a crash/forced-exit left mid-flight. After a restart
+   *  `this.running` is empty, so no pipeline will ever resume a persisted
+   *  planning/executing task — it would show a permanent spinner with an orphaned
+   *  worktree. Abort each one and tear its worktree down so the panel is honest. */
+  async reconcile(): Promise<number> {
+    let cleaned = 0;
+    for (const task of this.d.store.list()) {
+      if (task.status !== "planning" && task.status !== "executing") continue;
+      try {
+        const aborted = this.drive(task, {
+          type: "ABORT_TASK",
+          reason: "The engine restarted while this task was running.",
+        });
+        this.emitTaskUpdated(aborted);
+        this.appendMessage("iris", `"${task.goal}" was interrupted by an engine restart and has been stopped.`, task.id);
+        if (aborted.worktreePath !== undefined) {
+          const vcs = this.vcsForTask(aborted);
+          if (vcs) await vcs.removeWorktree({ path: aborted.worktreePath, branch: this.branchFor(task.id) }, true).catch(() => {});
+        }
+        cleaned++;
+      } catch {
+        /* best-effort per task */
+      }
+    }
+    return cleaned;
+  }
+
   /** Materialize a proposal into a DRAFT task (created, not started) in a project. */
   createTask(proposal: TaskProposal, projectId?: string): Task {
     const project = this.d.projects.resolve(projectId);
+    // Refuse a proposal that needs a worker we haven't built yet — so an
+    // unsupported step can never become a silently-skipped no-op at run time.
+    const unsupported = proposal.steps.find((s) => !this.d.capabilities.has(s.capability));
+    if (unsupported) {
+      throw new OrchestratorError(
+        `Capability "${unsupported.capability}" isn't available yet — only [${this.d.capabilities.list().join(", ")}] can run.`,
+        400
+      );
+    }
     const now = this.d.clock();
     const taskId = this.d.ids();
     const gateId = this.d.ids();
@@ -168,15 +204,19 @@ export class Orchestrator {
         this.d.events.emit({ type: "step_started", taskId, stepId: planned.id });
 
         const step = task.steps.find((s) => s.id === planned.id)!;
-        if (this.d.capabilities.has(step.capability)) {
-          const out = await this.d.capabilities.get(step.capability).execute({
-            step,
-            worktreePath,
-            context: task.goal,
-          });
-          if (this.requireTask(taskId).status !== "executing") return; // stopped during the step
-          if (out.artifacts.length > 0) this.addArtifacts(this.requireTask(taskId), out.artifacts);
+        // Fail LOUD on a missing worker — never let a step report "completed"
+        // while having produced nothing. (createTask guards this too; this is the
+        // run-time backstop.)
+        if (!this.d.capabilities.has(step.capability)) {
+          throw new Error(`Capability "${step.capability}" is not available yet.`);
         }
+        const out = await this.d.capabilities.get(step.capability).execute({
+          step,
+          worktreePath,
+          context: task.goal,
+        });
+        if (this.requireTask(taskId).status !== "executing") return; // stopped during the step
+        if (out.artifacts.length > 0) this.addArtifacts(this.requireTask(taskId), out.artifacts);
 
         this.drive(this.requireTask(taskId), { type: "COMPLETE_STEP", stepId: planned.id });
         currentStepId = undefined;

@@ -167,9 +167,11 @@ describe("projects", () => {
     const B: ProjectConfig = { id: "b", owner: "acme", name: "widget", url: "u-b", baseBranch: "main", canonicalPath: "/b/repo", worktreesDir: "/b/wt" };
     const seen: string[] = [];
     let k = 0;
+    const reg = new CapabilityRegistry();
+    reg.register({ kind: "edit", async execute() { return { artifacts: [], summary: "" }; } });
     const o = new Orchestrator({
       store,
-      capabilities: new CapabilityRegistry(),
+      capabilities: reg,
       provider: prov.provider,
       projects: new ProjectRegistry([A, B]),
       vcs: (p) => {
@@ -344,5 +346,50 @@ describe("stopTask", () => {
 
   it("throws 404 for an unknown task", async () => {
     await expect(orch.stopTask("nope")).rejects.toMatchObject({ status: 404 });
+  });
+});
+
+// ── integrity & recovery ─────────────────────────────────────────────────────
+
+describe("capability integrity", () => {
+  it("rejects creating a task whose capability isn't registered (no silent no-op)", () => {
+    expect(() =>
+      orch.createTask({ title: "T", summary: "S", steps: [{ capability: "test", description: "d" }] })
+    ).toThrow(expect.objectContaining({ status: 400 }));
+  });
+
+  it("fails LOUD (aborts, step failed, no commit) if a step's capability is unregistered at run time", async () => {
+    const draft = orch.createTask(PROPOSAL); // valid edit step
+    // Tamper past createTask's guard: swap to an unregistered capability in the store.
+    const t = store.load(draft.id)!;
+    store.save({ ...t, steps: t.steps.map((s) => ({ ...s, capability: "review" as const })) });
+
+    await orch.startTask(draft.id);
+    await orch.settle(draft.id);
+
+    const final = store.load(draft.id)!;
+    expect(final.status).toBe("aborted");
+    expect(final.steps[0]!.status).toBe("failed");
+    expect(vcs.calls.commitAll).toHaveLength(0); // never committed a no-op
+  });
+});
+
+describe("reconcile (crash recovery)", () => {
+  it("aborts + cleans up tasks left mid-flight by a crash", async () => {
+    const draft = orch.createTask(PROPOSAL);
+    // Simulate a hard crash: persist it executing with a worktree but no live pipeline.
+    store.save({ ...store.load(draft.id)!, status: "executing", worktreePath: "/wt/zombie" });
+
+    const cleaned = await orch.reconcile();
+
+    expect(cleaned).toBe(1);
+    expect(store.load(draft.id)!.status).toBe("aborted");
+    expect(vcs.calls.removeWorktree.some((c) => c.force)).toBe(true);
+  });
+
+  it("leaves terminal/draft tasks untouched", async () => {
+    orch.createTask(PROPOSAL); // created (draft)
+    const cleaned = await orch.reconcile();
+    expect(cleaned).toBe(0);
   });
 });

@@ -16,20 +16,46 @@ export interface CliResult {
   readonly code: number;
 }
 
-export type CliRunner = (cli: string, args: string[], input: string, cwd?: string) => Promise<CliResult>;
+export type CliRunner = (
+  cli: string,
+  args: string[],
+  input: string,
+  cwd?: string,
+  timeoutMs?: number
+) => Promise<CliResult>;
 
 /** Default runner: spawn the CLI, feed the prompt on stdin, collect stdout. The
  *  CLI runs in `cwd` (the task's worktree for edits) so its tools can't reach
- *  outside it. */
-export const defaultCliRunner: CliRunner = (cli, args, input, cwd) =>
+ *  outside it. A wedged subprocess is killed after `timeoutMs` so a hung edit can
+ *  never block a pipeline forever. */
+export const defaultCliRunner: CliRunner = (cli, args, input, cwd, timeoutMs) =>
   new Promise<CliResult>((resolve) => {
     const child = spawn(cli, args, { stdio: ["pipe", "pipe", "pipe"], ...(cwd !== undefined ? { cwd } : {}) });
     let stdout = "";
     let stderr = "";
+    let timedOut = false;
+    const timer =
+      timeoutMs !== undefined && timeoutMs > 0
+        ? setTimeout(() => {
+            timedOut = true;
+            child.kill("SIGTERM");
+            setTimeout(() => child.kill("SIGKILL"), 2000).unref(); // hard-kill if it ignores SIGTERM
+          }, timeoutMs)
+        : undefined;
     child.stdout.on("data", (d: Buffer) => (stdout += d.toString()));
     child.stderr.on("data", (d: Buffer) => (stderr += d.toString()));
-    child.on("error", (err: Error) => resolve({ stdout: "", stderr: String(err), code: -1 }));
-    child.on("close", (code: number | null) => resolve({ stdout, stderr, code: code ?? -1 }));
+    child.on("error", (err: Error) => {
+      if (timer) clearTimeout(timer);
+      resolve({ stdout: "", stderr: String(err), code: -1 });
+    });
+    child.on("close", (code: number | null) => {
+      if (timer) clearTimeout(timer);
+      resolve(
+        timedOut
+          ? { stdout, stderr: `claude CLI timed out after ${timeoutMs}ms`, code: -1 }
+          : { stdout, stderr, code: code ?? -1 }
+      );
+    });
     child.stdin.end(input);
   });
 
@@ -49,7 +75,13 @@ export interface ClaudeCliProviderOptions {
   readonly name?: string;
   /** Override the tool allowlist (tests). Defaults to read-only — do NOT add write tools. */
   readonly tools?: readonly string[];
+  /** Kill the CLI subprocess after this many ms (0 disables). Default 4 minutes. */
+  readonly timeoutMs?: number;
 }
+
+/** Default subprocess timeout — long enough for a real edit, short enough that a
+ *  wedged CLI doesn't park a pipeline indefinitely. */
+export const DEFAULT_CLI_TIMEOUT_MS = 240_000;
 
 export class ClaudeCliProvider implements Provider {
   readonly name: string;
@@ -58,6 +90,7 @@ export class ClaudeCliProvider implements Provider {
   private readonly cli: string;
   private readonly model: string;
   private readonly tools: readonly string[];
+  private readonly timeoutMs: number;
 
   constructor(opts: ClaudeCliProviderOptions) {
     this.authStrategy = opts.authStrategy;
@@ -65,6 +98,7 @@ export class ClaudeCliProvider implements Provider {
     this.cli = opts.cli ?? "claude";
     this.model = opts.model ?? DEFAULT_MODEL;
     this.tools = opts.tools ?? READONLY_TOOLS;
+    this.timeoutMs = opts.timeoutMs ?? DEFAULT_CLI_TIMEOUT_MS;
     this.name = opts.name ?? `claude-cli:${this.model}`;
   }
 
@@ -79,7 +113,7 @@ export class ClaudeCliProvider implements Provider {
     // agent can never write/edit/bash — it only reads + returns the plan.
     if (this.tools.length > 0) args.push("--tools", ...this.tools);
 
-    const { stdout, stderr, code } = await this.run(this.cli, args, prompt, options?.cwd);
+    const { stdout, stderr, code } = await this.run(this.cli, args, prompt, options?.cwd, this.timeoutMs);
     if (code !== 0) {
       throw new Error(`claude CLI exited with code ${code}: ${stderr.trim() || "(no stderr)"}`);
     }
