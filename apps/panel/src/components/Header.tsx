@@ -13,10 +13,12 @@ import {
   Activity,
   BrainCircuit,
   BarChart3,
+  Bell,
   type LucideIcon,
 } from "lucide-react";
 import { useEngineOnline } from "../lib/useEngineOnline";
 import { ThemeToggle } from "./ThemeToggle";
+import { NotificationBell } from "./NotificationBell";
 import { cn } from "../lib/utils";
 
 // One consistent top bar for every section, driven by the route — so the header
@@ -34,6 +36,7 @@ const SECTIONS: SectionMeta[] = [
   { match: (p) => p.startsWith("/hub"), title: "Hub", subtitle: "The live work floor across every task", icon: Activity },
   { match: (p) => p.startsWith("/memory"), title: "Memory", subtitle: "The org's durable brain — journals & notes", icon: BrainCircuit },
   { match: (p) => p.startsWith("/metrics"), title: "Metrics", subtitle: "Token usage & estimated cost", icon: BarChart3 },
+  { match: (p) => p.startsWith("/notifications"), title: "Notifications", subtitle: "Everything that needs — or had — your attention", icon: Bell },
   { match: (p) => p.startsWith("/projects"), title: "Projects", subtitle: "The repositories Bureau works on", icon: FolderGit2 },
   { match: (p) => p === "/tasks", title: "Tasks", subtitle: "Every task Iris has run", icon: ListTodo },
   { match: (p) => p.startsWith("/tasks/"), title: "Task", subtitle: "Pipeline, diff, and review", icon: ListTodo },
@@ -76,6 +79,7 @@ export function Header() {
             aria-label={online === null ? "Connecting" : "Engine connected"}
           />
         )}
+        <NotificationBell />
         <ThemeToggle />
         <div className="h-5 w-px bg-border" />
         <div className="flex items-center gap-2">

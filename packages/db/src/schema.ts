@@ -168,4 +168,22 @@ export const usageEvents = sqliteTable(
   (t) => [index("usage_by_day").on(t.day)]
 );
 
-export const schema = { tasks, steps, gates, artifacts, decisionLog, conversations, messages, usageEvents };
+// CEO notifications — durable, engine→CEO signals generated at real lifecycle
+// moments (a review gate opening, a task failing, a merge landing/failing). Unlike
+// the ephemeral WS events, these survive a reload so an approval is never missed.
+// `read_at` is NULL until acknowledged.
+export const notifications = sqliteTable(
+  "notifications",
+  {
+    id: text("id").primaryKey(),
+    kind: text("kind").notNull(),
+    taskId: text("task_id"),
+    subject: text("subject").notNull(),
+    body: text("body").notNull(),
+    createdAt: text("created_at").notNull(),
+    readAt: text("read_at"),
+  },
+  (t) => [index("notifications_by_created").on(t.createdAt)]
+);
+
+export const schema = { tasks, steps, gates, artifacts, decisionLog, conversations, messages, usageEvents, notifications };

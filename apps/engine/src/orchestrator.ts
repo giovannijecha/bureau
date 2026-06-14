@@ -23,10 +23,10 @@ import type {
 } from "@bureau/core";
 import type { CapabilityRegistry } from "@bureau/capabilities";
 import type { Provider } from "@bureau/providers";
-import type { Message, TaskProposal, ChatResponse, Project, Conversation, EngineInfo, Hub, Note, NoteSummary, UsageSummary } from "@bureau/contracts";
+import type { Message, TaskProposal, ChatResponse, Project, Conversation, EngineInfo, Hub, Note, NoteSummary, UsageSummary, Notification, NotificationKind } from "@bureau/contracts";
 import { join } from "node:path";
 
-import type { TaskStore, VcsPort, EventSink, MessageLog, ConversationStore, MemoryPort, UsagePort } from "./ports.js";
+import type { TaskStore, VcsPort, EventSink, MessageLog, ConversationStore, MemoryPort, UsagePort, NotificationStore } from "./ports.js";
 import { ProjectRegistry, toProjectDto, type ProjectConfig } from "./projects.js";
 import { OrchestratorError } from "./errors.js";
 import { irisRespond } from "./iris.js";
@@ -47,6 +47,7 @@ export interface OrchestratorDeps {
   readonly conversations: ConversationStore;
   readonly memory: MemoryPort;
   readonly usage: UsagePort;
+  readonly notifications: NotificationStore;
   readonly ids: () => string;
   readonly clock: () => string;
 }
@@ -68,6 +69,37 @@ export class Orchestrator {
    *  feed, and the "waiting on you" review queue — built from the live task set. */
   hub(): Hub {
     return buildHub(this.d.store.list(), (k) => this.d.capabilities.has(k), 40);
+  }
+
+  // ── Notifications ─────────────────────────────────────────────────────────────
+
+  /** The CEO's notifications, newest first. */
+  listNotifications(): Notification[] {
+    return this.d.notifications.list();
+  }
+
+  unreadNotifications(): number {
+    return this.d.notifications.unreadCount();
+  }
+
+  markNotificationRead(id: string): void {
+    this.d.notifications.markRead(id, this.d.clock());
+  }
+
+  markAllNotificationsRead(): void {
+    this.d.notifications.markAllRead(this.d.clock());
+  }
+
+  /** Persist a CEO notification and push it over the WS (best-effort — a
+   *  notification must never break the lifecycle action that triggered it). */
+  private notify(kind: NotificationKind, taskId: string | null, subject: string, body: string): void {
+    try {
+      const n: Notification = { id: this.d.ids(), kind, taskId, subject, body, createdAt: this.d.clock(), readAt: null };
+      this.d.notifications.create(n);
+      this.d.events.emit({ type: "notification", notificationId: n.id, kind: n.kind, subject: n.subject });
+    } catch (err) {
+      console.warn(`[engine] could not record notification: ${errMessage(err)}`);
+    }
   }
 
   // ── Usage & Cost ────────────────────────────────────────────────────────────
@@ -395,6 +427,7 @@ export class Orchestrator {
       const gate = task.gates[0]!;
       task = this.drive(task, { type: "OPEN_GATE", gateId: gate.id });
       this.d.events.emit({ type: "gate_opened", taskId, gateId: gate.id, gateKind: "pr_approval" });
+      this.notify("review", taskId, "Ready for your review", `“${truncate(task.goal)}” finished and is waiting for you to review & merge.`);
       this.emitTaskUpdated(task);
     } catch (err) {
       await this.failPipeline(taskId, currentStepId, err);
@@ -418,6 +451,7 @@ export class Orchestrator {
       }
       task = this.drive(task, { type: "ABORT_TASK", reason: errMessage(err) });
       this.emitTaskUpdated(task);
+      this.notify("failed", task.id, "A task failed", `“${truncate(task.goal)}” stopped: ${errMessage(err)}`);
       await this.journalTask(task);
       if (task.worktreePath !== undefined) {
         const vcs = this.vcsForTask(task);
@@ -497,6 +531,7 @@ export class Orchestrator {
       task = this.addArtifacts(task, [
         { id: this.d.ids() as ArtifactId, kind: "pr_url", ref: prUrl, producedByStep: lastStep, createdAt: this.d.clock() },
       ]);
+      this.notify("merged", task.id, "Merged to main", `“${truncate(task.goal)}” is merged — ${prUrl}`);
     } catch (err) {
       // The merge didn't complete (e.g. conflicts, branch protection). Record an
       // honest merge_error so the panel shows "merge failed" instead of a false
@@ -504,6 +539,7 @@ export class Orchestrator {
       // it on GitHub. The task stays `completed` (the CEO approved + did their part),
       // but `merged` is now derived from the absence of this error.
       console.error(`[engine] merge failed for task ${task.id}: ${errMessage(err)}${prUrl !== undefined ? ` (PR opened: ${prUrl})` : ""}`);
+      this.notify("merge_failed", task.id, "Merge didn't land", `“${truncate(task.goal)}” couldn't merge: ${errMessage(err)}${prUrl !== undefined ? ` (PR ${prUrl})` : ""}`);
       task = this.addArtifacts(task, [
         ...(prUrl !== undefined
           ? [{ id: this.d.ids() as ArtifactId, kind: "pr_url" as const, ref: prUrl, producedByStep: lastStep, createdAt: this.d.clock() }]
