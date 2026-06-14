@@ -20,6 +20,7 @@ import type {
   Artifact,
   ArtifactId,
   TransitionEvent,
+  HumanDecision,
 } from "@bureau/core";
 import type { CapabilityRegistry } from "@bureau/capabilities";
 import type { Provider } from "@bureau/providers";
@@ -416,8 +417,11 @@ export class Orchestrator {
         if (!this.d.capabilities.has(step.capability)) {
           throw new Error(`Capability "${step.capability}" is not available yet.`);
         }
-        // A review worker assesses the change so far — hand it the current diff.
-        const reviewDiff = step.capability === "review" ? await vcs.workingDiff(worktreePath) : undefined;
+        // A review worker assesses the change so far — hand it the FULL change vs
+        // base (incl. uncommitted), so it sees the whole PR-shaped diff on a re-run
+        // too (where earlier work is already committed), not just the increment.
+        const reviewDiff =
+          step.capability === "review" ? await vcs.reviewDiff(worktreePath, `origin/${project.baseBranch}`) : undefined;
         const out = await this.d.capabilities.get(step.capability).execute({
           step,
           worktreePath,
@@ -502,6 +506,80 @@ export class Orchestrator {
     }
   }
 
+  /** Re-run the pipeline with the CEO's change request, then re-open the gate for a
+   *  fresh review of the FULL updated diff. Background + race-safe like runPipeline:
+   *  it commits locally and NEVER pushes; an error aborts the task (failPipeline).
+   *  The worktree from the first run is reused (it still holds the v1 change). */
+  private async reRun(taskId: string, gateId: GateId, notes: string): Promise<void> {
+    let currentStepId: StepId | undefined;
+    try {
+      const project = this.resolveProject(this.requireTask(taskId));
+      const vcs = this.d.vcs(project);
+      const worktreePath = requireWorktree(this.requireTask(taskId));
+
+      // Re-open the loop: gate→pending, ALL steps→pending, status→executing.
+      let task = this.drive(this.requireTask(taskId), { type: "REOPEN_FOR_CHANGES", gateId });
+      this.emitTaskUpdated(task);
+      const changeRequest = `The reviewer (CEO) reviewed the previous diff and requested these changes:\n${notes}`;
+
+      for (const planned of task.steps) {
+        if (this.requireTask(taskId).status !== "executing") return; // stopped between steps
+        currentStepId = planned.id;
+        task = this.drive(this.requireTask(taskId), { type: "START_STEP", stepId: planned.id });
+        this.d.events.emit({ type: "step_started", taskId, stepId: planned.id });
+
+        const step = task.steps.find((s) => s.id === planned.id)!;
+        if (!this.d.capabilities.has(step.capability)) {
+          throw new Error(`Capability "${step.capability}" is not available yet.`);
+        }
+        const reviewDiff =
+          step.capability === "review" ? await vcs.reviewDiff(worktreePath, `origin/${project.baseBranch}`) : undefined;
+        const out = await this.d.capabilities.get(step.capability).execute({
+          step,
+          worktreePath,
+          context: `${task.goal}\n\n${changeRequest}`,
+          ...(reviewDiff !== undefined ? { diff: reviewDiff } : {}),
+          onChunk: (chunk) =>
+            this.d.events.emit({ type: "step_progress", taskId, stepId: planned.id, capability: step.capability, chunk }),
+        });
+        this.recordUsage(step.capability, taskId, out.usage);
+        if (this.requireTask(taskId).status !== "executing") return; // stopped during the step
+        if (out.artifacts.length > 0) this.addArtifacts(this.requireTask(taskId), out.artifacts);
+        this.drive(this.requireTask(taskId), { type: "COMPLETE_STEP", stepId: planned.id, summary: out.summary });
+        currentStepId = undefined;
+        this.d.events.emit({ type: "step_completed", taskId, stepId: planned.id });
+      }
+
+      if (this.requireTask(taskId).status !== "executing") return; // stopped before commit
+      const committed = await vcs.commitAll(worktreePath, `Bureau: ${truncate(this.requireTask(taskId).goal)}`);
+      task = this.requireTask(taskId);
+      if (task.status !== "executing") return; // stopped during commit
+      if (!committed) {
+        // The revision made no change. Don't discard the reviewable work — re-open the
+        // gate on the UNCHANGED diff so the CEO can still approve it or ask for
+        // something different (the latest diff artifact is still the prior one).
+        task = this.drive(task, { type: "OPEN_GATE", gateId });
+        this.d.events.emit({ type: "gate_opened", taskId, gateId, gateKind: "pr_approval" });
+        this.notify("review", taskId, "No changes made", `“${truncate(task.goal)}” — the revision produced no change. The diff is unchanged; approve it or request something different.`);
+        this.emitTaskUpdated(task);
+        return;
+      }
+      // The FULL change vs the branch base (three-dot, merge-base relative), not just
+      // the increment over the first commit that the working diff would show.
+      const diff = await vcs.branchDiff(worktreePath, `origin/${project.baseBranch}`);
+      const lastStep = task.steps[task.steps.length - 1]!.id;
+      task = this.addArtifacts(task, [
+        { id: this.d.ids() as ArtifactId, kind: "diff", ref: diff, producedByStep: lastStep, createdAt: this.d.clock() },
+      ]);
+      task = this.drive(task, { type: "OPEN_GATE", gateId });
+      this.d.events.emit({ type: "gate_opened", taskId, gateId, gateKind: "pr_approval" });
+      this.notify("review", taskId, "Re-review ready", `“${truncate(task.goal)}” was revised and is ready for your review again.`);
+      this.emitTaskUpdated(task);
+    } catch (err) {
+      await this.failPipeline(taskId, currentStepId, err);
+    }
+  }
+
   /** Stop a task: abort and tear down its worktree. Idempotent on terminal tasks. */
   async stopTask(taskId: string): Promise<Task> {
     let task = this.requireTask(taskId);
@@ -530,6 +608,41 @@ export class Orchestrator {
     return task;
   }
 
+  /** The CEO's decision at the open review gate. Three outcomes, ONE entry point:
+   *   - approved        → confirmMerge (the unchanged, sole push path)
+   *   - rejected        → abort the task (push nothing, tear down the worktree)
+   *   - request_changes → re-run the edit with the CEO's notes, then re-review.
+   *  Only `approved` can ever reach GitHub, and only via confirmMerge's canPush wall. */
+  async decideGate(taskId: string, decision: HumanDecision, notes?: string): Promise<Task> {
+    const task = this.requireTask(taskId);
+    const gate = task.gates.find((g) => g.status === "open");
+    if (gate === undefined) {
+      throw new OrchestratorError(`Task ${taskId} has no open review gate.`, 409);
+    }
+
+    if (decision === "approved") return this.confirmMerge(taskId);
+
+    if (decision === "rejected") {
+      // Record the rejection in the log, then abort + clean up (stopTask is idempotent).
+      this.drive(task, { type: "DECIDE_GATE", gateId: gate.id, decision: "rejected", ...(notes !== undefined ? { notes } : {}) });
+      return this.stopTask(taskId);
+    }
+
+    // request_changes — needs a note so the worker has something to act on.
+    const trimmed = (notes ?? "").trim();
+    if (trimmed === "") {
+      throw new OrchestratorError("Requesting changes needs a note describing what to change.", 400);
+    }
+    const decided = this.drive(task, { type: "DECIDE_GATE", gateId: gate.id, decision: "request_changes", notes: trimmed });
+    this.emitTaskUpdated(decided);
+    // Re-run in the BACKGROUND (like startTask) — it commits locally + re-opens the
+    // gate; it NEVER pushes. Return immediately so the panel shows live progress.
+    const promise = this.reRun(taskId, gate.id, trimmed);
+    this.running.set(taskId, promise);
+    void promise.finally(() => this.running.delete(taskId));
+    return this.requireTask(taskId);
+  }
+
   /** The CEO's final confirmation: push, open the PR, squash-merge to main, clean up.
    *  This is the ONE code path that reaches GitHub, and only when canPush()===true. */
   async confirmMerge(taskId: string): Promise<Task> {
@@ -537,6 +650,11 @@ export class Orchestrator {
     const gate = task.gates.find((g) => g.status === "open");
     if (gate === undefined) {
       throw new OrchestratorError(`Task ${taskId} has no open review gate.`, 409);
+    }
+    // Only the pr_approval gate authorizes a merge. (canPush() independently requires
+    // it, so this never weakens the wall — it just fails fast + documents intent.)
+    if (gate.kind !== "pr_approval") {
+      throw new OrchestratorError(`Task ${taskId}'s open gate is "${gate.kind}", not a merge approval.`, 409);
     }
 
     task = this.drive(task, { type: "DECIDE_GATE", gateId: gate.id, decision: "approved" });

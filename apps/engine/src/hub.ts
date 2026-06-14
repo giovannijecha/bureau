@@ -76,6 +76,8 @@ function describe(task: Task, entry: DecisionEntry): { kind: string; label: stri
       return { kind: entry.type, label: `${who(task, entry.stepId)} failed — ${entry.reason}` };
     case "gate_opened":
       return { kind: entry.type, label: "Ready for your review" };
+    case "gate_reopened":
+      return { kind: entry.type, label: "Revising — changes requested" };
     case "gate_decided":
       return { kind: entry.type, label: `Review ${entry.decision}` };
     case "task_completed":

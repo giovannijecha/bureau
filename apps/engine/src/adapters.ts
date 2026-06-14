@@ -9,6 +9,8 @@ import {
   freshBase,
   syncToBase,
   getWorkingDiff,
+  getDiff,
+  getReviewDiff,
   commitAll,
   push,
   openPr,
@@ -76,6 +78,14 @@ export class RealVcs implements VcsPort {
 
   workingDiff(worktreePath: string): Promise<string> {
     return getWorkingDiff(worktreePath, this.runner);
+  }
+
+  branchDiff(worktreePath: string, base: string): Promise<string> {
+    return getDiff(worktreePath, base, this.runner); // `git diff base...HEAD` (three-dot, merge-base relative)
+  }
+
+  reviewDiff(worktreePath: string, base: string): Promise<string> {
+    return getReviewDiff(worktreePath, base, this.runner); // full change incl. uncommitted, vs base
   }
 
   commitAll(worktreePath: string, message: string): Promise<boolean> {

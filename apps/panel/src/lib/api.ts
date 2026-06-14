@@ -140,6 +140,16 @@ export async function mergeTask(id: string): Promise<TaskDetail> {
   return json(await postJson(`/api/tasks/${encodeURIComponent(id)}/merge`));
 }
 
+/** The CEO's review decision at the open gate: approve (merge), request changes
+ *  (re-run with notes), or reject (abort). */
+export async function decideGate(
+  id: string,
+  decision: "approved" | "rejected" | "request_changes",
+  notes?: string
+): Promise<TaskDetail> {
+  return json(await postJson(`/api/tasks/${encodeURIComponent(id)}/gate`, { decision, notes }));
+}
+
 /** Lightweight reachability check for a connection indicator. */
 export async function ping(): Promise<boolean> {
   try {

@@ -108,6 +108,7 @@ function richTask(): Task {
     { type: "step_completed", at: "2026-01-01T02:00:00.000Z", stepId: sid("s1") },
     { type: "step_failed", at: "2026-01-01T02:05:00.000Z", stepId: sid("s2"), reason: "flaky" },
     { type: "gate_opened", at: "2026-01-01T02:30:00.000Z", gateId: gid("g1") },
+    { type: "gate_reopened", at: "2026-01-01T02:45:00.000Z", gateId: gid("g1") },
     { type: "gate_decided", at: "2026-01-01T03:00:00.000Z", gateId: gid("g1"), decision: "approved", notes: "looks good" },
     { type: "gate_decided", at: "2026-01-01T03:10:00.000Z", gateId: gid("g2"), decision: "rejected" }, // no notes
     { type: "task_completed", at: "2026-01-01T05:00:00.000Z" },
@@ -234,7 +235,7 @@ describe("TaskRepo — save is an idempotent full replace (upsert)", () => {
     repo.save(task);
 
     expect(db.select().from(stepsTable).where(eq(stepsTable.taskId, task.id)).all()).toHaveLength(2);
-    expect(db.select().from(decisionLogTable).where(eq(decisionLogTable.taskId, task.id)).all()).toHaveLength(9);
+    expect(db.select().from(decisionLogTable).where(eq(decisionLogTable.taskId, task.id)).all()).toHaveLength(10);
     expect(repo.load(task.id)).toEqual(task);
   });
 

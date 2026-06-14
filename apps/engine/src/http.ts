@@ -13,7 +13,7 @@
 //   POST /api/tasks/:id/merge     the final confirm: push → PR → squash-merge
 
 import { createServer, type IncomingMessage, type ServerResponse, type Server } from "node:http";
-import { SendMessageRequestDto, CreateTaskRequestDto, SaveNoteRequestDto } from "@bureau/contracts";
+import { SendMessageRequestDto, CreateTaskRequestDto, SaveNoteRequestDto, GateDecisionRequestDto } from "@bureau/contracts";
 import type { TaskId } from "@bureau/core";
 import { Orchestrator, OrchestratorError } from "./orchestrator.js";
 import type { TaskStore, MessageLog } from "./ports.js";
@@ -222,6 +222,16 @@ async function handle(deps: HttpDeps, req: IncomingMessage, res: ServerResponse)
         : action === "stop"
           ? await deps.orchestrator.stopTask(id)
           : await deps.orchestrator.confirmMerge(id);
+    sendJson(res, 200, toTaskDetail(task));
+    return;
+  }
+
+  // POST /api/tasks/:id/gate — the CEO's review decision: approve / request_changes / reject.
+  const gateMatch = /^\/api\/tasks\/([^/]+)\/gate$/.exec(path);
+  if (method === "POST" && gateMatch) {
+    const id = decodeURIComponent(gateMatch[1]!);
+    const body = GateDecisionRequestDto.parse(await readJson(req));
+    const task = await deps.orchestrator.decideGate(id, body.decision, body.notes);
     sendJson(res, 200, toTaskDetail(task));
     return;
   }

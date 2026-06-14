@@ -123,6 +123,7 @@ function decisionEntryToRow(taskId: TaskId, orderIdx: number, e: DecisionEntry):
     case "step_failed":
       return { ...base, stepId: e.stepId, reason: e.reason };
     case "gate_opened":
+    case "gate_reopened":
       return { ...base, gateId: e.gateId };
     case "gate_decided":
       return { ...base, gateId: e.gateId, decision: e.decision, notes: e.notes ?? null };
@@ -222,6 +223,8 @@ function rowToDecisionEntry(r: DecisionSelect): DecisionEntry {
       };
     case "gate_opened":
       return { type: "gate_opened", at: r.at, gateId: req(r.gateId, "gate_id") as GateId };
+    case "gate_reopened":
+      return { type: "gate_reopened", at: r.at, gateId: req(r.gateId, "gate_id") as GateId };
     case "gate_decided":
       return {
         type: "gate_decided",

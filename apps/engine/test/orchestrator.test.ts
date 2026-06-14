@@ -30,6 +30,8 @@ function fakeVcs() {
     ensureClone: 0,
     syncClone: 0,
     workingDiff: 0,
+    branchDiff: 0,
+    reviewDiff: 0,
     setupWorktree: [] as { branch: string; path: string }[],
     commitAll: [] as { path: string; message: string }[],
     push: [] as { path: string; branch: string }[],
@@ -53,6 +55,14 @@ function fakeVcs() {
     async workingDiff() {
       calls.workingDiff++;
       return "DIFF-CONTENT";
+    },
+    async branchDiff() {
+      calls.branchDiff++;
+      return "REVISED-DIFF-CONTENT";
+    },
+    async reviewDiff() {
+      calls.reviewDiff++;
+      return "REVIEW-DIFF-CONTENT";
     },
     async commitAll(path, message) {
       calls.commitAll.push({ path, message });
@@ -478,6 +488,77 @@ describe("confirmMerge", () => {
     await expect(orch.confirmMerge(draft.id)).rejects.toMatchObject({ status: 409 });
     expect(vcs.calls.push).toHaveLength(0);
   });
+});
+
+// ── decideGate — the review loop (approve / request_changes / reject) ─────────
+
+describe("decideGate", () => {
+  async function park() {
+    const draft = orch.createTask(PROPOSAL);
+    await orch.startTask(draft.id);
+    await orch.settle(draft.id); // parked at the open gate (awaiting_human)
+    return draft;
+  }
+
+  it("request_changes re-runs the pipeline with the CEO's notes, pushes NOTHING, and re-opens the gate", async () => {
+    const draft = await park();
+    captured = null;
+
+    await orch.decideGate(draft.id, "request_changes", "rename the function to addNumbers");
+    await orch.settle(draft.id); // let the background re-run finish
+
+    expect(captured?.context).toContain("rename the function to addNumbers"); // notes reached the worker
+    expect(vcs.calls.branchDiff).toBe(1); // cumulative diff captured for re-review
+    expect(vcs.calls.push).toHaveLength(0); // ← the wall held: nothing reached GitHub
+    const t = store.load(draft.id)!;
+    expect(t.status).toBe("awaiting_human"); // parked again for a fresh review
+    expect(t.gates[0]!.status).toBe("open");
+
+    // THEN approving merges exactly once — only after the post-re-run approve.
+    await orch.decideGate(draft.id, "approved");
+    expect(vcs.calls.push).toHaveLength(1);
+    expect(vcs.calls.mergePr).toHaveLength(1);
+  });
+
+  it("request_changes with blank notes is rejected (400), no re-run", async () => {
+    const draft = await park();
+    await expect(orch.decideGate(draft.id, "request_changes", "   ")).rejects.toMatchObject({ status: 400 });
+    expect(store.load(draft.id)!.status).toBe("awaiting_human"); // unchanged
+    expect(vcs.calls.push).toHaveLength(0);
+  });
+
+  it("a re-run that makes no change re-opens the gate on the unchanged diff (keeps the work), pushes nothing", async () => {
+    const draft = await park();
+    vcs.setCommitted(false); // the revision commits nothing
+    await orch.decideGate(draft.id, "request_changes", "do nothing useful");
+    await orch.settle(draft.id);
+    const t = store.load(draft.id)!;
+    expect(t.status).toBe("awaiting_human"); // re-opened, NOT aborted — the v1 work survives
+    expect(t.gates[0]!.status).toBe("open");
+    expect(vcs.calls.push).toHaveLength(0);
+  });
+
+  it("reject aborts the task, tears down the worktree, and pushes nothing", async () => {
+    const draft = await park();
+    const t = await orch.decideGate(draft.id, "rejected");
+    expect(t.status).toBe("aborted");
+    expect(vcs.calls.push).toHaveLength(0);
+    expect(vcs.calls.mergePr).toHaveLength(0);
+    expect(vcs.calls.removeWorktree.some((c) => c.force)).toBe(true);
+  });
+
+  it("approve routes to confirmMerge (the single push path)", async () => {
+    const draft = await park();
+    await orch.decideGate(draft.id, "approved");
+    expect(vcs.calls.push).toHaveLength(1);
+    expect(vcs.calls.openPr).toHaveLength(1);
+    expect(vcs.calls.mergePr).toHaveLength(1);
+  });
+
+  it("throws 409 when there is no open gate", async () => {
+    const draft = orch.createTask(PROPOSAL); // never started → no open gate
+    await expect(orch.decideGate(draft.id, "approved")).rejects.toMatchObject({ status: 409 });
+  });
 
   it("a successful merge is reported as merged with the PR url and no merge error", async () => {
     const draft = orch.createTask(PROPOSAL);
@@ -515,7 +596,7 @@ describe("confirmMerge", () => {
     await orch.startTask(draft.id);
     await orch.settle(draft.id);
 
-    expect(reviewInput?.diff).toBe("DIFF-CONTENT"); // the fake vcs.workingDiff
+    expect(reviewInput?.diff).toBe("REVIEW-DIFF-CONTENT"); // the full change vs base
     const detail = toTaskDetail(store.load(draft.id)!);
     const reviewStep = detail.steps.find((s) => s.capability === "review")!;
     expect(reviewStep.summary).toBe("Looks good.");
