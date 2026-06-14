@@ -62,6 +62,7 @@ function fakeOrchestrator(
       | "listProjects"
       | "hub"
       | "gitInfo"
+      | "cleanupTaskBranches"
       | "listNotes"
       | "getNote"
       | "saveNote"
@@ -86,6 +87,7 @@ function fakeOrchestrator(
     gitInfo:
       over.gitInfo ??
       (async () => ({ projectId: "widget", owner: "acme", name: "widget", baseBranch: "main", branch: "main", cloned: true, commits: [], branches: ["main"] })),
+    cleanupTaskBranches: over.cleanupTaskBranches ?? (async () => ({ deleted: ["bureau/task-x"], kept: 1 })),
     usageSummary:
       over.usageSummary ?? (() => ({ totals: { inputTokens: 0, outputTokens: 0, costUsd: 0, events: 0 }, byScope: [], byModel: [], byDay: [], sinceDay: null })),
     listNotifications: over.listNotifications ?? (() => []),
@@ -229,6 +231,15 @@ describe("GET /api/hub", () => {
     const body = (await res.json()) as { workers: unknown[]; stats: { merged: number } };
     expect(Array.isArray(body.workers)).toBe(true);
     expect(body.stats.merged).toBe(0);
+  });
+});
+
+describe("POST /api/git/cleanup", () => {
+  it("prunes leftover task branches and returns the result", async () => {
+    const url = await listen({ orchestrator: fakeOrchestrator(), store: fakeStore(), messages: fakeMessages() });
+    const res = await post(`${url}/api/git/cleanup`, {});
+    expect(res.status).toBe(200);
+    expect((await res.json()).deleted).toEqual(["bureau/task-x"]);
   });
 });
 

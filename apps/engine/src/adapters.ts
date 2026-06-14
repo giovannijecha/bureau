@@ -19,6 +19,7 @@ import {
   recentCommits,
   remoteBranches,
   headBranch,
+  pruneTaskBranches,
   defaultRunner,
   type Runner,
   type CommitAuthor,
@@ -131,6 +132,11 @@ export class RealVcs implements VcsPort {
       remoteBranches(this.cfg.canonicalPath, this.runner),
     ]);
     return { cloned: true, branch, commits, branches };
+  }
+
+  pruneTaskBranches(keep: readonly string[]): Promise<string[]> {
+    if (!existsSync(join(this.cfg.canonicalPath, ".git"))) return Promise.resolve([]);
+    return pruneTaskBranches(this.cfg.canonicalPath, keep, this.runner);
   }
 }
 

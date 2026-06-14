@@ -89,6 +89,13 @@ async function handle(deps: HttpDeps, req: IncomingMessage, res: ServerResponse)
     return;
   }
 
+  // POST /api/git/cleanup[?projectId=] — delete leftover bureau/task-* branches.
+  if (method === "POST" && path === "/api/git/cleanup") {
+    const projectId = url.searchParams.get("projectId") ?? undefined;
+    sendJson(res, 200, await deps.orchestrator.cleanupTaskBranches(projectId));
+    return;
+  }
+
   // GET /api/usage — token spend + cost. ?days=N limits the window (default all-time).
   if (method === "GET" && path === "/api/usage") {
     const daysRaw = url.searchParams.get("days");

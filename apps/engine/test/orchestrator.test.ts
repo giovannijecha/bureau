@@ -32,6 +32,7 @@ function fakeVcs() {
     workingDiff: 0,
     branchDiff: 0,
     reviewDiff: 0,
+    pruneKeep: [] as string[],
     setupWorktree: [] as { branch: string; path: string }[],
     commitAll: [] as { path: string; message: string }[],
     push: [] as { path: string; branch: string }[],
@@ -85,6 +86,10 @@ function fakeVcs() {
     chatCwd: () => "/tmp/clone",
     async repoInfo() {
       return { cloned: true, branch: "main", commits: [{ hash: "abc1234", author: "Bureau", date: "2026-06-14", subject: "Initial commit" }], branches: ["main"] };
+    },
+    async pruneTaskBranches(keep) {
+      calls.pruneKeep = [...keep];
+      return ["bureau/task-old1", "bureau/task-old2"];
     },
   };
   return {
@@ -344,6 +349,23 @@ describe("chat", () => {
     const res = await orch.chat("hi");
     expect(res.reply.content).toBe("Tell me more.");
     expect(res.proposal).toBeUndefined();
+  });
+});
+
+describe("cleanupTaskBranches", () => {
+  it("keeps the branches of in-flight tasks and prunes the rest (returns the deleted)", async () => {
+    const live = orch.createTask(PROPOSAL);
+    await orch.startTask(live.id);
+    await orch.settle(live.id); // parked at the gate → still in flight, keep its branch
+    const done = orch.createTask(PROPOSAL);
+    await orch.startTask(done.id);
+    await orch.settle(done.id);
+    await orch.confirmMerge(done.id); // completed → its branch may be pruned
+
+    const res = await orch.cleanupTaskBranches();
+    expect(vcs.calls.pruneKeep).toContain(`bureau/task-${live.id}`); // the parked task is kept
+    expect(vcs.calls.pruneKeep).not.toContain(`bureau/task-${done.id}`); // the merged one is prunable
+    expect(res.deleted).toEqual(["bureau/task-old1", "bureau/task-old2"]);
   });
 });
 

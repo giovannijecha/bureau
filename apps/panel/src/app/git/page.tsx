@@ -2,9 +2,9 @@
 
 import { useCallback, useEffect, useRef, useState } from "react";
 import Link from "next/link";
-import { GitBranch, GitMerge, GitCommit, ExternalLink, FolderGit2, Loader2 } from "lucide-react";
+import { GitBranch, GitMerge, GitCommit, ExternalLink, FolderGit2, Loader2, Trash2 } from "lucide-react";
 import type { TaskSummary, GitInfo } from "@bureau/contracts";
-import { listTasks, getGitInfo } from "../../lib/api";
+import { listTasks, getGitInfo, cleanupBranches } from "../../lib/api";
 import { useProjects } from "../../lib/useProjects";
 import { useEngineEvents } from "../../lib/useEngineEvents";
 import { cn } from "../../lib/utils";
@@ -21,6 +21,8 @@ export default function GitPage() {
   const [tasks, setTasks] = useState<TaskSummary[] | null>(null);
   const [git, setGit] = useState<GitInfo | null>(null);
   const [gitErr, setGitErr] = useState(false);
+  const [cleaning, setCleaning] = useState(false);
+  const [cleanMsg, setCleanMsg] = useState<string | null>(null);
   const alive = useRef(true);
   useEffect(() => {
     alive.current = true;
@@ -64,6 +66,22 @@ export default function GitPage() {
     }
   });
 
+  async function cleanup() {
+    if (cleaning) return;
+    if (typeof window !== "undefined" && !window.confirm("Delete leftover bureau/task-* branches (local + remote) for finished tasks? Active tasks are kept. main and your branches are never touched.")) return;
+    setCleaning(true);
+    setCleanMsg(null);
+    try {
+      const res = await cleanupBranches(activeId ?? undefined);
+      setCleanMsg(res.deleted.length ? `Removed ${res.deleted.length} branch${res.deleted.length === 1 ? "" : "es"}.` : "Nothing to clean up.");
+      void loadGit(activeId ?? undefined);
+    } catch {
+      setCleanMsg("Cleanup failed.");
+    } finally {
+      setCleaning(false);
+    }
+  }
+
   const byRepo = new Map<string, TaskSummary[]>();
   for (const t of tasks ?? []) {
     if (t.status === "created" || t.status === "aborted") continue; // no live branch / merge
@@ -90,16 +108,30 @@ export default function GitPage() {
                 </span>
               )}
             </div>
-            {repoSlug && (
-              <a
-                href={`https://github.com/${repoSlug}`}
-                target="_blank"
-                rel="noreferrer"
-                className="inline-flex shrink-0 items-center gap-1 text-xs text-muted-foreground transition-colors hover:text-foreground"
-              >
-                GitHub <ExternalLink className="h-3 w-3" />
-              </a>
-            )}
+            <div className="flex shrink-0 items-center gap-3">
+              {cleanMsg && <span className="hidden text-xs text-muted-foreground sm:inline">{cleanMsg}</span>}
+              {git?.cloned && (
+                <button
+                  onClick={() => void cleanup()}
+                  disabled={cleaning}
+                  title="Delete leftover bureau/task-* branches"
+                  className="inline-flex items-center gap-1 text-xs text-muted-foreground transition-colors hover:text-foreground disabled:opacity-50"
+                >
+                  {cleaning ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <Trash2 className="h-3.5 w-3.5" />}
+                  Clean up branches
+                </button>
+              )}
+              {repoSlug && (
+                <a
+                  href={`https://github.com/${repoSlug}`}
+                  target="_blank"
+                  rel="noreferrer"
+                  className="inline-flex items-center gap-1 text-xs text-muted-foreground transition-colors hover:text-foreground"
+                >
+                  GitHub <ExternalLink className="h-3 w-3" />
+                </a>
+              )}
+            </div>
           </div>
 
           {git === null && !gitErr ? (

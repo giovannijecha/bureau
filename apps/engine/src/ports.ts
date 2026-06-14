@@ -51,6 +51,10 @@ export interface VcsPort {
   /** Read-only repo inspection for the Git console (current branch, recent commits,
    *  origin branches). Never mutates; returns empty when the clone doesn't exist. */
   repoInfo(commitLimit: number): Promise<RepoView>;
+  /** Delete leftover bureau/task-* branches (local + origin) except `keep`. Hard-
+   *  constrained to that namespace — never touches main or a user branch. Returns
+   *  the branches removed. */
+  pruneTaskBranches(keep: readonly string[]): Promise<string[]>;
 }
 
 /** A read-only snapshot of a project's repository, for the Git console. */
