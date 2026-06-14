@@ -1,6 +1,6 @@
 # Bureau
 
-![status](https://img.shields.io/badge/status-phase%204-blue)
+![status](https://img.shields.io/badge/status-active-brightgreen)
 ![license](https://img.shields.io/badge/license-private-lightgrey)
 ![stack](https://img.shields.io/badge/stack-TypeScript-3178c6)
 ![package%20manager](https://img.shields.io/badge/pnpm-workspaces-f69220)
@@ -90,15 +90,15 @@ One engine serves many repositories. Each repo is a **Project**; you pick the ac
 
 Stateless operatives that Iris delegates Task steps to. Each is replaceable — all durable context lives in the Task.
 
-| Worker | Role | Status |
-|---|---|---|
-| `plan` | Break a request into ordered steps and gates | Stub |
-| `edit` | Apply a code change inside an isolated worktree | ✅ Implemented (Phase 1) |
-| `test` | Run the repo's test suite against the change | Stub |
-| `review` | Inspect the diff and flag issues before human review | Stub |
-| `document` | Update docs / changelog for the change | Stub |
+| Worker | Persona | Role | Status |
+|---|---|---|---|
+| `edit` | Editor | Apply a code change directly in an isolated worktree | ✅ Live |
+| `document` | Scribe | Update docs / README / changelog for the change | ✅ Live |
+| `plan` | Planner | Break a request into ordered steps + acceptance criteria | Planned |
+| `test` | Tester | Run the repo's test suite against the change | Planned |
+| `review` | Reviewer | Inspect the diff and flag issues before human review | Planned |
 
-Workers are registered in the `CapabilityRegistry`; stubs are wired now and implemented per phase.
+`edit` and `document` are **agentic** — the model edits the worktree files directly (confined to that directory; no shell), and Iris can compose them into a multi-step pipeline (e.g. edit → document) that produces one reviewed diff. Workers are registered in the `CapabilityRegistry`; `createTask` refuses any capability that isn't registered, so an unbuilt worker can never silently no-op.
 
 ## Architecture
 
@@ -147,6 +147,6 @@ Imports only ever point inward. `core` and `contracts` depend on no other `@bure
 
 ## Roadmap
 
-- **Phase 1–3 — Foundations:** core types, state machine (`transition()` + `canPush()`), DB schema (Drizzle), provider adapters, VCS wrapper. The `edit` capability lands here; the rest are registered as stubs.
-- **Phase 4 — Thin vertical slice (the real milestone):** chat to Iris → Task with one `edit` step + one `diff_review` gate → isolated worktree change → diff in panel → human approval → real PR opened on GitHub.
-- **Phase 5+ — Parallelism & breadth:** parallel tasks, the full capability set (plan/test/review/document), and panel sections beyond Assistant.
+- **Phase 1–4 — Foundations + vertical slice ✅:** core types, state machine (`transition()` + `canPush()`), DB schema, provider adapters, VCS wrapper; chat → Task → isolated worktree change → diff review → real squash-merged PR on GitHub.
+- **Phase 5 — Team + polished panel (current) ✅:** `edit` + `document` workers with multi-step pipelines; ChatGPT-style conversations; live progress over WebSocket; the full panel (Overview, Assistant, Projects, Tasks with search/filter/sort, Git, Agents, Settings) with light/dark themes.
+- **Next:** the `plan` / `test` / `review` workers (with mid-pipeline gates), parallel-task concurrency, and a persisted secrets store.
