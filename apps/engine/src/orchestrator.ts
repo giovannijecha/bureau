@@ -94,6 +94,22 @@ export class Orchestrator {
     };
   }
 
+  /** Delete leftover bureau/task-* branches for the active project — keeping the
+   *  branches of tasks that are still in flight (a parked/running task still needs
+   *  its branch). CEO-initiated branch hygiene; only ever touches bureau/task-*. */
+  async cleanupTaskBranches(projectId?: string): Promise<{ deleted: string[]; kept: number }> {
+    const project = this.d.projects.resolve(projectId);
+    const port = this.d.vcs(project);
+    await port.syncClone().catch(() => {}); // fresh view of branches
+    // A task that hasn't reached a terminal state still owns its branch.
+    const keep = this.d.store
+      .list()
+      .filter((t) => t.status !== "completed" && t.status !== "aborted")
+      .map((t) => this.branchFor(t.id));
+    const deleted = await port.pruneTaskBranches(keep);
+    return { deleted, kept: keep.length };
+  }
+
   // ── Notifications ─────────────────────────────────────────────────────────────
 
   /** The CEO's notifications, newest first. */

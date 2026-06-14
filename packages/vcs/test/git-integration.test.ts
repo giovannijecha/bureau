@@ -5,7 +5,7 @@ import { join } from "node:path";
 
 import { defaultRunner, run } from "../src/exec.js";
 import { createWorktree, removeWorktree } from "../src/worktree.js";
-import { cloneRepo, commitAll, currentBranch, freshBase, syncToBase, getDiff, getWorkingDiff, getReviewDiff, recentCommits, remoteBranches, headBranch } from "../src/git.js";
+import { cloneRepo, commitAll, currentBranch, freshBase, syncToBase, getDiff, getWorkingDiff, getReviewDiff, recentCommits, remoteBranches, headBranch, pruneTaskBranches } from "../src/git.js";
 
 // These tests drive the REAL git binary against throwaway repos under the OS
 // temp dir — deterministic and fully offline (no network, no GitHub).
@@ -129,6 +129,29 @@ describe("getDiff — cumulative across a re-run (the request-changes loop)", ()
     const diff = await getReviewDiff(wtPath, "main");
     expect(diff).toContain("v1.ts"); // committed baseline included…
     expect(diff).toContain("v2.ts"); // …plus the uncommitted increment
+  });
+});
+
+describe("pruneTaskBranches — guarded branch hygiene", () => {
+  it("deletes only bureau/task-* branches (not in keep), never main or user branches", async () => {
+    // create some local branches off main
+    for (const b of ["bureau/task-aaa", "bureau/task-bbb", "feature/keepme"]) {
+      await gitIn(canonical, ["branch", b]);
+    }
+    const deleted = await pruneTaskBranches(canonical, ["bureau/task-bbb"]); // keep bbb
+
+    expect(deleted).toContain("bureau/task-aaa"); // pruned
+    expect(deleted).not.toContain("bureau/task-bbb"); // kept (in keep set)
+    const left = (await run(defaultRunner, "git", ["-C", canonical, "for-each-ref", "--format=%(refname:short)", "refs/heads"]))
+      .split("\n").map((s) => s.trim()).filter(Boolean);
+    expect(left).toContain("main"); // never touched
+    expect(left).toContain("feature/keepme"); // a non-task branch is never touched
+    expect(left).toContain("bureau/task-bbb"); // kept
+    expect(left).not.toContain("bureau/task-aaa"); // gone
+  });
+
+  it("does not prune a non-existent / already-clean repo (returns [])", async () => {
+    expect(await pruneTaskBranches(canonical, [])).not.toContain("main");
   });
 });
 

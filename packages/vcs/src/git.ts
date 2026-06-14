@@ -178,6 +178,43 @@ export async function headBranch(clonePath: string, runner: Runner = defaultRunn
   return out.code === 0 ? out.stdout.trim() || null : null;
 }
 
+/** Branch names under a ref namespace (e.g. "refs/heads", "refs/remotes/origin"). */
+async function refsUnder(clonePath: string, namespace: string, runner: Runner): Promise<string[]> {
+  const out = await runner("git", ["-C", clonePath, "for-each-ref", "--format=%(refname:short)", namespace], {});
+  if (out.code !== 0) return [];
+  return out.stdout.split("\n").map((s) => s.trim()).filter(Boolean);
+}
+
+/** Only Bureau's own task branches are ever deletable — never main or a user branch. */
+const TASK_BRANCH = /^bureau\/task-[A-Za-z0-9._-]+$/;
+
+/**
+ * Delete every `bureau/task-*` branch (local + on origin) EXCEPT those in `keep`.
+ * HARD-CONSTRAINED to the `bureau/task-*` namespace so this can NEVER remove main,
+ * a release branch, or any user branch — it's Bureau's own worktree-branch hygiene,
+ * distinct from the code-merge security wall. Best-effort per branch (a branch may
+ * exist only locally or only on the remote); returns the branches actually removed.
+ */
+export async function pruneTaskBranches(
+  clonePath: string,
+  keep: readonly string[],
+  runner: Runner = defaultRunner
+): Promise<string[]> {
+  const keepSet = new Set(keep);
+  const local = await refsUnder(clonePath, "refs/heads", runner);
+  const remote = (await refsUnder(clonePath, "refs/remotes/origin", runner)).map((b) => b.replace(/^origin\//, ""));
+  const candidates = [...new Set([...local, ...remote])].filter((b) => TASK_BRANCH.test(b) && !keepSet.has(b));
+
+  const deleted: string[] = [];
+  for (const b of candidates) {
+    if (!TASK_BRANCH.test(b)) continue; // belt-and-suspenders — never touch a non-task ref
+    const localDel = await runner("git", ["-C", clonePath, "branch", "-D", b], {});
+    const remoteDel = await runner("git", ["-C", clonePath, "push", "origin", "--delete", b], {});
+    if (localDel.code === 0 || remoteDel.code === 0) deleted.push(b);
+  }
+  return deleted;
+}
+
 /**
  * The committed diff of the worktree branch against `base` (e.g. "main") — the
  * change a PR would introduce. Validates the base and verifies it resolves, so

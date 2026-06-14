@@ -56,6 +56,12 @@ export async function getGitInfo(projectId?: string): Promise<GitInfo> {
   return json(await fetch(`${BASE}/api/git${suffix}`));
 }
 
+/** Delete leftover bureau/task-* branches (keeps in-flight tasks). Returns the result. */
+export async function cleanupBranches(projectId?: string): Promise<{ deleted: string[]; kept: number }> {
+  const suffix = projectId ? `?projectId=${encodeURIComponent(projectId)}` : "";
+  return json(await postJson(`/api/git/cleanup${suffix}`));
+}
+
 /** Usage & cost metrics. `days` limits the look-back window (omit for all-time). */
 export async function getUsage(days?: number): Promise<UsageSummary> {
   const suffix = days && days > 0 ? `?days=${days}` : "";
