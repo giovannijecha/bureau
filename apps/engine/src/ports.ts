@@ -9,6 +9,8 @@ export interface TaskStore {
   save(task: Task): void;
   load(id: TaskId): Task | null;
   list(): Task[];
+  /** Permanently remove a task and its child rows (steps/gates/artifacts/log). */
+  delete(id: TaskId): void;
 }
 
 export interface WorktreeRef {
@@ -55,6 +57,9 @@ export interface VcsPort {
    *  constrained to that namespace — never touches main or a user branch. Returns
    *  the branches removed. */
   pruneTaskBranches(keep: readonly string[]): Promise<string[]>;
+  /** Delete ONE bureau/task-* branch (local + origin). Refuses any non-task ref.
+   *  Returns true if it removed the branch. */
+  deleteBranch(branch: string): Promise<boolean>;
 }
 
 /** A read-only snapshot of a project's repository, for the Git console. */
@@ -131,6 +136,8 @@ export interface MemoryPort {
   get(path: string): Promise<Note | null>;
   /** Create/update a free-form CEO note from a title + body; returns the saved note. */
   saveNote(title: string, body: string): Promise<Note>;
+  /** Delete a note by its vault path (no-op if absent). */
+  delete(path: string): Promise<void>;
   /** Persist a task journal at a deterministic path (best-effort, idempotent). */
   writeJournal(path: string, markdown: string): Promise<void>;
 }

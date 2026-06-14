@@ -15,6 +15,7 @@ import type {
   UsageSummary,
   Notification,
   GitInfo,
+  Attachment,
 } from "@bureau/contracts";
 
 export const ENGINE_URL = process.env.NEXT_PUBLIC_ENGINE_URL ?? "http://localhost:4319";
@@ -62,6 +63,13 @@ export async function cleanupBranches(projectId?: string): Promise<{ deleted: st
   return json(await postJson(`/api/git/cleanup${suffix}`));
 }
 
+/** Delete ONE bureau/task-* branch (local + origin). Refuses in-flight/non-task branches. */
+export async function deleteBranch(branch: string, projectId?: string): Promise<{ deleted: boolean }> {
+  const params = new URLSearchParams({ name: branch });
+  if (projectId) params.set("projectId", projectId);
+  return json(await fetch(`${BASE}/api/git/branch?${params.toString()}`, { method: "DELETE" }));
+}
+
 /** Usage & cost metrics. `days` limits the look-back window (omit for all-time). */
 export async function getUsage(days?: number): Promise<UsageSummary> {
   const suffix = days && days > 0 ? `?days=${days}` : "";
@@ -93,9 +101,16 @@ export async function getNote(path: string): Promise<Note> {
   return json(await fetch(`${BASE}/api/memory/${path.split("/").map(encodeURIComponent).join("/")}`));
 }
 
-/** Create or update a free-form CEO/Iris note. */
-export async function saveNote(title: string, body: string): Promise<Note> {
-  return json(await postJson("/api/memory", { title, body }));
+/** Create or update a free-form CEO/Iris note. `expectedPath` (the note being edited)
+ *  lets the engine refuse to overwrite a different existing note. */
+export async function saveNote(title: string, body: string, expectedPath?: string): Promise<Note> {
+  return json(await postJson("/api/memory", { title, body, expectedPath }));
+}
+
+/** Delete a vault note by its path. */
+export async function deleteNote(notePath: string): Promise<void> {
+  const res = await fetch(`${BASE}/api/memory/${notePath.split("/").map(encodeURIComponent).join("/")}`, { method: "DELETE" });
+  if (!res.ok) throw new Error(`engine responded ${res.status}`);
 }
 
 /** The CEO's chat threads, most-recent first. */
@@ -118,9 +133,15 @@ export async function messagesFor(conversationId: string): Promise<Message[]> {
   return json(await fetch(`${BASE}/api/conversations/${encodeURIComponent(conversationId)}/messages`));
 }
 
-/** A conversation turn with Iris, scoped to the active project + thread. */
-export async function chat(content: string, projectId?: string, conversationId?: string): Promise<ChatResponse> {
-  return json(await postJson("/api/chat", { content, projectId, conversationId }));
+/** A conversation turn with Iris, scoped to the active project + thread. Optional
+ *  attachments (images Iris views, text files inlined as context). */
+export async function chat(
+  content: string,
+  projectId?: string,
+  conversationId?: string,
+  attachments?: Attachment[]
+): Promise<ChatResponse> {
+  return json(await postJson("/api/chat", { content, projectId, conversationId, attachments }));
 }
 
 /** Materialize a proposal into a draft task in the active project. */
@@ -144,6 +165,12 @@ export async function stopTask(id: string): Promise<TaskDetail> {
 }
 export async function mergeTask(id: string): Promise<TaskDetail> {
   return json(await postJson(`/api/tasks/${encodeURIComponent(id)}/merge`));
+}
+
+/** Permanently delete a task (stops it first if it's still live). */
+export async function deleteTask(id: string): Promise<void> {
+  const res = await fetch(`${BASE}/api/tasks/${encodeURIComponent(id)}`, { method: "DELETE" });
+  if (!res.ok) throw new Error(`engine responded ${res.status}`);
 }
 
 /** The CEO's review decision at the open gate: approve (merge), request changes

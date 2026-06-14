@@ -153,6 +153,36 @@ describe("pruneTaskBranches — guarded branch hygiene", () => {
   it("does not prune a non-existent / already-clean repo (returns [])", async () => {
     expect(await pruneTaskBranches(canonical, [])).not.toContain("main");
   });
+
+  it("reclaims a branch pinned by an ORPHAN worktree (deleted/crashed task left it behind)", async () => {
+    // A leftover worktree from a task no longer in the store. git refuses `branch -D`
+    // on a branch checked out in a worktree — so without releasing the worktree first,
+    // this branch could never be pruned and "Clean up branches" would leave it forever.
+    const wtPath = join(tmpRoot, "wt-orphan");
+    await createWorktree(canonical, "bureau/task-orphan", wtPath);
+    expect(existsSync(wtPath)).toBe(true);
+
+    const deleted = await pruneTaskBranches(canonical, []); // nothing kept → orphan is prunable
+
+    expect(deleted).toContain("bureau/task-orphan"); // branch reclaimed…
+    expect(existsSync(wtPath)).toBe(false); // …and its worktree removed from disk
+    const left = (await run(defaultRunner, "git", ["-C", canonical, "for-each-ref", "--format=%(refname:short)", "refs/heads"]))
+      .split("\n").map((s) => s.trim()).filter(Boolean);
+    expect(left).not.toContain("bureau/task-orphan");
+    expect(left).toContain("main"); // the canonical/main worktree is never touched
+  });
+
+  it("never removes an IN-FLIGHT task's worktree (its branch is in keep)", async () => {
+    // An active task's worktree must survive cleanup — its branch is in `keep`.
+    const wtPath = join(tmpRoot, "wt-inflight");
+    await createWorktree(canonical, "bureau/task-inflight", wtPath);
+
+    const deleted = await pruneTaskBranches(canonical, ["bureau/task-inflight"]);
+
+    expect(deleted).not.toContain("bureau/task-inflight");
+    expect(existsSync(wtPath)).toBe(true); // worktree intact
+    expect(await currentBranch(wtPath)).toBe("bureau/task-inflight");
+  });
 });
 
 describe("read-only repo inspection (Git console)", () => {

@@ -1,12 +1,21 @@
 import type { ReactNode } from "react";
+import { Play } from "lucide-react";
+
+/** Code-fence languages that denote a runnable shell command (gets a "Run" button).
+ *  An UNTAGGED fence ("") is excluded — Iris is told to tag runnable commands ```bash,
+ *  so bare fences are quoted snippets, not commands to offer running. */
+const SHELL_LANGS = new Set(["bash", "sh", "shell", "zsh", "console", "powershell", "ps", "ps1", "pwsh"]);
 
 /**
  * A tiny, dependency-free markdown renderer — enough for Iris's chat replies and
- * the memory vault: headings, bullet + numbered lists, bold, inline code, links,
- * and paragraph spacing. Inherits the surrounding font size so it reads well in a
- * chat bubble or a note page alike.
+ * the memory vault: headings, bullet + numbered lists, fenced + inline code,
+ * bold, links, and paragraph spacing. Inherits the surrounding font size so it
+ * reads well in a chat bubble or a note page alike.
+ *
+ * When `onRun` is given, a shell code block gets a "Run in terminal" button — the
+ * mechanism by which Iris proposes a command the CEO runs with one click.
  */
-export function Markdown({ source }: { source: string }) {
+export function Markdown({ source, onRun }: { source: string; onRun?: ((code: string) => void) | undefined }) {
   const lines = source.replace(/\r\n/g, "\n").split("\n");
   const out: ReactNode[] = [];
   let bullets: string[] = [];
@@ -41,6 +50,42 @@ export function Markdown({ source }: { source: string }) {
 
   for (let i = 0; i < lines.length; i++) {
     const l = lines[i]!.trimEnd();
+
+    // Fenced code block: ```lang … ``` — collect verbatim until the closing fence
+    // (or end of input) and render as one block. This is what was previously
+    // leaking raw backticks into the chat.
+    const fence = /^\s*```(\w*)\s*$/.exec(l);
+    if (fence) {
+      flush();
+      const lang = (fence[1] ?? "").toLowerCase();
+      const code: string[] = [];
+      let j = i + 1;
+      for (; j < lines.length; j++) {
+        if (/^\s*```\s*$/.test(lines[j]!)) break; // closing fence
+        code.push(lines[j]!);
+      }
+      const codeStr = code.join("\n");
+      const runnable = onRun !== undefined && SHELL_LANGS.has(lang) && codeStr.trim() !== "";
+      out.push(
+        <div key={i} className="group/code relative my-2">
+          <pre className="overflow-x-auto rounded-lg border bg-muted/60 px-3 py-2.5 font-mono text-[0.85em] leading-relaxed">
+            <code>{codeStr}</code>
+          </pre>
+          {runnable && (
+            <button
+              onClick={() => onRun!(codeStr)}
+              className="absolute right-2 top-2 inline-flex items-center gap-1 rounded-md border bg-background/90 px-2 py-1 text-[11px] font-medium text-muted-foreground opacity-0 backdrop-blur transition-opacity hover:text-foreground focus:opacity-100 group-hover/code:opacity-100"
+              title="Run this command in the Bureau terminal"
+            >
+              <Play className="h-3 w-3" /> Run in terminal
+            </button>
+          )}
+        </div>
+      );
+      i = j; // skip past the closing fence (or to EOF)
+      continue;
+    }
+
     const bullet = /^\s*[-*]\s+(.*)$/.exec(l);
     const num = /^\s*\d+\.\s+(.*)$/.exec(l);
     if (bullet) {
@@ -74,11 +119,18 @@ function inline(text: string): ReactNode {
     if (p.startsWith("`") && p.endsWith("`")) return <code key={i} className="rounded bg-muted px-1 py-0.5 font-mono text-[0.85em]">{p.slice(1, -1)}</code>;
     const link = /^\[([^\]]+)\]\(([^)]+)\)$/.exec(p);
     if (link) {
-      return (
-        <a key={i} href={link[2]} target="_blank" rel="noreferrer" className="underline underline-offset-2 hover:opacity-80">
-          {link[1]}
-        </a>
-      );
+      const href = link[2]!;
+      // Only http(s)/mailto render as links — a relative or javascript: URL (e.g. a
+      // disguised /terminal?run= deep link in an agent-authored reply) is shown as
+      // plain text, never a clickable navigation.
+      if (/^(https?:|mailto:)/i.test(href)) {
+        return (
+          <a key={i} href={href} target="_blank" rel="noreferrer" className="underline underline-offset-2 hover:opacity-80">
+            {link[1]}
+          </a>
+        );
+      }
+      return <span key={i}>{link[1]}</span>;
     }
     return <span key={i}>{p}</span>;
   });

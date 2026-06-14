@@ -6,17 +6,26 @@
 // "embed the whole new file in JSON" round-trip that truncates or mis-escapes on
 // large or multi-line content. The capability never imports @bureau/vcs.
 
+import { readFile, rm, rename, mkdir } from "node:fs/promises";
+import { join, resolve, relative, isAbsolute, dirname, sep } from "node:path";
 import type { Provider, Message } from "@bureau/providers";
 import type { Capability, CapabilityInput, CapabilityOutput } from "./capability.js";
 
-/** The tools the edit worker may use — read + file-edit, never Bash or anything
- *  that could run arbitrary commands. Confined to the worktree by cwd/acceptEdits. */
+/** The tools the edit worker may use — read + file-edit, NEVER a shell. There is no
+ *  edit tool that can delete or rename a file, so the worker requests those via a
+ *  `.bureau-ops` manifest that Bureau applies with Node fs (see applyFileOps) — no
+ *  shell anywhere, so there's no command-injection surface. Confined to the worktree
+ *  by cwd/acceptEdits. */
 export const EDIT_TOOLS = ["Read", "Glob", "Grep", "Edit", "Write", "MultiEdit"] as const;
+
+/** The manifest the worker writes to request file deletes/renames it can't do with edits. */
+export const OPS_FILE = ".bureau-ops";
 
 const EDIT_SYSTEM = `You are Bureau's "edit" worker. The repository is checked out in your working directory. Make the requested change by editing the files DIRECTLY with your tools — Read to inspect current contents, Edit/Write to change them.
 
 Rules:
-- Stay inside the working directory. Do NOT run git, do NOT commit or push — Bureau handles version control.
+- Stay inside the working directory. You have NO shell — do not attempt to run commands, and never commit or push; Bureau handles version control.
+- You CANNOT delete, move, or rename files with your edit tools. If the task requires deleting/moving/renaming a file, WRITE a file named \`${OPS_FILE}\` in the working-directory root, one operation per line — \`delete <path>\` or \`rename <old> -> <new>\` (paths relative to the working directory) — and Bureau will apply them for you and remove the manifest. Make all OTHER changes by editing files directly with Edit/Write.
 - Keep the change minimal and focused on exactly what was asked; don't reformat or touch unrelated files.
 - When you are done, reply with ONE short line summarizing what you changed.`;
 
@@ -84,9 +93,63 @@ export class EditCapability implements Capability {
     this.provider = deps.provider;
   }
 
-  execute(input: CapabilityInput): Promise<CapabilityOutput> {
-    return runAgenticFileWorker(this.provider, input, EDIT_SYSTEM);
+  async execute(input: CapabilityInput): Promise<CapabilityOutput> {
+    const out = await runAgenticFileWorker(this.provider, input, EDIT_SYSTEM);
+    // The worker can't delete/rename with its tools — it requests those in a manifest
+    // that Bureau applies with Node fs (no shell, every path confined to the worktree).
+    const applied = await applyFileOps(input.worktreePath);
+    return applied.length > 0 ? { ...out, summary: `${out.summary} (${applied.join("; ")})` } : out;
   }
+}
+
+/** Apply the worker's `.bureau-ops` manifest (delete/rename), then remove it. Pure
+ *  Node fs — NO shell, so there is no command-injection surface — and every path is
+ *  validated to stay inside the worktree. Returns human descriptions of what it did. */
+export async function applyFileOps(worktreePath: string): Promise<string[]> {
+  const manifest = join(worktreePath, OPS_FILE);
+  let raw: string;
+  try {
+    raw = await readFile(manifest, "utf8");
+  } catch {
+    return []; // no manifest — nothing to delete/rename
+  }
+  const applied: string[] = [];
+  for (const line of raw.split("\n")) {
+    const t = line.trim();
+    if (t === "" || t.startsWith("#")) continue;
+    const del = /^delete\s+(.+)$/i.exec(t);
+    const ren = /^rename\s+(.+?)\s*->\s*(.+)$/i.exec(t);
+    if (del) {
+      const p = within(worktreePath, del[1]!);
+      if (p) {
+        await rm(p, { recursive: true, force: true }).catch(() => {});
+        applied.push(`deleted ${del[1]!.trim()}`);
+      }
+    } else if (ren) {
+      const from = within(worktreePath, ren[1]!);
+      const to = within(worktreePath, ren[2]!);
+      if (from && to) {
+        await mkdir(dirname(to), { recursive: true }).catch(() => {});
+        await rename(from, to).catch(() => {});
+        applied.push(`renamed ${ren[1]!.trim()} → ${ren[2]!.trim()}`);
+      }
+    }
+  }
+  await rm(manifest, { force: true }).catch(() => {}); // never leave the manifest in the diff
+  return applied;
+}
+
+/** Resolve a manifest-relative path, returning it ONLY if it stays inside the worktree
+ *  (rejects absolute paths and `..` traversal). */
+function within(worktreePath: string, rel: string): string | null {
+  const cleaned = rel.trim().replace(/^["']|["']$/g, "");
+  if (cleaned === "" || isAbsolute(cleaned)) return null;
+  const abs = resolve(worktreePath, cleaned);
+  const r = relative(worktreePath, abs);
+  // Reject anything that escapes the worktree (empty = the root itself, ".."-prefixed
+  // = traversal, absolute = a different root). `sep` keeps it correct on Windows.
+  if (r === "" || r === ".." || r.startsWith(`..${sep}`) || isAbsolute(r)) return null;
+  return abs;
 }
 
 // ---------------------------------------------------------------------------

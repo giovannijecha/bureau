@@ -2,7 +2,7 @@
 // Pure filesystem; no other @bureau/* deps. The engine layers note metadata
 // (title, kind, excerpt) and journaling on top of these primitives.
 
-import { readFile, writeFile, mkdir, readdir, stat } from "node:fs/promises";
+import { readFile, writeFile, mkdir, readdir, stat, rm } from "node:fs/promises";
 import { dirname, isAbsolute, join, normalize, relative, sep } from "node:path";
 
 export class VaultError extends Error {
@@ -38,6 +38,11 @@ export async function writeNote(vaultPath: string, notePath: string, content: st
   const full = resolveInVault(vaultPath, notePath);
   await mkdir(dirname(full), { recursive: true });
   await writeFile(full, content, "utf8");
+}
+
+/** Delete a note. No-op (never throws) when it doesn't exist. */
+export async function deleteNote(vaultPath: string, notePath: string): Promise<void> {
+  await rm(resolveInVault(vaultPath, notePath), { force: true });
 }
 
 /** Every markdown note in the vault, as vault-relative POSIX paths, sorted. */

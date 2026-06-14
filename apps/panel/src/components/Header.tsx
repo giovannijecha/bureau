@@ -10,10 +10,10 @@ import {
   GitBranch,
   Bot,
   Settings,
-  Activity,
   BrainCircuit,
   BarChart3,
   Bell,
+  Terminal,
   type LucideIcon,
 } from "lucide-react";
 import { useEngineOnline } from "../lib/useEngineOnline";
@@ -32,8 +32,7 @@ interface SectionMeta {
 
 const SECTIONS: SectionMeta[] = [
   { match: (p) => p === "/", title: "Assistant", subtitle: "Talk with Iris — she turns it into a task", icon: Sparkles },
-  { match: (p) => p.startsWith("/overview"), title: "Overview", subtitle: "Your team at a glance", icon: LayoutDashboard },
-  { match: (p) => p.startsWith("/hub"), title: "Hub", subtitle: "The live work floor across every task", icon: Activity },
+  { match: (p) => p.startsWith("/hub"), title: "Hub", subtitle: "Your command center — live work, activity, and what's waiting on you", icon: LayoutDashboard },
   { match: (p) => p.startsWith("/memory"), title: "Memory", subtitle: "The org's durable brain — journals & notes", icon: BrainCircuit },
   { match: (p) => p.startsWith("/metrics"), title: "Metrics", subtitle: "Token usage & estimated cost", icon: BarChart3 },
   { match: (p) => p.startsWith("/notifications"), title: "Notifications", subtitle: "Everything that needs — or had — your attention", icon: Bell },
@@ -41,6 +40,7 @@ const SECTIONS: SectionMeta[] = [
   { match: (p) => p === "/tasks", title: "Tasks", subtitle: "Every task Iris has run", icon: ListTodo },
   { match: (p) => p.startsWith("/tasks/"), title: "Task", subtitle: "Pipeline, diff, and review", icon: ListTodo },
   { match: (p) => p.startsWith("/git"), title: "Git", subtitle: "Branches, worktrees, and PRs", icon: GitBranch },
+  { match: (p) => p.startsWith("/terminal"), title: "Terminal", subtitle: "A human-operated shell in your project's clone", icon: Terminal },
   { match: (p) => p.startsWith("/agents"), title: "Agents", subtitle: "Your capability workers", icon: Bot },
   { match: (p) => p.startsWith("/settings"), title: "Settings", subtitle: "Configuration and connection", icon: Settings },
 ];

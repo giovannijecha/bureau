@@ -2,6 +2,7 @@
 
 import { useCallback, useEffect, useRef, useState } from "react";
 import Link from "next/link";
+import { useRouter } from "next/navigation";
 import {
   ArrowLeft,
   Play,
@@ -19,10 +20,16 @@ import {
   ExternalLink,
   Pencil,
   Send,
+  Trash2,
+  Clock,
+  Plus,
+  Check,
+  FileText,
 } from "lucide-react";
-import type { TaskDetail, PipelineStep } from "@bureau/contracts";
-import { getTask, startTask, stopTask, mergeTask, decideGate } from "../../../lib/api";
+import type { TaskDetail, PipelineStep, TimelineEntry } from "@bureau/contracts";
+import { getTask, startTask, stopTask, mergeTask, decideGate, deleteTask } from "../../../lib/api";
 import { useEngineEvents } from "../../../lib/useEngineEvents";
+import { useConfirm } from "../../../components/ConfirmDialog";
 import { cn } from "../../../lib/utils";
 
 const STATUS_COLOR: Record<string, string> = {
@@ -38,6 +45,8 @@ const RUNNING = new Set(["planning", "executing"]);
 
 export default function TaskDetailPage({ params }: { params: { id: string } }) {
   const { id } = params;
+  const router = useRouter();
+  const confirm = useConfirm();
   const [task, setTask] = useState<TaskDetail | null>(null);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -98,6 +107,29 @@ export default function TaskDetailPage({ params }: { params: { id: string } }) {
     }
   }
 
+  async function remove() {
+    if (busy || !task) return;
+    const live = RUNNING.has(task.status) || task.status === "awaiting_human";
+    const ok = await confirm({
+      title: "Delete this task?",
+      description: live
+        ? "It's still live — deleting will stop it (tearing down its worktree) and remove it permanently. This can't be undone."
+        : "The task and its history will be permanently removed. This can't be undone. (Its branch, if any, is kept — use Git → Clean up branches.)",
+      confirmLabel: "Delete task",
+      variant: "destructive",
+    });
+    if (!ok) return;
+    setBusy(true);
+    setError(null);
+    try {
+      await deleteTask(id);
+      router.push("/tasks");
+    } catch (e) {
+      setError(errMsg(e));
+      setBusy(false);
+    }
+  }
+
   if (!task) {
     return (
       <div className="h-full overflow-y-auto p-6">
@@ -153,6 +185,15 @@ export default function TaskDetailPage({ params }: { params: { id: string } }) {
               Stop
             </button>
           )}
+          <button
+            onClick={() => void remove()}
+            disabled={busy}
+            title="Delete this task"
+            className="inline-flex h-9 items-center gap-1.5 rounded-md px-3 text-sm font-medium text-muted-foreground transition-colors hover:bg-red-500/10 hover:text-red-500 disabled:opacity-50"
+          >
+            <Trash2 className="h-4 w-4" />
+            Delete
+          </button>
         </div>
       </div>
 
@@ -230,6 +271,7 @@ export default function TaskDetailPage({ params }: { params: { id: string } }) {
                 <span className="text-sm font-medium">{s.assignee}</span>
                 <span className="rounded-md border bg-muted/50 px-1.5 py-0.5 text-[11px] text-muted-foreground">{s.capability}</span>
                 <span className="min-w-0 flex-1 truncate text-sm text-muted-foreground">{s.description}</span>
+                <StepDuration step={s} />
                 <span className="shrink-0 text-xs text-muted-foreground">{s.status.replace(/_/g, " ")}</span>
               </div>
               {s.failureReason && (
@@ -243,9 +285,12 @@ export default function TaskDetailPage({ params }: { params: { id: string } }) {
         </div>
       </div>
 
+      {/* Timeline — the full history: substeps, gates, and request-changes cycles. */}
+      {task.timeline.length > 0 && <Timeline entries={task.timeline} />}
+
       {/* Branch review + merge */}
       {(reviewable || task.status === "completed") && task.diff !== null && (
-        <div className="overflow-hidden rounded-xl border bg-card">
+        <div className="mt-5 overflow-hidden rounded-xl border bg-card">
           <div className="border-b px-4 py-3 text-sm font-semibold">Branch changes</div>
           <DiffView diff={task.diff} />
           {reviewable && <ReviewBar id={id} busy={busy} act={act} />}
@@ -347,6 +392,7 @@ function WorkerOutput({
  *  or reject (abort). request_changes flips the task to executing → the running
  *  banner + live stream take over with no extra wiring. */
 function ReviewBar({ id, busy, act }: { id: string; busy: boolean; act: (fn: () => Promise<TaskDetail>) => void }) {
+  const confirm = useConfirm();
   const [requesting, setRequesting] = useState(false);
   const [notes, setNotes] = useState("");
   const trimmed = notes.trim();
@@ -409,8 +455,14 @@ function ReviewBar({ id, busy, act }: { id: string; busy: boolean; act: (fn: () 
           Request changes
         </button>
         <button
-          onClick={() => {
-            if (typeof window !== "undefined" && !window.confirm("Reject this task? It will be aborted and its branch discarded.")) return;
+          onClick={async () => {
+            const ok = await confirm({
+              title: "Reject this task?",
+              description: "The task will be aborted and its branch discarded. This can't be undone.",
+              confirmLabel: "Reject task",
+              variant: "destructive",
+            });
+            if (!ok) return;
             act(() => decideGate(id, "rejected"));
           }}
           disabled={busy}
@@ -432,11 +484,112 @@ function StepIcon({ status }: { status: PipelineStep["status"] }) {
   return <Circle className="h-4 w-4 text-muted-foreground/50" />;
 }
 
+/** How long a step took (or has been running) — from its start/finish timestamps.
+ *  A running step self-ticks every second and is tinted/suffixed so a live elapsed
+ *  never reads as a final duration. */
+function StepDuration({ step }: { step: PipelineStep }) {
+  const running = step.status === "running";
+  const [, setTick] = useState(0);
+  useEffect(() => {
+    if (!running) return;
+    const t = setInterval(() => setTick((n) => n + 1), 1000);
+    return () => clearInterval(t);
+  }, [running]);
+  if (!step.startedAt) return null;
+  const start = Date.parse(step.startedAt);
+  if (Number.isNaN(start)) return null;
+  const end = step.completedAt ? Date.parse(step.completedAt) : Date.now();
+  const secs = Math.max(0, Math.round((end - start) / 1000));
+  return (
+    <span
+      className={cn("hidden shrink-0 items-center gap-1 text-[11px] sm:inline-flex", running ? "text-blue-400" : "text-muted-foreground")}
+      title={step.startedAt}
+    >
+      <Clock className="h-3 w-3" />
+      {fmtDuration(secs)}
+      {running ? "…" : ""}
+    </span>
+  );
+}
+
+function fmtDuration(s: number): string {
+  if (s < 60) return `${s}s`;
+  const m = Math.floor(s / 60);
+  if (m < 60) return s % 60 ? `${m}m ${s % 60}s` : `${m}m`;
+  const h = Math.floor(m / 60);
+  return `${h}h ${m % 60}m`;
+}
+
+const TIMELINE_ICON: Record<string, { icon: typeof Circle; tint: string }> = {
+  task_created: { icon: Plus, tint: "text-muted-foreground" },
+  step_started: { icon: Play, tint: "text-blue-400" },
+  step_completed: { icon: CheckCircle2, tint: "text-green-500" },
+  step_failed: { icon: XCircle, tint: "text-red-500" },
+  gate_opened: { icon: CircleDot, tint: "text-amber-500" },
+  gate_reopened: { icon: Pencil, tint: "text-amber-500" },
+  gate_decided: { icon: Check, tint: "text-green-500" },
+  task_completed: { icon: GitMerge, tint: "text-green-500" },
+  task_aborted: { icon: XCircle, tint: "text-red-500" },
+};
+
+/** The full event history — substeps, gates, and request-changes cycles — as a
+ *  vertical timeline. Each gate_reopened is one revision cycle. */
+function Timeline({ entries }: { entries: TimelineEntry[] }) {
+  const [open, setOpen] = useState(true);
+  const cycles = entries.filter((e) => e.type === "gate_reopened").length;
+  return (
+    <div className="mb-5 overflow-hidden rounded-xl border bg-card">
+      <button onClick={() => setOpen((o) => !o)} className="flex w-full items-center justify-between border-b px-4 py-3 text-left transition-colors hover:bg-muted/30">
+        <span className="flex items-center gap-2 text-sm font-semibold">
+          {open ? <ChevronDown className="h-4 w-4 text-muted-foreground" /> : <ChevronRight className="h-4 w-4 text-muted-foreground" />}
+          Timeline
+        </span>
+        <span className="text-xs text-muted-foreground">
+          {entries.length} event{entries.length === 1 ? "" : "s"}
+          {cycles > 0 ? ` · ${cycles} revision${cycles === 1 ? "" : "s"}` : ""}
+        </span>
+      </button>
+      {open && (
+        <ol className="px-4 py-2">
+          {entries.map((e, i) => {
+            const meta = TIMELINE_ICON[e.type] ?? { icon: Circle, tint: "text-muted-foreground" };
+            const Icon = meta.icon;
+            const last = i === entries.length - 1;
+            return (
+              <li key={i} className="flex items-stretch gap-3">
+                {/* connector rail + node */}
+                <div className="flex w-4 shrink-0 flex-col items-center">
+                  <Icon className={cn("mt-1.5 h-4 w-4 shrink-0", meta.tint)} />
+                  {!last && <span className="my-0.5 w-px flex-1 bg-border" />}
+                </div>
+                <div className="flex min-w-0 flex-1 items-baseline justify-between gap-3 py-1.5">
+                  <span className="min-w-0 truncate text-sm">{e.label}</span>
+                  <time className="shrink-0 text-xs tabular-nums text-muted-foreground" title={e.at}>
+                    {absTime(e.at)}
+                  </time>
+                </div>
+              </li>
+            );
+          })}
+        </ol>
+      )}
+    </div>
+  );
+}
+
+/** Local wall-clock time (HH:MM:SS) for a timeline row — client-only, no SSR risk. */
+function absTime(iso: string): string {
+  const t = new Date(iso);
+  if (Number.isNaN(t.getTime())) return "";
+  return t.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit", second: "2-digit" });
+}
+
 interface DiffFile {
   path: string;
   lines: string[];
   added: number;
   removed: number;
+  status: "added" | "removed" | "modified";
 }
 
 function parseDiff(diff: string): DiffFile[] {
@@ -448,9 +601,11 @@ function parseDiff(diff: string): DiffFile[] {
       // header is `diff --git a/PATH b/PATH`; take the path after the LAST " b/".
       const rest = line.slice("diff --git ".length);
       const idx = rest.lastIndexOf(" b/");
-      cur = { path: idx >= 0 ? rest.slice(idx + 3) : rest, lines: [], added: 0, removed: 0 };
+      cur = { path: idx >= 0 ? rest.slice(idx + 3) : rest, lines: [], added: 0, removed: 0, status: "modified" };
     }
     if (!cur) continue;
+    if (line.startsWith("new file")) cur.status = "added";
+    else if (line.startsWith("deleted file")) cur.status = "removed";
     cur.lines.push(line);
     if (line.startsWith("+") && !line.startsWith("+++")) cur.added++;
     else if (line.startsWith("-") && !line.startsWith("---")) cur.removed++;
@@ -460,17 +615,32 @@ function parseDiff(diff: string): DiffFile[] {
 }
 
 function DiffView({ diff }: { diff: string }) {
-  if (diff.trim() === "") return <pre className="px-4 py-6 text-center font-mono text-xs text-muted-foreground">(no changes)</pre>;
+  if (diff.trim() === "") return <p className="px-4 py-8 text-center text-sm text-muted-foreground">No changes.</p>;
   const files = parseDiff(diff);
-  if (files.length === 0) return <DiffLines lines={diff.split("\n")} />;
+  if (files.length === 0) return <div className="p-3"><DiffLines lines={diff.split("\n")} /></div>;
+  const totalAdded = files.reduce((n, f) => n + f.added, 0);
+  const totalRemoved = files.reduce((n, f) => n + f.removed, 0);
   return (
-    <div className="divide-y">
-      {files.map((f, i) => (
-        <FileDiff key={i} file={f} defaultOpen={files.length <= 2} />
-      ))}
+    <div>
+      <div className="flex items-center gap-2 border-b bg-muted/20 px-4 py-2 text-xs text-muted-foreground">
+        <span>{files.length} file{files.length === 1 ? "" : "s"} changed</span>
+        <span className="text-green-600 dark:text-green-400">+{totalAdded}</span>
+        <span className="text-red-500 dark:text-red-400">−{totalRemoved}</span>
+      </div>
+      <div className="divide-y">
+        {files.map((f, i) => (
+          <FileDiff key={i} file={f} defaultOpen={files.length <= 3} />
+        ))}
+      </div>
     </div>
   );
 }
+
+const FILE_BADGE: Record<DiffFile["status"], string> = {
+  added: "border-green-500/40 text-green-600 dark:text-green-400",
+  removed: "border-red-500/40 text-red-500 dark:text-red-400",
+  modified: "border-border text-muted-foreground",
+};
 
 function FileDiff({ file, defaultOpen }: { file: DiffFile; defaultOpen: boolean }) {
   const [open, setOpen] = useState(defaultOpen);
@@ -478,38 +648,116 @@ function FileDiff({ file, defaultOpen }: { file: DiffFile; defaultOpen: boolean 
     <div>
       <button onClick={() => setOpen((o) => !o)} className="flex w-full items-center gap-2 px-4 py-2.5 text-left transition-colors hover:bg-muted/40">
         {open ? <ChevronDown className="h-3.5 w-3.5 shrink-0 text-muted-foreground" /> : <ChevronRight className="h-3.5 w-3.5 shrink-0 text-muted-foreground" />}
+        <FileText className="h-3.5 w-3.5 shrink-0 text-muted-foreground" />
         <code className="truncate font-mono text-xs">{file.path}</code>
-        <span className="ml-auto flex shrink-0 items-center gap-2 text-[11px] font-medium">
-          <span className="text-green-500">+{file.added}</span>
-          <span className="text-red-400">-{file.removed}</span>
+        <span className={cn("shrink-0 rounded border px-1.5 py-px text-[10px] font-medium capitalize", FILE_BADGE[file.status])}>{file.status}</span>
+        <span className="ml-auto flex shrink-0 items-center gap-2 text-[11px] font-medium tabular-nums">
+          <span className="text-green-600 dark:text-green-400">+{file.added}</span>
+          <span className="text-red-500 dark:text-red-400">−{file.removed}</span>
         </span>
       </button>
-      {open && <DiffLines lines={file.lines} />}
+      {open && (
+        <div className="border-t px-3 pb-3 pt-1">
+          <DiffLines lines={file.lines} />
+        </div>
+      )}
     </div>
   );
 }
 
+type DiffRow =
+  | { kind: "hunk"; text: string }
+  | { kind: "meta"; text: string }
+  | { kind: "add" | "del" | "ctx"; oldNo: number | null; newNo: number | null; text: string };
+
+/** Parse a single file's diff lines into rows carrying old/new line numbers, so the
+ *  rendered diff has a proper gutter (GitHub-style) instead of a raw code dump. */
+function toRows(lines: string[]): DiffRow[] {
+  const rows: DiffRow[] = [];
+  let oldNo = 0;
+  let newNo = 0;
+  let inHunk = false;
+  for (const line of lines) {
+    // The trailing "" from splitting a newline-terminated diff — not a real line.
+    // (A genuine blank context line is " ", a single space, so it isn't skipped.)
+    if (line === "") continue;
+    // File-level headers are surfaced in the FileDiff header — don't repeat them.
+    if (/^(diff --git |index |--- |\+\+\+ |new file|deleted file|similarity |rename |old mode|new mode|GIT binary patch)/.test(line)) continue;
+    const hunk = /^@@ -(\d+)(?:,\d+)? \+(\d+)(?:,\d+)? @@/.exec(line);
+    if (hunk) {
+      oldNo = Number(hunk[1]);
+      newNo = Number(hunk[2]);
+      inHunk = true;
+      rows.push({ kind: "hunk", text: line });
+      continue;
+    }
+    // Before any hunk there are no line numbers — surface a "Binary files … differ"
+    // line as a plain marker, and drop any other pre-hunk stray (never number it).
+    if (!inHunk) {
+      if (line.startsWith("Binary files")) rows.push({ kind: "meta", text: line });
+      continue;
+    }
+    if (line.startsWith("\\")) {
+      rows.push({ kind: "meta", text: line.slice(1).trim() }); // "\ No newline at end of file"
+      continue;
+    }
+    if (line.startsWith("+")) {
+      rows.push({ kind: "add", oldNo: null, newNo, text: line.slice(1) });
+      newNo++;
+    } else if (line.startsWith("-")) {
+      rows.push({ kind: "del", oldNo, newNo: null, text: line.slice(1) });
+      oldNo++;
+    } else {
+      const text = line.startsWith(" ") ? line.slice(1) : line;
+      rows.push({ kind: "ctx", oldNo, newNo, text });
+      oldNo++;
+      newNo++;
+    }
+  }
+  return rows;
+}
+
 function DiffLines({ lines }: { lines: string[] }) {
+  const rows = toRows(lines);
   return (
-    <pre className="max-h-[420px] overflow-auto bg-zinc-950 px-4 py-3 font-mono text-xs leading-relaxed">
-      {lines.map((line, i) => {
-        // Fixed (theme-independent) colours — the diff is always a dark code block,
-        // so it reads the same in light and dark mode.
-        const cls =
-          line.startsWith("+") && !line.startsWith("+++")
-            ? "text-green-400"
-            : line.startsWith("-") && !line.startsWith("---")
-              ? "text-red-400"
-              : /^(@@|diff |index |\+\+\+|---)/.test(line)
-                ? "text-zinc-500"
-                : "text-zinc-300";
+    <div className="max-h-[460px] overflow-y-auto rounded-md border bg-card font-mono text-xs leading-relaxed">
+      {rows.map((r, i) => {
+        if (r.kind === "hunk") {
+          return (
+            <div key={i} className="select-none whitespace-pre-wrap break-words bg-primary/5 px-3 py-1 text-[11px] text-muted-foreground">
+              {r.text}
+            </div>
+          );
+        }
+        if (r.kind === "meta") {
+          return (
+            <div key={i} className="select-none px-3 py-0.5 text-[11px] italic text-muted-foreground/70">
+              {r.text}
+            </div>
+          );
+        }
+        const tint =
+          r.kind === "add"
+            ? "bg-green-500/10 text-green-700 dark:text-green-300"
+            : r.kind === "del"
+              ? "bg-red-500/10 text-red-600 dark:text-red-300"
+              : "text-foreground/80";
+        const sign = r.kind === "add" ? "+" : r.kind === "del" ? "−" : "";
+        // Grid (not flex) so a long line WRAPS in the content column instead of
+        // overflowing/clipping; the row background spans the full width, and the
+        // gutters stay aligned to the first wrapped line.
         return (
-          <div key={i} className={cls}>
-            {line || " "}
+          <div key={i} className={cn("grid grid-cols-[2.75rem_2.75rem_1.25rem_minmax(0,1fr)]", tint)}>
+            <span className="select-none px-1.5 text-right text-muted-foreground/40">{r.oldNo ?? ""}</span>
+            <span className="select-none border-r px-1.5 text-right text-muted-foreground/40">{r.newNo ?? ""}</span>
+            <span className={cn("select-none text-center", r.kind === "add" ? "text-green-600 dark:text-green-400" : r.kind === "del" ? "text-red-500 dark:text-red-400" : "text-transparent")}>
+              {sign}
+            </span>
+            <span className="whitespace-pre-wrap break-words px-1.5">{r.text || " "}</span>
           </div>
         );
       })}
-    </pre>
+    </div>
   );
 }
 

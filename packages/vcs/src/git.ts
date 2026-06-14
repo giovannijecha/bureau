@@ -185,6 +185,25 @@ async function refsUnder(clonePath: string, namespace: string, runner: Runner): 
   return out.stdout.split("\n").map((s) => s.trim()).filter(Boolean);
 }
 
+/** Each existing worktree's path → its checked-out branch (short name), parsed from
+ *  `git worktree list --porcelain`. A detached / bare entry has branch === null. */
+async function worktreeBranches(clonePath: string, runner: Runner): Promise<{ path: string; branch: string | null }[]> {
+  const out = await runner("git", ["-C", clonePath, "worktree", "list", "--porcelain"], {});
+  if (out.code !== 0) return [];
+  const entries: { path: string; branch: string | null }[] = [];
+  let cur: { path: string; branch: string | null } | null = null;
+  for (const line of out.stdout.split("\n")) {
+    if (line.startsWith("worktree ")) {
+      if (cur) entries.push(cur);
+      cur = { path: line.slice("worktree ".length).trim(), branch: null };
+    } else if (line.startsWith("branch ") && cur) {
+      cur.branch = line.slice("branch ".length).trim().replace(/^refs\/heads\//, "");
+    }
+  }
+  if (cur) entries.push(cur);
+  return entries;
+}
+
 /** Only Bureau's own task branches are ever deletable — never main or a user branch. */
 const TASK_BRANCH = /^bureau\/task-[A-Za-z0-9._-]+$/;
 
@@ -201,6 +220,22 @@ export async function pruneTaskBranches(
   runner: Runner = defaultRunner
 ): Promise<string[]> {
   const keepSet = new Set(keep);
+
+  // Release any leftover worktree pinning a prunable task branch FIRST. git refuses to
+  // delete a branch checked out in a worktree, so an orphan worktree from a deleted or
+  // crashed task — its task gone from the store, yet its worktree still on disk — would
+  // otherwise keep its branch un-prunable forever, and "Clean up branches" would
+  // silently leave it behind. Only bureau/task-* worktrees NOT in `keep` are removed:
+  // an in-flight task's worktree (its branch is in `keep`) and the main worktree (never
+  // a bureau/task-* branch) are never touched. Best-effort — a remove that fails just
+  // leaves its branch un-deletable below, the same as before.
+  await runner("git", ["-C", clonePath, "worktree", "prune"], {}); // drop stale admin entries first
+  for (const wt of await worktreeBranches(clonePath, runner)) {
+    if (wt.branch !== null && TASK_BRANCH.test(wt.branch) && !keepSet.has(wt.branch)) {
+      await runner("git", ["-C", clonePath, "worktree", "remove", "--force", "--", wt.path], {});
+    }
+  }
+
   const local = await refsUnder(clonePath, "refs/heads", runner);
   const remote = (await refsUnder(clonePath, "refs/remotes/origin", runner)).map((b) => b.replace(/^origin\//, ""));
   const candidates = [...new Set([...local, ...remote])].filter((b) => TASK_BRANCH.test(b) && !keepSet.has(b));
@@ -213,6 +248,21 @@ export async function pruneTaskBranches(
     if (localDel.code === 0 || remoteDel.code === 0) deleted.push(b);
   }
   return deleted;
+}
+
+/**
+ * Delete ONE `bureau/task-*` branch (local + on origin). HARD-CONSTRAINED to the
+ * task namespace — refuses any other ref (main, a release/user branch) so the CEO's
+ * per-branch cleanup can never remove anything but Bureau's own worktree branches.
+ * Returns true if it removed the branch from either local or origin.
+ */
+export async function deleteTaskBranch(clonePath: string, branch: string, runner: Runner = defaultRunner): Promise<boolean> {
+  if (!TASK_BRANCH.test(branch)) {
+    throw new VcsError(`Refusing to delete "${branch}": only bureau/task-* branches are deletable.`);
+  }
+  const localDel = await runner("git", ["-C", clonePath, "branch", "-D", branch], {});
+  const remoteDel = await runner("git", ["-C", clonePath, "push", "origin", "--delete", branch], {});
+  return localDel.code === 0 || remoteDel.code === 0;
 }
 
 /**

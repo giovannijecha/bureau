@@ -34,6 +34,9 @@ export interface SendOptions {
   readonly tools?: readonly string[];
   /** Auto-accept file edits inside cwd (CLI provider) — for the agentic edit worker. */
   readonly acceptEdits?: boolean;
+  /** Extra directories the CLI may READ from (--add-dir), beyond cwd — used to let
+   *  Iris view chat image attachments saved outside the repo. Completion providers ignore it. */
+  readonly addDirs?: readonly string[];
 }
 
 export interface Provider {

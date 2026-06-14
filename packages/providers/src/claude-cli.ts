@@ -123,6 +123,8 @@ export class ClaudeCliProvider implements Provider {
       args.push("--permission-mode", "acceptEdits");
       if (options.cwd !== undefined) args.push("--add-dir", options.cwd);
     }
+    // Extra read-only dirs (e.g. chat image attachments) — before the variadic --tools.
+    for (const dir of options?.addDirs ?? []) args.push("--add-dir", dir);
     // Tool allowlist LAST (variadic --tools consumes the rest).
     if (tools.length > 0) args.push("--tools", ...tools);
 
@@ -154,6 +156,7 @@ export class ClaudeCliProvider implements Provider {
       args.push("--permission-mode", "acceptEdits");
       if (options.cwd !== undefined) args.push("--add-dir", options.cwd);
     }
+    for (const dir of options?.addDirs ?? []) args.push("--add-dir", dir);
     if (tools.length > 0) args.push("--tools", ...tools);
 
     // Translate each COMPLETE json line into a human progress chunk as it arrives.

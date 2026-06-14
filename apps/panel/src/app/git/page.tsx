@@ -4,9 +4,10 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import Link from "next/link";
 import { GitBranch, GitMerge, GitCommit, ExternalLink, FolderGit2, Loader2, Trash2 } from "lucide-react";
 import type { TaskSummary, GitInfo } from "@bureau/contracts";
-import { listTasks, getGitInfo, cleanupBranches } from "../../lib/api";
+import { listTasks, getGitInfo, cleanupBranches, deleteBranch } from "../../lib/api";
 import { useProjects } from "../../lib/useProjects";
 import { useEngineEvents } from "../../lib/useEngineEvents";
+import { useConfirm } from "../../components/ConfirmDialog";
 import { cn } from "../../lib/utils";
 
 const STATUS_COLOR: Record<string, string> = {
@@ -18,11 +19,13 @@ const STATUS_COLOR: Record<string, string> = {
 
 export default function GitPage() {
   const { active, activeId } = useProjects();
+  const confirm = useConfirm();
   const [tasks, setTasks] = useState<TaskSummary[] | null>(null);
   const [git, setGit] = useState<GitInfo | null>(null);
   const [gitErr, setGitErr] = useState(false);
   const [cleaning, setCleaning] = useState(false);
   const [cleanMsg, setCleanMsg] = useState<string | null>(null);
+  const [deleting, setDeleting] = useState<string | null>(null);
   const alive = useRef(true);
   useEffect(() => {
     alive.current = true;
@@ -68,7 +71,13 @@ export default function GitPage() {
 
   async function cleanup() {
     if (cleaning) return;
-    if (typeof window !== "undefined" && !window.confirm("Delete leftover bureau/task-* branches (local + remote) for finished tasks? Active tasks are kept. main and your branches are never touched.")) return;
+    const ok = await confirm({
+      title: "Clean up leftover branches?",
+      description: "Deletes bureau/task-* branches (local + remote) for finished tasks. Active tasks are kept; main and your own branches are never touched.",
+      confirmLabel: "Clean up",
+      variant: "destructive",
+    });
+    if (!ok) return;
     setCleaning(true);
     setCleanMsg(null);
     try {
@@ -79,6 +88,29 @@ export default function GitPage() {
       setCleanMsg("Cleanup failed.");
     } finally {
       setCleaning(false);
+    }
+  }
+
+  async function removeBranch(t: TaskSummary) {
+    const branch = `bureau/task-${t.id}`;
+    const ok = await confirm({
+      title: "Delete this branch?",
+      description: `${branch} (local + remote) will be permanently deleted. This can't be undone — only Bureau's own task branches are deletable.`,
+      confirmLabel: "Delete branch",
+      variant: "destructive",
+    });
+    if (!ok) return;
+    setDeleting(branch);
+    setCleanMsg(null);
+    try {
+      const res = await deleteBranch(branch, activeId ?? undefined);
+      setCleanMsg(res.deleted ? `Deleted ${branch}.` : `${branch} was already gone.`);
+      void loadGit(activeId ?? undefined);
+      void loadTasks();
+    } catch (e) {
+      setCleanMsg(e instanceof Error ? e.message : "Delete failed.");
+    } finally {
+      setDeleting(null);
     }
   }
 
@@ -109,7 +141,6 @@ export default function GitPage() {
               )}
             </div>
             <div className="flex shrink-0 items-center gap-3">
-              {cleanMsg && <span className="hidden text-xs text-muted-foreground sm:inline">{cleanMsg}</span>}
               {git?.cloned && (
                 <button
                   onClick={() => void cleanup()}
@@ -198,6 +229,7 @@ export default function GitPage() {
           <h2 className="mb-2.5 flex items-center gap-2 text-sm font-semibold">
             <GitBranch className="h-4 w-4 text-primary" /> Agent branches
           </h2>
+          {cleanMsg && <p className="mb-2.5 text-xs text-muted-foreground">{cleanMsg}</p>}
           {tasks === null ? (
             <p className="text-sm text-muted-foreground">Loading…</p>
           ) : repos.length === 0 ? (
@@ -215,23 +247,38 @@ export default function GitPage() {
                   <div className="divide-y">
                     {ts.map((t) => {
                       const mergeFailed = t.status === "completed" && !t.merged;
+                      const inFlight = t.status === "planning" || t.status === "executing" || t.status === "awaiting_human";
                       const label = t.merged ? "merged" : mergeFailed ? "merge failed" : t.status.replace(/_/g, " ");
                       const badge = t.merged
                         ? STATUS_COLOR.completed
                         : mergeFailed
                           ? "border-red-500/40 text-red-500"
                           : STATUS_COLOR[t.status] ?? "border-border text-muted-foreground";
+                      const branch = `bureau/task-${t.id}`;
                       return (
-                        <Link key={t.id} href={`/tasks/${t.id}`} className="flex items-center gap-3 px-4 py-3 transition-colors hover:bg-muted/50">
-                          {t.merged ? (
-                            <GitMerge className="h-4 w-4 shrink-0 text-green-500" />
-                          ) : (
-                            <GitBranch className={cn("h-4 w-4 shrink-0", mergeFailed ? "text-red-500" : "text-amber-500")} />
-                          )}
-                          <code className="shrink-0 font-mono text-xs text-muted-foreground">bureau/task-{t.id.slice(0, 8)}</code>
-                          <span className="min-w-0 flex-1 truncate text-sm">{t.goal}</span>
+                        <div key={t.id} className="group/branch flex items-center gap-3 px-4 py-3 transition-colors hover:bg-muted/50">
+                          <Link href={`/tasks/${t.id}`} className="flex min-w-0 flex-1 items-center gap-3">
+                            {t.merged ? (
+                              <GitMerge className="h-4 w-4 shrink-0 text-green-500" />
+                            ) : (
+                              <GitBranch className={cn("h-4 w-4 shrink-0", mergeFailed ? "text-red-500" : "text-amber-500")} />
+                            )}
+                            <code className="shrink-0 font-mono text-xs text-muted-foreground">bureau/task-{t.id.slice(0, 8)}</code>
+                            <span className="min-w-0 flex-1 truncate text-sm">{t.goal}</span>
+                          </Link>
                           <span className={cn("shrink-0 rounded-full border px-2 py-0.5 text-xs font-medium", badge)}>{label}</span>
-                        </Link>
+                          {!inFlight && (
+                            <button
+                              onClick={() => void removeBranch(t)}
+                              disabled={deleting === branch}
+                              title="Delete this branch (local + remote)"
+                              aria-label="Delete branch"
+                              className="shrink-0 rounded-md p-1 text-muted-foreground opacity-0 transition-opacity hover:bg-red-500/10 hover:text-red-500 focus:opacity-100 group-hover/branch:opacity-100 disabled:opacity-50"
+                            >
+                              {deleting === branch ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <Trash2 className="h-3.5 w-3.5" />}
+                            </button>
+                          )}
+                        </div>
                       );
                     })}
                   </div>
