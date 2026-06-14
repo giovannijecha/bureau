@@ -23,7 +23,12 @@ export default function TasksPage() {
   const [error, setError] = useState<string | null>(null);
   const [spin, setSpin] = useState(false);
   const alive = useRef(true);
-  useEffect(() => () => void (alive.current = false), []);
+  useEffect(() => {
+    alive.current = true;
+    return () => {
+      alive.current = false;
+    };
+  }, []);
 
   const load = useCallback(async () => {
     setError(null);

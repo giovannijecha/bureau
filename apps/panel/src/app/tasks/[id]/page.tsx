@@ -37,7 +37,12 @@ export default function TaskDetailPage({ params }: { params: { id: string } }) {
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const alive = useRef(true);
-  useEffect(() => () => void (alive.current = false), []);
+  useEffect(() => {
+    alive.current = true;
+    return () => {
+      alive.current = false;
+    };
+  }, []);
 
   const load = useCallback(async () => {
     try {
