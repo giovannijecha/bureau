@@ -2,7 +2,6 @@
 
 import { usePathname } from "next/navigation";
 import {
-  Wifi,
   WifiOff,
   Sparkles,
   LayoutDashboard,
@@ -56,16 +55,21 @@ export function Header() {
       </div>
 
       <div className="flex shrink-0 items-center gap-3">
-        <span
-          className={cn(
-            "inline-flex items-center gap-1.5 rounded-full border px-2.5 py-1 text-xs font-medium",
-            online === false ? "border-red-500/40 text-red-500" : "border-green-500/40 text-green-500"
-          )}
-          title={online === false ? "Engine offline" : "Engine connected"}
-        >
-          {online === false ? <WifiOff className="h-3.5 w-3.5" /> : <Wifi className="h-3.5 w-3.5" />}
-          <span className="hidden sm:inline">{online === false ? "Offline" : "Connected"}</span>
-        </span>
+        {online === false ? (
+          <span
+            className="inline-flex items-center gap-1.5 rounded-full border border-red-500/40 px-2.5 py-1 text-xs font-medium text-red-500"
+            title="Engine offline"
+          >
+            <WifiOff className="h-3.5 w-3.5" />
+            <span className="hidden sm:inline">Offline</span>
+          </span>
+        ) : (
+          <span
+            className={cn("h-2 w-2 rounded-full", online === null ? "bg-muted-foreground/40" : "bg-green-500")}
+            title={online === null ? "Connecting…" : "Engine connected"}
+            aria-label={online === null ? "Connecting" : "Engine connected"}
+          />
+        )}
         <ThemeToggle />
         <div className="h-5 w-px bg-border" />
         <div className="flex items-center gap-2">
