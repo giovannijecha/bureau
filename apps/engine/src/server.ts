@@ -14,7 +14,7 @@
 import { randomUUID } from "node:crypto";
 import Anthropic from "@anthropic-ai/sdk";
 import { createDb, runMigrations, TaskRepo, MessageRepo, ConversationRepo } from "@bureau/db";
-import { CapabilityRegistry, EditCapability } from "@bureau/capabilities";
+import { CapabilityRegistry, EditCapability, DocumentCapability } from "@bureau/capabilities";
 import {
   AnthropicProvider,
   ClaudeCliProvider,
@@ -94,6 +94,7 @@ async function main(): Promise<void> {
   const provider = buildProvider();
   const capabilities = new CapabilityRegistry();
   capabilities.register(new EditCapability({ provider }));
+  capabilities.register(new DocumentCapability({ provider }));
 
   const runner = makeRunner({
     ...(process.env.BUREAU_GIT_PATH !== undefined ? { gitPath: process.env.BUREAU_GIT_PATH } : {}),

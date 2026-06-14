@@ -24,7 +24,7 @@ const WORKERS: Agent[] = [
   { name: "Editor", role: "edit", desc: "Applies the change in an isolated git worktree, then surfaces the diff.", icon: Pencil, live: true },
   { name: "Tester", role: "test", desc: "Runs the repository's test suite against the change.", icon: FlaskConical, live: false },
   { name: "Reviewer", role: "review", desc: "Inspects the diff and flags issues before it reaches you.", icon: Eye, live: false },
-  { name: "Scribe", role: "document", desc: "Updates docs and the changelog for the change.", icon: FileText, live: false },
+  { name: "Scribe", role: "document", desc: "Updates docs, the README, or a changelog for the change.", icon: FileText, live: true },
 ];
 
 export default function AgentsPage() {
@@ -43,8 +43,8 @@ export default function AgentsPage() {
         </div>
 
         <p className="text-xs text-muted-foreground">
-          Workers are stateless and replaceable — all durable context lives in the Task. Only <strong>edit</strong> runs today; the
-          rest land in later phases.
+          Workers are stateless and replaceable — all durable context lives in the Task. <strong>Edit</strong> and{" "}
+          <strong>document</strong> run today; plan / test / review land in later phases.
         </p>
       </div>
     </div>

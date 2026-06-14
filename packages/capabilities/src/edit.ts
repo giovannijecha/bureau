@@ -24,6 +24,34 @@ export interface EditCapabilityDeps {
   readonly provider: Provider;
 }
 
+/** Shared body for agentic file workers (edit, document): the provider edits the
+ *  worktree directly, confined to it; the engine captures the diff. */
+export async function runAgenticFileWorker(
+  provider: Provider,
+  input: CapabilityInput,
+  systemPrompt: string
+): Promise<CapabilityOutput> {
+  // Only works with an agentic provider (one that runs Edit/Write in the worktree).
+  // Fail loud rather than produce a silent no-op (empty diff).
+  if (provider.agentic !== true) {
+    throw new Error(
+      `This worker needs an agentic provider (the claude CLI), but "${provider.name}" only does text completion. Install the claude CLI or unset ANTHROPIC_API_KEY.`
+    );
+  }
+  const messages: Message[] = [
+    { role: "system", content: systemPrompt },
+    { role: "user", content: buildEditPrompt(input) },
+  ];
+  const response = await provider.send(messages, {
+    maxTokens: 8_000,
+    cwd: input.worktreePath,
+    tools: [...EDIT_TOOLS],
+    acceptEdits: true,
+  });
+  // The worktree now holds the change; the model's final line summarizes it.
+  return { artifacts: [], summary: summarize(response.content) };
+}
+
 export class EditCapability implements Capability {
   readonly kind = "edit" as const;
   private readonly provider: Provider;
@@ -32,27 +60,8 @@ export class EditCapability implements Capability {
     this.provider = deps.provider;
   }
 
-  async execute(input: CapabilityInput): Promise<CapabilityOutput> {
-    // The edit worker only works with an agentic provider (one that runs Edit/Write
-    // in the worktree). Fail loud rather than produce a silent no-op (empty diff).
-    if (this.provider.agentic !== true) {
-      throw new Error(
-        `The edit worker needs an agentic provider (the claude CLI), but "${this.provider.name}" only does text completion. Install the claude CLI or unset ANTHROPIC_API_KEY.`
-      );
-    }
-    const messages: Message[] = [
-      { role: "system", content: EDIT_SYSTEM },
-      { role: "user", content: buildEditPrompt(input) },
-    ];
-    const response = await this.provider.send(messages, {
-      maxTokens: 8_000,
-      cwd: input.worktreePath,
-      tools: [...EDIT_TOOLS],
-      acceptEdits: true,
-    });
-    // The worktree now holds the change; the engine captures the diff. The model's
-    // final line is a human-readable summary of what it did.
-    return { artifacts: [], summary: summarize(response.content) };
+  execute(input: CapabilityInput): Promise<CapabilityOutput> {
+    return runAgenticFileWorker(this.provider, input, EDIT_SYSTEM);
   }
 }
 
