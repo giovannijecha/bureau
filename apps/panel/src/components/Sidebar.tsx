@@ -26,8 +26,8 @@ const NAV: NavItem[] = [
   { title: "Assistant", href: "/", icon: Sparkles },
   { title: "Projects", href: "/projects", icon: FolderGit2 },
   { title: "Tasks", href: "/tasks", icon: ListTodo },
-  { title: "Git", href: "/git", icon: GitBranch, soon: true },
-  { title: "Agents", href: "/agents", icon: Bot, soon: true },
+  { title: "Git", href: "/git", icon: GitBranch },
+  { title: "Agents", href: "/agents", icon: Bot },
 ];
 
 function NavLink({ item, active }: { item: NavItem; active: boolean }) {
@@ -71,7 +71,7 @@ export function Sidebar() {
       </nav>
 
       <div className="space-y-1 border-t px-2 py-3">
-        <NavLink item={{ title: "Settings", href: "/settings", icon: Settings, soon: true }} active={isActive("/settings")} />
+        <NavLink item={{ title: "Settings", href: "/settings", icon: Settings }} active={isActive("/settings")} />
       </div>
     </aside>
   );

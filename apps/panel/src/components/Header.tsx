@@ -2,7 +2,8 @@
 
 import { usePathname } from "next/navigation";
 import {
-  Bell,
+  Wifi,
+  WifiOff,
   Sparkles,
   LayoutDashboard,
   FolderGit2,
@@ -12,6 +13,9 @@ import {
   Settings,
   type LucideIcon,
 } from "lucide-react";
+import { useEngineOnline } from "../lib/useEngineOnline";
+import { ThemeToggle } from "./ThemeToggle";
+import { cn } from "../lib/utils";
 
 // One consistent top bar for every section, driven by the route — so the header
 // is identical in height, type scale, and spacing everywhere (no per-page drift).
@@ -37,6 +41,7 @@ export function Header() {
   const pathname = usePathname() ?? "/";
   const section = SECTIONS.find((s) => s.match(pathname)) ?? SECTIONS[0]!;
   const Icon = section.icon;
+  const online = useEngineOnline();
 
   return (
     <header className="flex h-16 shrink-0 items-center justify-between gap-3 border-b bg-background px-6">
@@ -51,13 +56,17 @@ export function Header() {
       </div>
 
       <div className="flex shrink-0 items-center gap-3">
-        <button
-          type="button"
-          className="flex h-8 w-8 items-center justify-center rounded-md text-muted-foreground transition-colors hover:bg-accent hover:text-foreground"
-          aria-label="Notifications"
+        <span
+          className={cn(
+            "inline-flex items-center gap-1.5 rounded-full border px-2.5 py-1 text-xs font-medium",
+            online === false ? "border-red-500/40 text-red-500" : "border-green-500/40 text-green-500"
+          )}
+          title={online === false ? "Engine offline" : "Engine connected"}
         >
-          <Bell className="h-[18px] w-[18px]" />
-        </button>
+          {online === false ? <WifiOff className="h-3.5 w-3.5" /> : <Wifi className="h-3.5 w-3.5" />}
+          <span className="hidden sm:inline">{online === false ? "Offline" : "Connected"}</span>
+        </span>
+        <ThemeToggle />
         <div className="h-5 w-px bg-border" />
         <div className="flex items-center gap-2">
           <div className="flex h-8 w-8 items-center justify-center rounded-full bg-primary text-xs font-semibold text-primary-foreground">
