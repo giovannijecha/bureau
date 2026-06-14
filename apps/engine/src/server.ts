@@ -132,6 +132,12 @@ function main(): void {
   const server = createHttpServer({ orchestrator, store, messages });
   hub = new WsHub(server);
 
+  // Clean up any task a previous crash/forced-exit left mid-flight before serving,
+  // so the panel never shows a zombie task with an orphaned worktree.
+  void orchestrator.reconcile().then((n) => {
+    if (n > 0) console.log(`[engine] reconcile: aborted ${n} interrupted task(s) from a previous run.`);
+  });
+
   server.listen(port, () => {
     console.log(`Bureau engine listening on http://localhost:${port} (ws: /ws)`);
     console.log(`Projects: ${projects.list().map((p) => `${p.owner}/${p.name}`).join(", ")}`);
