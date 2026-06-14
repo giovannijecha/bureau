@@ -73,6 +73,9 @@ function fakeVcs() {
       calls.removeWorktree.push({ force });
     },
     chatCwd: () => "/tmp/clone",
+    async repoInfo() {
+      return { cloned: true, branch: "main", commits: [{ hash: "abc1234", author: "Bureau", date: "2026-06-14", subject: "Initial commit" }], branches: ["main"] };
+    },
   };
   return {
     vcs,
@@ -325,6 +328,16 @@ describe("chat", () => {
     const res = await orch.chat("hi");
     expect(res.reply.content).toBe("Tell me more.");
     expect(res.proposal).toBeUndefined();
+  });
+});
+
+describe("gitInfo (read-only console)", () => {
+  it("syncs the clone to live origin, then returns the repo view with project meta", async () => {
+    const info = await orch.gitInfo();
+    expect(vcs.calls.syncClone).toBe(1); // shows the LIVE repo, not a stale clone
+    expect(info).toMatchObject({ owner: "acme", name: "widget", baseBranch: "main", branch: "main", cloned: true });
+    expect(info.commits[0]!.subject).toBe("Initial commit");
+    expect(info.branches).toEqual(["main"]);
   });
 });
 

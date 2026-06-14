@@ -41,6 +41,24 @@ export interface VcsPort {
    *  exists, else an empty scratch dir — so she never reads unrelated files (e.g.
    *  the engine's own working directory). */
   chatCwd(): string;
+  /** Read-only repo inspection for the Git console (current branch, recent commits,
+   *  origin branches). Never mutates; returns empty when the clone doesn't exist. */
+  repoInfo(commitLimit: number): Promise<RepoView>;
+}
+
+/** A read-only snapshot of a project's repository, for the Git console. */
+export interface RepoView {
+  readonly cloned: boolean;
+  readonly branch: string | null;
+  readonly commits: readonly RepoCommit[];
+  readonly branches: readonly string[];
+}
+
+export interface RepoCommit {
+  readonly hash: string;
+  readonly author: string;
+  readonly date: string;
+  readonly subject: string;
 }
 
 export interface EventSink {

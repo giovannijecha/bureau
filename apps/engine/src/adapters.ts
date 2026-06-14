@@ -14,6 +14,9 @@ import {
   openPr,
   mergePr,
   removeWorktree,
+  recentCommits,
+  remoteBranches,
+  headBranch,
   defaultRunner,
   type Runner,
   type CommitAuthor,
@@ -21,7 +24,7 @@ import {
 import { readNote, writeNote, listNotes, noteModifiedAt } from "@bureau/mind";
 import { MessageRepo, ConversationRepo, UsageRepo, NotificationRepo, type MessageRow, type ConversationRow, type NotificationRow } from "@bureau/db";
 import type { Message, Conversation, Note, NoteSummary, UsageSummary, Notification, NotificationKind } from "@bureau/contracts";
-import type { VcsPort, WorktreeRef, MessageLog, ConversationStore, MemoryPort, UsagePort, UsageEvent, NotificationStore } from "./ports.js";
+import type { VcsPort, WorktreeRef, MessageLog, ConversationStore, MemoryPort, UsagePort, UsageEvent, NotificationStore, RepoView } from "./ports.js";
 import { noteSummary, notePath } from "./memory.js";
 import { summarizeUsage } from "./usage.js";
 
@@ -106,6 +109,18 @@ export class RealVcs implements VcsPort {
     const scratch = join(this.cfg.canonicalPath, "..", ".chat-scratch");
     mkdirSync(scratch, { recursive: true });
     return scratch;
+  }
+
+  async repoInfo(commitLimit: number): Promise<RepoView> {
+    if (!existsSync(join(this.cfg.canonicalPath, ".git"))) {
+      return { cloned: false, branch: null, commits: [], branches: [] };
+    }
+    const [branch, commits, branches] = await Promise.all([
+      headBranch(this.cfg.canonicalPath, this.runner),
+      recentCommits(this.cfg.canonicalPath, commitLimit, this.runner),
+      remoteBranches(this.cfg.canonicalPath, this.runner),
+    ]);
+    return { cloned: true, branch, commits, branches };
   }
 }
 

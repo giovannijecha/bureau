@@ -124,6 +124,60 @@ export async function currentBranch(
   return out.trim();
 }
 
+// ── read-only repo inspection (the Git console) ──────────────────────────────
+// These are best-effort + graceful: they read the raw exit code and return an
+// empty result on failure rather than throwing, so a thin/edge-case repo (no
+// commits yet, detached HEAD) renders an empty console instead of a 500.
+
+export interface RepoCommit {
+  readonly hash: string;
+  readonly author: string;
+  readonly date: string;
+  readonly subject: string;
+}
+
+/** Recent commits on the clone's current branch, newest first. */
+export async function recentCommits(
+  clonePath: string,
+  limit: number,
+  runner: Runner = defaultRunner
+): Promise<RepoCommit[]> {
+  const n = Math.max(1, Math.min(100, Math.floor(limit)));
+  // \x1f separates fields, \x1e separates records — neither appears in commit text.
+  const fmt = "%h%x1f%an%x1f%ad%x1f%s%x1e";
+  const out = await runner("git", ["-C", clonePath, "log", "-n", String(n), "--date=short", `--pretty=format:${fmt}`], {});
+  if (out.code !== 0) return [];
+  return out.stdout
+    .split("\x1e")
+    .map((r) => r.trim())
+    .filter(Boolean)
+    .map((r) => {
+      const [hash = "", author = "", date = "", subject = ""] = r.split("\x1f");
+      return { hash, author, date, subject };
+    });
+}
+
+/** The repo's branches as seen on origin (task worktree branches are excluded). */
+export async function remoteBranches(
+  clonePath: string,
+  runner: Runner = defaultRunner
+): Promise<string[]> {
+  const out = await runner("git", ["-C", clonePath, "for-each-ref", "--format=%(refname:short)", "refs/remotes/origin"], {});
+  if (out.code !== 0) return [];
+  return out.stdout
+    .split("\n")
+    .map((s) => s.trim())
+    // Drop the origin/HEAD symref (it shortens to "origin/HEAD" or bare "origin").
+    .filter((b) => b && b !== "origin/HEAD" && b !== "origin")
+    .map((b) => b.replace(/^origin\//, ""));
+}
+
+/** The clone's current branch, or null on a fresh/edge-case repo (best-effort). */
+export async function headBranch(clonePath: string, runner: Runner = defaultRunner): Promise<string | null> {
+  const out = await runner("git", ["-C", clonePath, "rev-parse", "--abbrev-ref", "HEAD"], {});
+  return out.code === 0 ? out.stdout.trim() || null : null;
+}
+
 /**
  * The committed diff of the worktree branch against `base` (e.g. "main") — the
  * change a PR would introduce. Validates the base and verifies it resolves, so

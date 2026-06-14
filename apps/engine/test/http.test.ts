@@ -60,6 +60,7 @@ function fakeOrchestrator(
       | "confirmMerge"
       | "listProjects"
       | "hub"
+      | "gitInfo"
       | "listNotes"
       | "getNote"
       | "saveNote"
@@ -80,6 +81,9 @@ function fakeOrchestrator(
     stopTask: over.stopTask ?? (async () => makeTask()),
     confirmMerge: over.confirmMerge ?? (async () => makeTask()),
     hub: over.hub ?? (() => ({ workers: [], activity: [], awaitingReview: [], stats: { activeTasks: 0, awaitingReview: 0, merged: 0 } })),
+    gitInfo:
+      over.gitInfo ??
+      (async () => ({ projectId: "widget", owner: "acme", name: "widget", baseBranch: "main", branch: "main", cloned: true, commits: [], branches: ["main"] })),
     usageSummary:
       over.usageSummary ?? (() => ({ totals: { inputTokens: 0, outputTokens: 0, costUsd: 0, events: 0 }, byScope: [], byModel: [], byDay: [], sinceDay: null })),
     listNotifications: over.listNotifications ?? (() => []),
@@ -207,6 +211,23 @@ describe("GET /api/hub", () => {
     const body = (await res.json()) as { workers: unknown[]; stats: { merged: number } };
     expect(Array.isArray(body.workers)).toBe(true);
     expect(body.stats.merged).toBe(0);
+  });
+});
+
+describe("GET /api/git", () => {
+  it("returns the read-only repo view and passes projectId through", async () => {
+    const seen: (string | undefined)[] = [];
+    const orchestrator = fakeOrchestrator({
+      gitInfo: (async (projectId?: string) => {
+        seen.push(projectId);
+        return { projectId: "p1", owner: "acme", name: "widget", baseBranch: "main", branch: "main", cloned: true, commits: [{ hash: "abc", author: "B", date: "d", subject: "init" }], branches: ["main"] };
+      }) as never,
+    });
+    const url = await listen({ orchestrator, store: fakeStore(), messages: fakeMessages() });
+    const res = await fetch(`${url}/api/git?projectId=p1`);
+    expect(res.status).toBe(200);
+    expect((await res.json()).commits[0].subject).toBe("init");
+    expect(seen).toEqual(["p1"]);
   });
 });
 

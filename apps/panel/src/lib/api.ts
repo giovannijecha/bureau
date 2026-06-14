@@ -14,6 +14,7 @@ import type {
   Note,
   UsageSummary,
   Notification,
+  GitInfo,
 } from "@bureau/contracts";
 
 export const ENGINE_URL = process.env.NEXT_PUBLIC_ENGINE_URL ?? "http://localhost:4319";
@@ -47,6 +48,12 @@ export async function getConfig(): Promise<EngineInfo> {
 /** The Agent-Activity Hub: worker status + cross-task activity + review queue. */
 export async function getHub(): Promise<Hub> {
   return json(await fetch(`${BASE}/api/hub`));
+}
+
+/** Read-only Git console for a project (current branch, recent commits, branches). */
+export async function getGitInfo(projectId?: string): Promise<GitInfo> {
+  const suffix = projectId ? `?projectId=${encodeURIComponent(projectId)}` : "";
+  return json(await fetch(`${BASE}/api/git${suffix}`));
 }
 
 /** Usage & cost metrics. `days` limits the look-back window (omit for all-time). */

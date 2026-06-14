@@ -23,7 +23,7 @@ import type {
 } from "@bureau/core";
 import type { CapabilityRegistry } from "@bureau/capabilities";
 import type { Provider } from "@bureau/providers";
-import type { Message, TaskProposal, ChatResponse, Project, Conversation, EngineInfo, Hub, Note, NoteSummary, UsageSummary, Notification, NotificationKind } from "@bureau/contracts";
+import type { Message, TaskProposal, ChatResponse, Project, Conversation, EngineInfo, Hub, Note, NoteSummary, UsageSummary, Notification, NotificationKind, GitInfo } from "@bureau/contracts";
 import { join } from "node:path";
 
 import type { TaskStore, VcsPort, EventSink, MessageLog, ConversationStore, MemoryPort, UsagePort, NotificationStore } from "./ports.js";
@@ -69,6 +69,27 @@ export class Orchestrator {
    *  feed, and the "waiting on you" review queue — built from the live task set. */
   hub(): Hub {
     return buildHub(this.d.store.list(), (k) => this.d.capabilities.has(k), 40);
+  }
+
+  /** Read-only Git console for a project: current branch, recent commits, branches.
+   *  Refreshes the clone from origin FIRST so the console shows the LIVE repo. */
+  async gitInfo(projectId?: string): Promise<GitInfo> {
+    const project = this.d.projects.resolve(projectId);
+    const port = this.d.vcs(project);
+    await port.syncClone().catch(() => {}); // live, best-effort
+    const view = await port.repoInfo(20);
+    return {
+      projectId: project.id,
+      owner: project.owner,
+      name: project.name,
+      baseBranch: project.baseBranch,
+      branch: view.branch,
+      cloned: view.cloned,
+      commits: view.commits.map((c) => ({ ...c })),
+      // Show the repo's real branches — hide Bureau's internal task worktree
+      // branches (bureau/task-*), which live in the "Agent branches" section.
+      branches: view.branches.filter((b) => !b.startsWith("bureau/")),
+    };
   }
 
   // ── Notifications ─────────────────────────────────────────────────────────────
