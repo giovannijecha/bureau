@@ -24,8 +24,8 @@ Bureau is a local-first AI agent team that turns plain-language requests into re
 ### Install
 
 ```bash
-git clone https://github.com/giovannijecha/Bureau.git
-cd Bureau
+git clone https://github.com/giovannijecha/bureau.git
+cd bureau
 pnpm install
 ```
 
