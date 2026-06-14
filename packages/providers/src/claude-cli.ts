@@ -107,11 +107,16 @@ export class ClaudeCliProvider implements Provider {
       throw new Error("ClaudeCliProvider.send requires at least one user/assistant message.");
     }
     const { system, prompt } = renderCliPrompt(messages);
+    const tools = options?.tools ?? this.tools;
     const args = ["-p", "--output-format", "json", "--model", this.model];
     if (system !== undefined) args.push("--system-prompt", system);
-    // Restrict to read-only tools LAST (variadic --tools consumes the rest), so the
-    // agent can never write/edit/bash — it only reads + returns the plan.
-    if (this.tools.length > 0) args.push("--tools", ...this.tools);
+    if (options?.acceptEdits) {
+      // The edit worker: auto-accept file edits, but only inside the working dir.
+      args.push("--permission-mode", "acceptEdits");
+      if (options.cwd !== undefined) args.push("--add-dir", options.cwd);
+    }
+    // Tool allowlist LAST (variadic --tools consumes the rest).
+    if (tools.length > 0) args.push("--tools", ...tools);
 
     const { stdout, stderr, code } = await this.run(this.cli, args, prompt, options?.cwd, this.timeoutMs);
     if (code !== 0) {

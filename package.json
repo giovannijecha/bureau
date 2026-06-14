@@ -7,6 +7,10 @@
     "build": "tsc --build",
     "typecheck": "tsc --build --noEmit",
     "lint:boundaries": "depcruise --config .dependency-cruiser.cjs packages apps",
+    "test": "pnpm -r --if-present test",
+    "test:coverage": "pnpm -r --if-present test:coverage",
+    "quality": "pnpm build && pnpm lint:boundaries && pnpm test",
+    "dev": "node scripts/dev.mjs",
     "clean": "tsc --build --clean"
   },
   "devDependencies": {

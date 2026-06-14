@@ -50,7 +50,17 @@ export const PipelineStepDto = z.object({
   assignee: z.string(),
   description: z.string(),
   status: StepStatusSchema,
+  /** Why this step failed, when it did. */
+  failureReason: z.string().nullable(),
 });
+
+/** Engine status for the Settings panel. */
+export const EngineInfoDto = z.object({
+  provider: z.object({ name: z.string(), available: z.boolean() }),
+  projectCount: z.number().int().nonnegative(),
+  inflightTasks: z.number().int().nonnegative(),
+});
+export type EngineInfo = z.infer<typeof EngineInfoDto>;
 
 /** Full task view for the Assistant panel: summary + pipeline + gates + diff + PR.
  *  Deliberately omits on-disk paths (e.g. worktreePath) — the panel never needs

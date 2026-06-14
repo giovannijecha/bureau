@@ -28,6 +28,10 @@ export interface SendOptions {
    * outside it. Completion providers (Anthropic API) ignore it.
    */
   readonly cwd?: string;
+  /** Override the tool allowlist for this call (CLI provider). Defaults to read-only. */
+  readonly tools?: readonly string[];
+  /** Auto-accept file edits inside cwd (CLI provider) — for the agentic edit worker. */
+  readonly acceptEdits?: boolean;
 }
 
 export interface Provider {
