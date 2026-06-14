@@ -148,4 +148,24 @@ export const messages = sqliteTable(
   (t) => [index("messages_by_seq").on(t.seq), index("messages_by_conversation").on(t.conversationId, t.seq)]
 );
 
-export const schema = { tasks, steps, gates, artifacts, decisionLog, conversations, messages };
+// Token-usage events — append-only, for the Usage & Cost metrics. Each provider
+// round-trip (Iris chat, or a capability worker) records what it spent. Standalone
+// (no FK to tasks): spend history must outlive a task, and `task_id` is a soft
+// reference. `scope` is 'iris' or a capability kind; `day` (UTC YYYY-MM-DD) keys
+// the time series.
+export const usageEvents = sqliteTable(
+  "usage_events",
+  {
+    id: text("id").primaryKey(),
+    day: text("day").notNull(),
+    scope: text("scope").notNull(),
+    taskId: text("task_id"),
+    model: text("model").notNull(),
+    inputTokens: integer("input_tokens").notNull(),
+    outputTokens: integer("output_tokens").notNull(),
+    createdAt: text("created_at").notNull(),
+  },
+  (t) => [index("usage_by_day").on(t.day)]
+);
+
+export const schema = { tasks, steps, gates, artifacts, decisionLog, conversations, messages, usageEvents };

@@ -3,7 +3,7 @@
 // the canPush security gate — fully unit-testable with no DB, git, or network.
 
 import type { Task, TaskId } from "@bureau/core";
-import type { WsEvent, Message, Conversation, Note, NoteSummary } from "@bureau/contracts";
+import type { WsEvent, Message, Conversation, Note, NoteSummary, UsageSummary } from "@bureau/contracts";
 
 export interface TaskStore {
   save(task: Task): void;
@@ -61,6 +61,24 @@ export interface ConversationStore {
   rename(id: string, title: string, updatedAt: string): void;
   touch(id: string, updatedAt: string): void;
   delete(id: string): void;
+}
+
+/** One recorded provider round-trip's token spend (Iris chat or a worker step). */
+export interface UsageEvent {
+  readonly id: string;
+  readonly day: string; // UTC YYYY-MM-DD
+  readonly scope: string; // 'iris' | capability kind
+  readonly taskId: string | null;
+  readonly model: string;
+  readonly inputTokens: number;
+  readonly outputTokens: number;
+  readonly createdAt: string;
+}
+
+/** Usage & Cost — append-only token spend + an aggregated summary. */
+export interface UsagePort {
+  record(event: UsageEvent): void;
+  summary(sinceDay: string | null): UsageSummary;
 }
 
 /** System Memory — the org's durable vault of markdown notes (task journals +

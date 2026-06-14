@@ -12,6 +12,7 @@ import type {
   Hub,
   NoteSummary,
   Note,
+  UsageSummary,
 } from "@bureau/contracts";
 
 export const ENGINE_URL = process.env.NEXT_PUBLIC_ENGINE_URL ?? "http://localhost:4319";
@@ -45,6 +46,12 @@ export async function getConfig(): Promise<EngineInfo> {
 /** The Agent-Activity Hub: worker status + cross-task activity + review queue. */
 export async function getHub(): Promise<Hub> {
   return json(await fetch(`${BASE}/api/hub`));
+}
+
+/** Usage & cost metrics. `days` limits the look-back window (omit for all-time). */
+export async function getUsage(days?: number): Promise<UsageSummary> {
+  const suffix = days && days > 0 ? `?days=${days}` : "";
+  return json(await fetch(`${BASE}/api/usage${suffix}`));
 }
 
 /** System Memory — the vault's notes (task journals + CEO/Iris notes). */

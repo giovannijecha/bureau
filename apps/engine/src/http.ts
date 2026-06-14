@@ -82,6 +82,14 @@ async function handle(deps: HttpDeps, req: IncomingMessage, res: ServerResponse)
     return;
   }
 
+  // GET /api/usage — token spend + cost. ?days=N limits the window (default all-time).
+  if (method === "GET" && path === "/api/usage") {
+    const daysRaw = url.searchParams.get("days");
+    const days = daysRaw !== null && /^\d+$/.test(daysRaw) ? Number(daysRaw) : undefined;
+    sendJson(res, 200, deps.orchestrator.usageSummary(days));
+    return;
+  }
+
   // GET /api/memory — vault notes (optionally ?q= filtered).  POST creates a note.
   if (path === "/api/memory") {
     if (method === "GET") {

@@ -112,5 +112,6 @@ export function toProviderResponse(message: Anthropic.Message): ProviderResponse
     content,
     inputTokens: message.usage.input_tokens,
     outputTokens: message.usage.output_tokens,
+    model: message.model,
   };
 }

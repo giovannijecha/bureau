@@ -17,6 +17,8 @@ export interface ProviderResponse {
   content: string;
   inputTokens: number;
   outputTokens: number;
+  /** The model that produced this response — for usage/cost attribution. */
+  model?: string;
 }
 
 export interface SendOptions {

@@ -49,7 +49,11 @@ export async function runAgenticFileWorker(
     acceptEdits: true,
   });
   // The worktree now holds the change; the model's final line summarizes it.
-  return { artifacts: [], summary: summarize(response.content) };
+  return {
+    artifacts: [],
+    summary: summarize(response.content),
+    usage: { inputTokens: response.inputTokens, outputTokens: response.outputTokens, model: response.model ?? provider.name },
+  };
 }
 
 export class EditCapability implements Capability {

@@ -23,10 +23,10 @@ import type {
 } from "@bureau/core";
 import type { CapabilityRegistry } from "@bureau/capabilities";
 import type { Provider } from "@bureau/providers";
-import type { Message, TaskProposal, ChatResponse, Project, Conversation, EngineInfo, Hub, Note, NoteSummary } from "@bureau/contracts";
+import type { Message, TaskProposal, ChatResponse, Project, Conversation, EngineInfo, Hub, Note, NoteSummary, UsageSummary } from "@bureau/contracts";
 import { join } from "node:path";
 
-import type { TaskStore, VcsPort, EventSink, MessageLog, ConversationStore, MemoryPort } from "./ports.js";
+import type { TaskStore, VcsPort, EventSink, MessageLog, ConversationStore, MemoryPort, UsagePort } from "./ports.js";
 import { ProjectRegistry, toProjectDto, type ProjectConfig } from "./projects.js";
 import { OrchestratorError } from "./errors.js";
 import { irisRespond } from "./iris.js";
@@ -46,6 +46,7 @@ export interface OrchestratorDeps {
   readonly messages: MessageLog;
   readonly conversations: ConversationStore;
   readonly memory: MemoryPort;
+  readonly usage: UsagePort;
   readonly ids: () => string;
   readonly clock: () => string;
 }
@@ -67,6 +68,35 @@ export class Orchestrator {
    *  feed, and the "waiting on you" review queue — built from the live task set. */
   hub(): Hub {
     return buildHub(this.d.store.list(), (k) => this.d.capabilities.has(k), 40);
+  }
+
+  // ── Usage & Cost ────────────────────────────────────────────────────────────
+
+  /** Aggregated token spend + cost. `days` limits the look-back window (UTC); omit for all-time. */
+  usageSummary(days?: number): UsageSummary {
+    let sinceDay: string | null = null;
+    if (days !== undefined && days > 0) {
+      const since = new Date(this.d.clock());
+      since.setUTCDate(since.getUTCDate() - days);
+      sinceDay = since.toISOString().slice(0, 10);
+    }
+    return this.d.usage.summary(sinceDay);
+  }
+
+  /** Record a provider round-trip's spend. No-ops on a zero-token usage (or none). */
+  private recordUsage(scope: string, taskId: string | null, usage?: { inputTokens: number; outputTokens: number; model: string }): void {
+    if (!usage || (usage.inputTokens === 0 && usage.outputTokens === 0)) return;
+    const now = this.d.clock();
+    this.d.usage.record({
+      id: this.d.ids(),
+      day: now.slice(0, 10),
+      scope,
+      taskId,
+      model: usage.model || "unknown",
+      inputTokens: usage.inputTokens,
+      outputTokens: usage.outputTokens,
+      createdAt: now,
+    });
   }
 
   // ── System Memory ───────────────────────────────────────────────────────────
@@ -128,6 +158,7 @@ export class Orchestrator {
     const turn = await irisRespond(this.d.provider, history, project, cwd);
 
     const reply = this.appendChatMessage(conversation.id, "iris", turn.reply);
+    this.recordUsage("iris", null, turn.usage);
     this.d.conversations.touch(conversation.id, this.d.clock());
     return turn.proposal
       ? { reply, conversationId: conversation.id, proposal: turn.proposal }
@@ -331,6 +362,7 @@ export class Orchestrator {
           worktreePath,
           context: task.goal,
         });
+        this.recordUsage(step.capability, taskId, out.usage); // tokens were spent regardless of a concurrent stop
         if (this.requireTask(taskId).status !== "executing") return; // stopped during the step
         if (out.artifacts.length > 0) this.addArtifacts(this.requireTask(taskId), out.artifacts);
 

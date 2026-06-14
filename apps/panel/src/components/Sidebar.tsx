@@ -12,6 +12,7 @@ import {
   Settings,
   Activity,
   BrainCircuit,
+  BarChart3,
   type LucideIcon,
 } from "lucide-react";
 import { cn } from "../lib/utils";
@@ -32,6 +33,7 @@ const NAV: NavItem[] = [
   { title: "Git", href: "/git", icon: GitBranch },
   { title: "Agents", href: "/agents", icon: Bot },
   { title: "Memory", href: "/memory", icon: BrainCircuit },
+  { title: "Metrics", href: "/metrics", icon: BarChart3 },
 ];
 
 function NavLink({ item, active }: { item: NavItem; active: boolean }) {

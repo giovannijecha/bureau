@@ -62,7 +62,8 @@ function fakeOrchestrator(
       | "hub"
       | "listNotes"
       | "getNote"
-      | "saveNote",
+      | "saveNote"
+      | "usageSummary",
       (...a: never[]) => unknown
     >
   > = {}
@@ -75,6 +76,8 @@ function fakeOrchestrator(
     stopTask: over.stopTask ?? (async () => makeTask()),
     confirmMerge: over.confirmMerge ?? (async () => makeTask()),
     hub: over.hub ?? (() => ({ workers: [], activity: [], awaitingReview: [], stats: { activeTasks: 0, awaitingReview: 0, merged: 0 } })),
+    usageSummary:
+      over.usageSummary ?? (() => ({ totals: { inputTokens: 0, outputTokens: 0, costUsd: 0, events: 0 }, byScope: [], byModel: [], byDay: [], sinceDay: null })),
     listNotes: over.listNotes ?? (async () => []),
     getNote: over.getNote ?? (async () => null),
     saveNote:
@@ -196,6 +199,23 @@ describe("GET /api/hub", () => {
     const body = (await res.json()) as { workers: unknown[]; stats: { merged: number } };
     expect(Array.isArray(body.workers)).toBe(true);
     expect(body.stats.merged).toBe(0);
+  });
+});
+
+describe("GET /api/usage", () => {
+  it("returns the usage summary and passes ?days through", async () => {
+    const seen: (number | undefined)[] = [];
+    const orchestrator = fakeOrchestrator({
+      usageSummary: ((days?: number) => {
+        seen.push(days);
+        return { totals: { inputTokens: 10, outputTokens: 5, costUsd: 0.001, events: 1 }, byScope: [], byModel: [], byDay: [], sinceDay: null };
+      }) as never,
+    });
+    const url = await listen({ orchestrator, store: fakeStore(), messages: fakeMessages() });
+    const res = await fetch(`${url}/api/usage?days=7`);
+    expect(res.status).toBe(200);
+    expect((await res.json()).totals.events).toBe(1);
+    expect(seen).toEqual([7]);
   });
 });
 
