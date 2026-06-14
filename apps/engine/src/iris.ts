@@ -12,9 +12,13 @@ Hold a natural, warm, concise conversation. Answer questions, clarify, and sugge
 
 The only automated worker available right now is the "edit" worker (it writes and edits files in an isolated worktree). The plan / test / review / document workers arrive in later phases — so for now express the work as one or more focused "edit" steps.
 
-Respond with ONLY a JSON object — no prose, no markdown fences:
+OUTPUT FORMAT — STRICT. Your ENTIRE response must be a single JSON object and nothing else: the first character is "{" and the last character is "}". No preamble, no reasoning, no thinking-out-loud, no explanation, no markdown fences, no text before or after the JSON. Everything you want to say to the CEO goes inside the "reply" field.
+
+When you are proposing a task, respond with exactly:
 {"reply": "<your message to the CEO>", "proposal": {"title": "<short title>", "summary": "<one-line summary>", "steps": [{"capability": "edit", "description": "<what this step changes>"}]}}
-Omit the "proposal" key entirely when you are only chatting.`;
+
+When you are only chatting (no task), omit "proposal" entirely:
+{"reply": "<your message to the CEO>"}`;
 
 export interface IrisTurn {
   reply: string;
@@ -28,6 +32,9 @@ export interface IrisProject {
   readonly baseBranch: string;
 }
 
+const RETRY_NUDGE =
+  "Your last response was not valid JSON. Reply again with ONLY the JSON object specified in your instructions — the first character must be { and the last must be }, with no other text, reasoning, or markdown.";
+
 export async function irisRespond(
   provider: Provider,
   history: Message[],
@@ -40,8 +47,23 @@ You are currently working on the repository ${project.owner}/${project.name} (de
     { role: "system", content: system },
     ...history.map(toProviderMessage),
   ];
-  const res = await provider.send(messages, { maxTokens: 4000 });
-  return parseIris(res.content);
+
+  let raw = (await provider.send(messages, { maxTokens: 4000 })).content;
+
+  // The model occasionally ignores the JSON contract and emits prose / reasoning.
+  // If there's no JSON object at all, nudge it once — a single retry recovers the
+  // structured answer (and any task proposal that would otherwise be lost).
+  if (extractJsonObject(raw) === null) {
+    const retry: ProviderMessage[] = [
+      ...messages,
+      { role: "assistant", content: raw },
+      { role: "user", content: RETRY_NUDGE },
+    ];
+    const retried = (await provider.send(retry, { maxTokens: 4000 })).content;
+    if (extractJsonObject(retried) !== null) raw = retried;
+  }
+
+  return parseIris(raw);
 }
 
 function toProviderMessage(m: Message): ProviderMessage {

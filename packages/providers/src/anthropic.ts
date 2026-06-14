@@ -9,7 +9,7 @@
 // can thread them through later via options.
 
 import type Anthropic from "@anthropic-ai/sdk";
-import type { Provider, AuthStrategy, Message, ProviderResponse } from "./provider.js";
+import type { Provider, AuthStrategy, Message, ProviderResponse, SendOptions } from "./provider.js";
 
 export const DEFAULT_MODEL = "claude-opus-4-8";
 const DEFAULT_MAX_TOKENS = 16_000; // non-streaming: stay under SDK HTTP timeouts
@@ -36,7 +36,7 @@ export class AnthropicProvider implements Provider {
     this.name = opts.name ?? `anthropic:${this.model}`;
   }
 
-  async send(messages: Message[], options?: { maxTokens?: number }): Promise<ProviderResponse> {
+  async send(messages: Message[], options?: SendOptions): Promise<ProviderResponse> {
     const { system, turns } = splitMessages(messages);
     assertHasTurn(turns);
     const message = await this.client.messages.create({
@@ -51,7 +51,7 @@ export class AnthropicProvider implements Provider {
   async stream(
     messages: Message[],
     onChunk: (chunk: string) => void,
-    options?: { maxTokens?: number }
+    options?: SendOptions
   ): Promise<ProviderResponse> {
     const { system, turns } = splitMessages(messages);
     assertHasTurn(turns);
