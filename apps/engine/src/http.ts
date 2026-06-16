@@ -342,8 +342,8 @@ async function handle(deps: HttpDeps, req: IncomingMessage, res: ServerResponse)
     return;
   }
 
-  // POST /api/tasks/:id/(start|stop|merge|open-pr)
-  const actionMatch = /^\/api\/tasks\/([^/]+)\/(start|stop|merge|open-pr)$/.exec(path);
+  // POST /api/tasks/:id/(start|stop|merge|open-pr|merge-pr)
+  const actionMatch = /^\/api\/tasks\/([^/]+)\/(start|stop|merge|open-pr|merge-pr)$/.exec(path);
   if (method === "POST" && actionMatch) {
     const id = decodeURIComponent(actionMatch[1]!);
     const action = actionMatch[2];
@@ -354,7 +354,9 @@ async function handle(deps: HttpDeps, req: IncomingMessage, res: ServerResponse)
           ? await deps.orchestrator.stopTask(id)
           : action === "open-pr"
             ? await deps.orchestrator.openPrForReview(id)
-            : await deps.orchestrator.confirmMerge(id);
+            : action === "merge-pr"
+              ? await deps.orchestrator.mergeOpenPr(id)
+              : await deps.orchestrator.confirmMerge(id);
     sendJson(res, 200, toTaskDetail(task));
     return;
   }

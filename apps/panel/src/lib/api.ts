@@ -273,6 +273,10 @@ export async function mergeTask(id: string): Promise<TaskDetail> {
 export async function openPrForReview(id: string): Promise<TaskDetail> {
   return json(await postJson(`/api/tasks/${encodeURIComponent(id)}/open-pr`));
 }
+/** Merge the open PR of a task earlier "Open PR (no merge)"'d — the deferred squash-merge. */
+export async function mergeOpenPr(id: string): Promise<TaskDetail> {
+  return json(await postJson(`/api/tasks/${encodeURIComponent(id)}/merge-pr`));
+}
 
 /** Permanently delete a task (stops it first if it's still live). */
 export async function deleteTask(id: string): Promise<void> {

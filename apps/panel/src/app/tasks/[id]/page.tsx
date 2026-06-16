@@ -27,7 +27,7 @@ import {
   Check,
 } from "lucide-react";
 import type { TaskDetail, PipelineStep, TimelineEntry } from "@bureau/contracts";
-import { getTask, startTask, stopTask, mergeTask, openPrForReview, decideGate, deleteTask } from "../../../lib/api";
+import { getTask, startTask, stopTask, mergeTask, openPrForReview, mergeOpenPr, decideGate, deleteTask } from "../../../lib/api";
 import { useEngineEvents } from "../../../lib/useEngineEvents";
 import { useConfirm } from "../../../components/ConfirmDialog";
 import { DiffView } from "../../../components/DiffView";
@@ -325,15 +325,34 @@ export default function TaskDetailPage({ params }: { params: { id: string } }) {
         </div>
       )}
 
-      {/* PR opened for review on GitHub — NOT merged. The branch lives there; the CEO
-          tests it and merges (or closes) on GitHub. */}
-      {task.prOpen && task.prUrl && (
-        <div className="mt-4 flex flex-wrap items-center gap-2 rounded-xl border border-blue-500/30 bg-blue-500/5 px-4 py-3 text-sm">
-          <GitPullRequest className="h-4 w-4 shrink-0 text-blue-400" />
-          <span className="text-foreground">PR open for review (not merged) — test it, then merge on GitHub:</span>
-          <a href={task.prUrl} target="_blank" rel="noreferrer" className="font-medium text-blue-400 underline underline-offset-2">
-            {task.prUrl}
-          </a>
+      {/* PR opened for review on GitHub — NOT merged. The branch lives there; review it,
+          then merge to main right here (or on GitHub). */}
+      {task.prOpen && (
+        <div className="mt-4 rounded-xl border border-blue-500/30 bg-blue-500/5 px-4 py-3">
+          <div className="flex flex-wrap items-start gap-3">
+            <GitPullRequest className="mt-0.5 h-4 w-4 shrink-0 text-blue-400" />
+            <div className="min-w-0 flex-1 space-y-1 text-sm">
+              <p className="text-foreground">PR open for review — not merged yet. Review the diff below, then merge to main (here, or on GitHub).</p>
+              {task.prUrl && (
+                <a
+                  href={task.prUrl}
+                  target="_blank"
+                  rel="noreferrer"
+                  className="inline-flex items-center gap-1 break-all text-xs font-medium text-blue-400 underline underline-offset-2"
+                >
+                  {task.prUrl} <ExternalLink className="h-3 w-3 shrink-0" />
+                </a>
+              )}
+            </div>
+            <button
+              onClick={() => act(() => mergeOpenPr(id))}
+              disabled={busy}
+              className="inline-flex h-9 shrink-0 items-center gap-1.5 rounded-md bg-green-600 px-3.5 text-sm font-medium text-white transition-colors hover:bg-green-700 disabled:opacity-50"
+            >
+              {busy ? <Loader2 className="h-4 w-4 animate-spin" /> : <GitMerge className="h-4 w-4" />}
+              Merge to main
+            </button>
+          </div>
         </div>
       )}
     </div>
