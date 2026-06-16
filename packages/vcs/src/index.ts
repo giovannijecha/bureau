@@ -13,3 +13,4 @@ export {
 } from "./exec.js";
 export * from "./worktree.js";
 export * from "./git.js";
+export * from "./git-admin.js";

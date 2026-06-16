@@ -21,14 +21,32 @@ import {
   headBranch,
   pruneTaskBranches,
   deleteTaskBranch,
+  squashAllAndForcePush,
+  forcePushWithLease,
+  resetHardTo,
+  createBranch,
+  renameBranch,
+  deleteLocalBranch,
+  createTag,
+  fetchOrigin,
+  listTree,
+  showFile,
+  treeLastCommits,
+  showCommit,
+  listAllFiles,
+  fileHistory,
+  ghAccount,
+  prList,
+  issueList,
   defaultRunner,
+  VcsError,
   type Runner,
   type CommitAuthor,
 } from "@bureau/vcs";
 import { readNote, writeNote, listNotes, noteModifiedAt, deleteNote } from "@bureau/mind";
 import { MessageRepo, ConversationRepo, UsageRepo, NotificationRepo, type MessageRow, type ConversationRow, type NotificationRow } from "@bureau/db";
-import type { Message, Conversation, Note, NoteSummary, UsageSummary, Notification, NotificationKind } from "@bureau/contracts";
-import type { VcsPort, WorktreeRef, MessageLog, ConversationStore, MemoryPort, UsagePort, UsageEvent, NotificationStore, RepoView } from "./ports.js";
+import type { Message, Conversation, Note, NoteSummary, UsageSummary, Notification, NotificationKind, GitFileEntry, PullRequest, Issue, EntryCommit, CommitDetail } from "@bureau/contracts";
+import type { VcsPort, WorktreeRef, MessageLog, ConversationStore, MemoryPort, UsagePort, UsageEvent, NotificationStore, RepoView, RepoCommit, GitAdminOp } from "./ports.js";
 import { noteSummary, notePath } from "./memory.js";
 import { summarizeUsage } from "./usage.js";
 
@@ -143,6 +161,76 @@ export class RealVcs implements VcsPort {
   deleteBranch(branch: string): Promise<boolean> {
     if (!existsSync(join(this.cfg.canonicalPath, ".git"))) return Promise.resolve(false);
     return deleteTaskBranch(this.cfg.canonicalPath, branch, this.runner);
+  }
+
+  async gitAdmin(op: GitAdminOp): Promise<void> {
+    await this.ensureClone();
+    const p = this.cfg.canonicalPath;
+    const id = this.cfg.author; // CommitAuthor is {name,email} — used only for commit ops
+    switch (op.kind) {
+      case "squash_all":
+        return squashAllAndForcePush(p, op.branch, op.message, id, this.runner);
+      case "force_push":
+        return forcePushWithLease(p, op.branch, this.runner);
+      case "reset_hard":
+        return resetHardTo(p, op.ref, this.runner);
+      case "create_branch":
+        return createBranch(p, op.name, op.base, this.runner);
+      case "rename_branch":
+        return renameBranch(p, op.from, op.to, this.runner);
+      case "delete_branch":
+        return deleteLocalBranch(p, op.branch, this.runner);
+      case "tag":
+        return createTag(p, op.name, op.message, id, this.runner);
+      case "fetch":
+        return fetchOrigin(p, this.runner);
+    }
+  }
+
+  async listTree(ref: string, dir: string): Promise<GitFileEntry[]> {
+    if (!existsSync(join(this.cfg.canonicalPath, ".git"))) return [];
+    return listTree(this.cfg.canonicalPath, ref, dir, this.runner);
+  }
+
+  showFile(ref: string, path: string): Promise<{ content: string; truncated: boolean }> {
+    // Parity with the other read-only browser adapters: a typed VcsError (→ 400/“not
+    // cloned”) instead of letting `git show` fail into a generic 500.
+    if (!existsSync(join(this.cfg.canonicalPath, ".git"))) throw new VcsError("Repository isn't cloned yet.");
+    return showFile(this.cfg.canonicalPath, ref, path, this.runner);
+  }
+
+  githubAccount(): Promise<{ login: string; name: string | null } | null> {
+    return ghAccount(this.runner);
+  }
+
+  prList(): Promise<PullRequest[]> {
+    return prList(this.ownerRepo, this.runner);
+  }
+
+  issueList(): Promise<Issue[]> {
+    return issueList(this.ownerRepo, this.runner);
+  }
+
+  async treeCommits(ref: string, dir: string): Promise<EntryCommit[]> {
+    if (!existsSync(join(this.cfg.canonicalPath, ".git"))) return [];
+    return treeLastCommits(this.cfg.canonicalPath, ref, dir, this.runner);
+  }
+
+  async commitDetail(ref: string): Promise<CommitDetail | null> {
+    if (!existsSync(join(this.cfg.canonicalPath, ".git"))) return null;
+    const d = await showCommit(this.cfg.canonicalPath, ref, this.runner);
+    // The vcs type is readonly; the contract type is mutable — copy into a fresh shape.
+    return d ? { ...d, files: d.files.map((f) => ({ ...f })) } : null;
+  }
+
+  async listFiles(ref: string): Promise<{ paths: string[]; truncated: boolean }> {
+    if (!existsSync(join(this.cfg.canonicalPath, ".git"))) return { paths: [], truncated: false };
+    return listAllFiles(this.cfg.canonicalPath, ref, this.runner);
+  }
+
+  async fileHistory(ref: string, path: string): Promise<RepoCommit[]> {
+    if (!existsSync(join(this.cfg.canonicalPath, ".git"))) return [];
+    return fileHistory(this.cfg.canonicalPath, ref, path, 50, this.runner);
   }
 }
 

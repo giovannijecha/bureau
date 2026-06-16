@@ -22,6 +22,13 @@ export const AttachmentDto = z.object({
   mediaType: z.string().max(100).optional(),
 });
 
+/** One prior turn, supplied inline for an EPHEMERAL chat (the terminal dock) where
+ *  nothing is persisted server-side, so the caller carries the context. */
+export const ChatTurnDto = z.object({
+  role: z.enum(["user", "iris"]),
+  content: z.string(),
+});
+
 export const SendMessageRequestDto = z
   .object({
     content: z.string().max(32_000).default(""),
@@ -31,11 +38,18 @@ export const SendMessageRequestDto = z
     conversationId: z.string().optional(),
     /** Files attached to this turn (images + text). */
     attachments: z.array(AttachmentDto).max(8).optional(),
+    /** Stateless turn — persist NOTHING (no conversation, no messages). Used by the
+     *  embedded terminal dock so its chat never clutters the Assistant. */
+    ephemeral: z.boolean().optional(),
+    /** Prior turns for an ephemeral chat (ignored otherwise) — the caller's context. */
+    history: z.array(ChatTurnDto).max(100).optional(),
   })
   // A turn needs SOMETHING to say — typed text or at least one attachment.
   .refine((d) => d.content.trim().length > 0 || (d.attachments?.length ?? 0) > 0, {
     message: "Provide a message or at least one attachment.",
   });
+
+export type ChatTurn = z.infer<typeof ChatTurnDto>;
 
 export type Attachment = z.infer<typeof AttachmentDto>;
 export type Message = z.infer<typeof MessageDto>;

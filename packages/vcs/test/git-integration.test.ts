@@ -5,7 +5,7 @@ import { join } from "node:path";
 
 import { defaultRunner, run } from "../src/exec.js";
 import { createWorktree, removeWorktree } from "../src/worktree.js";
-import { cloneRepo, commitAll, currentBranch, freshBase, syncToBase, getDiff, getWorkingDiff, getReviewDiff, recentCommits, remoteBranches, headBranch, pruneTaskBranches } from "../src/git.js";
+import { cloneRepo, commitAll, currentBranch, freshBase, syncToBase, getDiff, getWorkingDiff, getReviewDiff, recentCommits, remoteBranches, headBranch, pruneTaskBranches, listTree, treeLastCommits, listAllFiles, fileHistory, showCommit } from "../src/git.js";
 
 // These tests drive the REAL git binary against throwaway repos under the OS
 // temp dir — deterministic and fully offline (no network, no GitHub).
@@ -211,6 +211,90 @@ describe("read-only repo inspection (Git console)", () => {
     await gitIn(empty, ["init", "-b", "main"]);
     expect(await recentCommits(empty, 5)).toEqual([]);
     expect(await remoteBranches(empty)).toEqual([]);
+  });
+});
+
+describe("read-only codebase browser + commit viewer (embedded GitHub)", () => {
+  it("treeLastCommits — the latest commit that touched each entry (per-file column)", async () => {
+    mkdirSync(join(canonical, "src"));
+    writeFileSync(join(canonical, "src", "app.ts"), "export const app = 1;\n");
+    await gitIn(canonical, ["add", "-A"]);
+    await gitIn(canonical, ["commit", "-m", "add app"]);
+    writeFileSync(join(canonical, "README.md"), "# base v2\n");
+    await gitIn(canonical, ["add", "-A"]);
+    await gitIn(canonical, ["commit", "-m", "update readme"]);
+
+    const byPath = new Map((await treeLastCommits(canonical, "main", "")).map((c) => [c.path, c]));
+    expect(byPath.get("README.md")!.subject).toBe("update readme"); // README's latest touch
+    expect(byPath.get("src")!.subject).toBe("add app"); // the dir's latest touch
+    expect(byPath.get("README.md")!.date).toMatch(/^\d{4}-\d{2}-\d{2}T/); // strict ISO
+  });
+
+  it("listAllFiles — every file path, recursively, at ref (the 'go to file' finder)", async () => {
+    mkdirSync(join(canonical, "src"));
+    writeFileSync(join(canonical, "src", "app.ts"), "x");
+    await gitIn(canonical, ["add", "-A"]);
+    await gitIn(canonical, ["commit", "-m", "add src"]);
+
+    const { paths, truncated } = await listAllFiles(canonical, "main");
+    expect(paths).toContain("README.md");
+    expect(paths).toContain("src/app.ts");
+    expect(truncated).toBe(false);
+  });
+
+  it("fileHistory — commits that touched a file, newest first", async () => {
+    writeFileSync(join(canonical, "README.md"), "# base v2\n");
+    await gitIn(canonical, ["add", "-A"]);
+    await gitIn(canonical, ["commit", "-m", "touch readme again"]);
+
+    const hist = await fileHistory(canonical, "main", "README.md", 50);
+    expect(hist[0]!.subject).toBe("touch readme again"); // newest first
+    expect(hist.some((c) => c.subject === "base")).toBe(true); // the original commit too
+  });
+
+  it("showCommit — metadata, per-file stats, and patch", async () => {
+    writeFileSync(join(canonical, "feature.ts"), "export const f = 1;\n");
+    await gitIn(canonical, ["add", "-A"]);
+    await gitIn(canonical, ["commit", "-m", "add feature"]);
+    const head = (await run(defaultRunner, "git", ["-C", canonical, "rev-parse", "HEAD"])).trim();
+
+    const detail = await showCommit(canonical, head);
+    expect(detail).not.toBeNull();
+    expect(detail!.subject).toBe("add feature");
+    expect(detail!.files.some((f) => f.path === "feature.ts" && f.additions === 1 && !f.binary)).toBe(true);
+    expect(detail!.patch).toContain("+export const f = 1;");
+    expect(detail!.truncated).toBe(false);
+  });
+
+  it("showCommit — a rename surfaces the NEW path, never an 'old => new' arrow string", async () => {
+    writeFileSync(join(canonical, "old-name.ts"), "export const x = 1;\n");
+    await gitIn(canonical, ["add", "-A"]);
+    await gitIn(canonical, ["commit", "-m", "add old-name"]);
+    await gitIn(canonical, ["mv", "old-name.ts", "new-name.ts"]);
+    await gitIn(canonical, ["commit", "-m", "rename it"]);
+    const head = (await run(defaultRunner, "git", ["-C", canonical, "rev-parse", "HEAD"])).trim();
+
+    const detail = await showCommit(canonical, head);
+    const paths = detail!.files.map((f) => f.path);
+    expect(paths).toContain("new-name.ts"); // the post-image path…
+    expect(paths.join(" ")).not.toContain("=>"); // …never the literal numstat arrow
+  });
+
+  it("listTree / listAllFiles return non-ASCII paths VERBATIM (-z, not C-quoted)", async () => {
+    // Default core.quotePath would emit `"\316\251-file.ts"`; `-z` keeps it literal.
+    const name = "Ω-file.ts"; // Ω — a single codepoint, no NFC/NFD ambiguity
+    writeFileSync(join(canonical, name), "x");
+    await gitIn(canonical, ["add", "-A"]);
+    await gitIn(canonical, ["commit", "-m", "add a unicode-named file"]);
+
+    expect((await listTree(canonical, "main", "")).map((e) => e.name)).toContain(name);
+    expect((await listAllFiles(canonical, "main")).paths).toContain(name);
+  });
+
+  it("is graceful + injection-safe: null on an unknown commit, throws on a flag-like ref", async () => {
+    expect(await showCommit(canonical, "0000000")).toBeNull(); // well-formed but unknown → null, no throw
+    await expect(treeLastCommits(canonical, "-rf", "")).rejects.toThrow(); // a "-"-leading ref can't be a flag
+    await expect(listAllFiles(canonical, "--output=x")).rejects.toThrow();
   });
 });
 

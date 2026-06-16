@@ -10,7 +10,7 @@ import { ASSIGNEE, toTaskSummary, isMerged, describe } from "./summary.js";
 
 /** The full roster of capability kinds, in pipeline order — the worker strip shows
  *  all of them (with `implemented` telling the truth about which are built). */
-const CAPABILITY_KINDS: readonly CapabilityKind[] = ["plan", "edit", "test", "review", "document"];
+const CAPABILITY_KINDS: readonly CapabilityKind[] = ["plan", "research", "edit", "test", "review", "document"];
 
 /** Per-capability live status: built? + how many steps are running now + lifetime total. */
 export function buildWorkerStatus(tasks: readonly Task[], isImplemented: (k: CapabilityKind) => boolean): WorkerStatus[] {

@@ -6,6 +6,7 @@ import type { TaskSummary, TaskDetail, TimelineEntry } from "@bureau/contracts";
 /** Each capability maps to a worker persona — who Iris hands that piece to. */
 export const ASSIGNEE: Record<CapabilityKind, string> = {
   plan: "Planner",
+  research: "Researcher",
   edit: "Editor",
   test: "Tester",
   review: "Reviewer",
@@ -22,7 +23,9 @@ export function toTaskSummary(task: Task): TaskSummary {
     createdAt: task.createdAt,
     updatedAt: task.updatedAt,
     stepCount: task.steps.length,
-    completedStepCount: task.steps.filter((s) => s.status === "completed").length,
+    // A step parked at its gate (blocked_on_gate) has finished its WORK — count it as
+    // done so a reviewed/merged task reads 1/1, not 0/1 (also covers older DB rows).
+    completedStepCount: task.steps.filter((s) => s.status === "completed" || s.status === "blocked_on_gate").length,
     pendingGates: task.gates.filter((g) => g.status === "pending" || g.status === "open").length,
     merged: isMerged(task),
   };
@@ -87,7 +90,8 @@ export function toTaskDetail(task: Task): TaskDetail {
       capability: s.capability,
       assignee: ASSIGNEE[s.capability],
       description: s.description,
-      status: s.status,
+      // A completed task's gated step is done — show it completed, not blocked_on_gate.
+      status: task.status === "completed" && s.status === "blocked_on_gate" ? "completed" : s.status,
       failureReason: s.failureReason ?? null,
       summary: s.summary ?? null,
       startedAt: s.startedAt ?? null,

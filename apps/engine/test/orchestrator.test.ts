@@ -41,6 +41,7 @@ function fakeVcs() {
     openPr: [] as { branch: string }[],
     mergePr: [] as { branch: string }[],
     removeWorktree: [] as { force: boolean }[],
+    gitAdmin: [] as string[],
   };
   let committed = true;
   let mergeError: string | null = null;
@@ -96,6 +97,36 @@ function fakeVcs() {
     async deleteBranch(branch) {
       calls.deletedBranch = branch;
       return true;
+    },
+    async gitAdmin(op) {
+      calls.gitAdmin.push(op.kind);
+    },
+    async listTree() {
+      return [];
+    },
+    async showFile() {
+      return { content: "", truncated: false };
+    },
+    async githubAccount() {
+      return { login: "octocat", name: "Octo Cat" };
+    },
+    async prList() {
+      return [];
+    },
+    async issueList() {
+      return [];
+    },
+    async treeCommits() {
+      return [];
+    },
+    async commitDetail() {
+      return null;
+    },
+    async listFiles() {
+      return { paths: [], truncated: false };
+    },
+    async fileHistory() {
+      return [];
     },
   };
   return {
@@ -418,6 +449,27 @@ describe("deleteBranch", () => {
 
     release();
     await orch.settle(t.id);
+  });
+});
+
+describe("runGitOp — CEO-authorized git operations (type-to-confirm gate)", () => {
+  it("rejects (400) a destructive op with missing / wrong confirmation, never reaching the vcs layer", async () => {
+    await expect(orch.runGitOp({ kind: "force_push", branch: "main" })).rejects.toMatchObject({ status: 400 });
+    await expect(orch.runGitOp({ kind: "force_push", branch: "main", confirmation: "MAIN" })).rejects.toMatchObject({ status: 400 }); // case-sensitive
+    await expect(orch.runGitOp({ kind: "squash_all", branch: "main", message: "one", confirmation: "mian" })).rejects.toMatchObject({ status: 400 });
+    expect(vcs.calls.gitAdmin).toEqual([]); // the confirm gate short-circuits before execution
+  });
+
+  it("runs a destructive op only when confirmation EXACTLY matches the target branch", async () => {
+    const res = await orch.runGitOp({ kind: "force_push", branch: "main", confirmation: "main" });
+    expect(res.ok).toBe(true);
+    expect(vcs.calls.gitAdmin).toEqual(["force_push"]);
+  });
+
+  it("runs a SAFE op with no confirmation required", async () => {
+    const res = await orch.runGitOp({ kind: "create_branch", name: "feature-x" });
+    expect(res.ok).toBe(true);
+    expect(vcs.calls.gitAdmin).toEqual(["create_branch"]);
   });
 });
 

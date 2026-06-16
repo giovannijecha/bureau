@@ -4,6 +4,7 @@ import "./globals.css";
 import { Sidebar } from "../components/Sidebar";
 import { Header } from "../components/Header";
 import { ConfirmProvider } from "../components/ConfirmDialog";
+import { SidebarProvider } from "../lib/sidebar";
 
 const inter = Inter({ subsets: ["latin"], variable: "--font-inter" });
 
@@ -23,13 +24,15 @@ export default function RootLayout({ children }: { children: ReactNode }) {
       </head>
       <body className="font-sans antialiased">
         <ConfirmProvider>
-          <div className="flex h-screen overflow-hidden">
-            <Sidebar />
-            <div className="flex flex-1 flex-col overflow-hidden">
-              <Header />
-              <main className="flex flex-1 flex-col overflow-hidden bg-muted/30">{children}</main>
+          <SidebarProvider>
+            <div className="flex h-screen overflow-hidden">
+              <Sidebar />
+              <div className="flex min-w-0 flex-1 flex-col overflow-hidden">
+                <Header />
+                <main className="flex flex-1 flex-col overflow-hidden bg-muted/30">{children}</main>
+              </div>
             </div>
-          </div>
+          </SidebarProvider>
         </ConfirmProvider>
       </body>
     </html>

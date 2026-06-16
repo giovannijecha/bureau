@@ -1,9 +1,9 @@
 "use client";
 
 import { memo, useCallback, useEffect, useMemo, useRef, useState, type KeyboardEvent, type ReactNode } from "react";
-import { Terminal as TerminalIcon, Trash2, CircleStop, FolderGit2, Monitor } from "lucide-react";
+import { Trash2, CircleStop, FolderGit2, Monitor } from "lucide-react";
 import { useProjects } from "../../lib/useProjects";
-import { ProjectPicker } from "../../components/ProjectPicker";
+import { IrisDock } from "../../components/IrisDock";
 import { ENGINE_URL } from "../../lib/api";
 import { cn } from "../../lib/utils";
 
@@ -16,6 +16,35 @@ type EntryData =
   | { kind: "output"; text: string }
   | { kind: "note"; text: string; tone: "muted" | "error" };
 type Entry = EntryData & { id: number };
+
+// The scrollback survives refresh AND scope switches by persisting per scope+project
+// in localStorage (each scope keeps its own history). Bounded so it never bloats.
+const TERM_CAP = 120_000;
+const termKey = (scope: Scope, projectId: string | null | undefined) => `bureau.terminal.${scope}.${projectId ?? "none"}`;
+
+function loadEntries(scope: Scope, projectId: string | null | undefined): Entry[] {
+  try {
+    const raw = window.localStorage.getItem(termKey(scope, projectId));
+    const parsed = raw ? (JSON.parse(raw) as unknown) : [];
+    return Array.isArray(parsed) ? (parsed as Entry[]) : [];
+  } catch {
+    return [];
+  }
+}
+
+function saveEntries(scope: Scope, projectId: string | null | undefined, entries: Entry[]): void {
+  try {
+    let list = entries.length > 300 ? entries.slice(entries.length - 300) : entries;
+    let json = JSON.stringify(list);
+    while (json.length > TERM_CAP && list.length > 1) {
+      list = list.slice(Math.ceil(list.length / 4)); // drop the oldest quarter until it fits
+      json = JSON.stringify(list);
+    }
+    window.localStorage.setItem(termKey(scope, projectId), json);
+  } catch {
+    /* storage full / unavailable — skip persistence */
+  }
+}
 
 export default function TerminalPage() {
   const { projects, active, activeId, setActiveId } = useProjects();
@@ -35,6 +64,7 @@ export default function TerminalPage() {
   const pendingRun = useRef<string | null>(null);
   const scrollRef = useRef<HTMLDivElement>(null);
   const inputRef = useRef<HTMLInputElement>(null);
+  const skipPersist = useRef(true); // don't re-save the scrollback we just restored
 
   const push = useCallback((e: EntryData) => {
     const id = ++seq.current;
@@ -86,7 +116,11 @@ export default function TerminalPage() {
   useEffect(() => {
     let disposed = false;
     let retry: ReturnType<typeof setTimeout> | undefined;
-    setEntries([]);
+    // Restore this scope+project's saved scrollback (survives refresh + scope switch).
+    const restored = loadEntries(scope, activeId);
+    setEntries(restored);
+    seq.current = restored.reduce((m, e) => Math.max(m, e.id), 0);
+    skipPersist.current = true;
     setConnected(false);
     setRunning(false);
     outId.current = null;
@@ -111,7 +145,6 @@ export default function TerminalPage() {
         if (f.type === "ready") {
           setConnected(true);
           setCwd(f.cwd ?? "");
-          push({ kind: "note", tone: "muted", text: `${scope === "system" ? "System" : "Project"} shell — ${f.shell ?? "shell"} · ${f.cwd ?? ""}` });
           if (pendingRun.current) {
             const cmd = pendingRun.current;
             pendingRun.current = null;
@@ -149,9 +182,25 @@ export default function TerminalPage() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [activeId, scope]);
 
+  // Keep the newest line (and the prompt) in view.
   useEffect(() => {
     scrollRef.current?.scrollTo({ top: scrollRef.current.scrollHeight });
-  }, [entries]);
+  }, [entries, running, connected]);
+
+  // Persist the scrollback (debounced) so it survives refresh + scope switches.
+  useEffect(() => {
+    if (skipPersist.current) {
+      skipPersist.current = false;
+      return;
+    }
+    const t = setTimeout(() => saveEntries(scope, activeId, entries), 400);
+    return () => clearTimeout(t);
+  }, [entries, scope, activeId]);
+
+  // Focus the inline prompt whenever it's the user's turn (idle + connected).
+  useEffect(() => {
+    if (connected && !running) inputRef.current?.focus();
+  }, [connected, running]);
 
   function onSubmit() {
     if (running) return;
@@ -188,108 +237,143 @@ export default function TerminalPage() {
     }
   }
 
+  // Click anywhere in the scrollback to focus the prompt — unless selecting text.
+  function focusPrompt() {
+    if (!window.getSelection()?.toString()) inputRef.current?.focus();
+  }
+
+  // Iris (right column) proposes a command → PRE-FILL the terminal input (the CEO
+  // presses Enter). Never auto-runs — the security model stays intact.
+  const runFromIris = useCallback((cmd: string) => {
+    setInput(cmd);
+    inputRef.current?.focus();
+  }, []);
+
   const promptCwd = shortPath(cwd);
+  const tab = (on: boolean) =>
+    cn(
+      "inline-flex items-center gap-1.5 rounded-md px-2 py-1 font-medium transition-colors",
+      on ? "bg-neutral-700/70 text-neutral-100" : "text-neutral-400 hover:text-neutral-200"
+    );
 
   return (
-    <div className="flex h-full flex-col p-6">
-      <div className="flex min-h-0 flex-1 flex-col overflow-hidden rounded-xl border border-zinc-800 bg-zinc-950 shadow-2xl">
-        {/* Premium title bar — traffic lights + scope tabs */}
-        <div className="flex shrink-0 items-center gap-3 border-b border-zinc-800 bg-zinc-900/80 px-4 py-2.5">
-          <div className="flex shrink-0 items-center gap-1.5">
-            <span className="h-3 w-3 rounded-full bg-[#ff5f57]" />
-            <span className="h-3 w-3 rounded-full bg-[#febc2e]" />
-            <span className="h-3 w-3 rounded-full bg-[#28c840]" />
-          </div>
-          {/* Scope switch: Project (the repo clone) vs System (your real PC shell) */}
-          <div className="ml-1 flex shrink-0 items-center rounded-lg border border-zinc-700 bg-zinc-800/60 p-0.5 text-xs">
-            <button
-              onClick={() => setScope("project")}
-              className={cn("inline-flex items-center gap-1.5 rounded-md px-2 py-1 font-medium transition-colors", scope === "project" ? "bg-zinc-700 text-zinc-100" : "text-zinc-400 hover:text-zinc-200")}
-            >
-              <FolderGit2 className="h-3.5 w-3.5" /> Project
-            </button>
-            <button
-              onClick={() => setScope("system")}
-              className={cn("inline-flex items-center gap-1.5 rounded-md px-2 py-1 font-medium transition-colors", scope === "system" ? "bg-zinc-700 text-zinc-100" : "text-zinc-400 hover:text-zinc-200")}
-            >
-              <Monitor className="h-3.5 w-3.5" /> System
-            </button>
-          </div>
-          <span
-            className={cn("inline-flex shrink-0 items-center gap-1.5 rounded-full px-1.5 py-0.5 text-[11px] font-medium", connected ? "text-green-400" : "text-amber-400")}
-            title={connected ? "connected" : "connecting…"}
-          >
-            <span className={cn("h-1.5 w-1.5 rounded-full", connected ? "bg-green-400" : "animate-pulse bg-amber-400")} />
-          </span>
-          <code className="hidden min-w-0 flex-1 truncate font-mono text-xs text-zinc-500 sm:block" title={cwd}>
-            {cwd}
-          </code>
-          <div className="ml-auto flex shrink-0 items-center gap-2">
-            <TerminalIcon className="hidden h-4 w-4 text-zinc-600 md:block" />
-            {running && (
-              <button onClick={interrupt} className="inline-flex items-center gap-1 rounded-md border border-zinc-700 px-2 py-1 text-xs font-medium text-red-400 transition-colors hover:bg-red-500/10" title="Stop the running command (Ctrl-C)">
-                <CircleStop className="h-3.5 w-3.5" /> Stop
+    <div className="flex h-full flex-col gap-2 p-3 sm:p-6">
+      <div className="flex min-h-0 flex-1 gap-3">
+        {/* Left: the terminal (true black, Bureau style). */}
+        <div className="flex min-h-0 min-w-0 flex-1 flex-col overflow-hidden rounded-xl border border-neutral-800 bg-black shadow-2xl">
+          {/* Header — scope switch, connection, cwd, actions (no macOS traffic lights). */}
+          <div className="flex shrink-0 flex-wrap items-center gap-2 border-b border-neutral-800 bg-neutral-950/60 px-3 py-2.5 sm:gap-3 sm:px-4">
+            <div className="flex shrink-0 items-center rounded-lg border border-neutral-700/60 bg-neutral-900/60 p-0.5 text-xs">
+              <button onClick={() => setScope("project")} className={tab(scope === "project")}>
+                <FolderGit2 className="h-3.5 w-3.5" /> Project
               </button>
-            )}
-            <button onClick={() => setEntries([])} className="inline-flex items-center gap-1 rounded-md border border-zinc-700 px-2 py-1 text-xs font-medium text-zinc-400 transition-colors hover:bg-zinc-800 hover:text-zinc-200" title="Clear the screen">
-              <Trash2 className="h-3.5 w-3.5" /> Clear
-            </button>
-            {scope === "project" && <ProjectPicker compact projects={projects} active={active} onChange={setActiveId} />}
-          </div>
-        </div>
-
-        {/* Scrollback */}
-        <div ref={scrollRef} className="min-h-0 flex-1 overflow-y-auto px-4 py-3 font-mono text-[12.5px] leading-relaxed text-zinc-200">
-          {entries.length === 0 && (
-            <p className="text-zinc-500">
-              {scope === "system" ? (
-                <>Your computer’s shell, starting at your home directory. Run anything you’d run in a real terminal.</>
-              ) : (
-                <>
-                  A shell in <span className="text-zinc-300">{active ? `${active.owner}/${active.name}` : "your project"}</span>’s clone — for inspecting the repo (git status, log, ls…). Iris can also propose read-only commands you run here.
-                </>
+              <button onClick={() => setScope("system")} className={tab(scope === "system")}>
+                <Monitor className="h-3.5 w-3.5" /> System
+              </button>
+            </div>
+            <span
+              className={cn("h-2 w-2 shrink-0 rounded-full", connected ? "bg-emerald-400" : "animate-pulse bg-amber-400")}
+              title={connected ? "connected" : "connecting…"}
+            />
+            <code className="hidden min-w-0 flex-1 truncate font-mono text-xs text-neutral-500 md:block" title={cwd}>
+              {cwd}
+            </code>
+            <div className="ml-auto flex shrink-0 items-center gap-2">
+              {running && (
+                <button
+                  onClick={interrupt}
+                  className="inline-flex items-center gap-1 rounded-md border border-neutral-700/60 px-2 py-1 text-xs font-medium text-red-400 transition-colors hover:bg-red-500/10"
+                  title="Stop the running command (Ctrl-C)"
+                >
+                  <CircleStop className="h-3.5 w-3.5" /> Stop
+                </button>
               )}
-            </p>
-          )}
-          {entries.map((e) => {
-            if (e.kind === "command")
+              <button
+                onClick={() => setEntries([])}
+                className="inline-flex items-center gap-1 rounded-md border border-neutral-700/60 px-2 py-1 text-xs font-medium text-neutral-400 transition-colors hover:bg-neutral-800 hover:text-neutral-200"
+                title="Clear the screen"
+              >
+                <Trash2 className="h-3.5 w-3.5" /> Clear
+              </button>
+            </div>
+          </div>
+
+          {/* Scrollback — output AND the live prompt flow together, top to bottom. */}
+          <div
+            ref={scrollRef}
+            onClick={focusPrompt}
+            className="min-h-0 flex-1 cursor-text space-y-0.5 overflow-y-auto px-4 py-3 font-mono text-[13px] leading-relaxed text-neutral-200"
+          >
+            {entries.length === 0 && (
+              <p className="text-neutral-500">
+                {scope === "system" ? (
+                  <>Your computer&apos;s shell, starting at your home directory. Run anything you&apos;d run in a real terminal.</>
+                ) : (
+                  <>
+                    A shell in <span className="text-neutral-300">{active ? `${active.owner}/${active.name}` : "your project"}</span>&apos;s
+                    clone — for inspecting the repo (git status, log, ls…). Iris can also propose read-only commands you run here.
+                  </>
+                )}
+              </p>
+            )}
+            {entries.map((e) => {
+              if (e.kind === "command")
+                return (
+                  <div key={e.id} className="flex gap-2 whitespace-pre-wrap break-words">
+                    <span className="shrink-0 select-none text-emerald-400">❯</span>
+                    <span className="text-neutral-100">{e.text}</span>
+                  </div>
+                );
+              if (e.kind === "note")
+                return (
+                  <div key={e.id} className={cn("whitespace-pre-wrap break-words", e.tone === "error" ? "text-red-400" : "text-neutral-500")}>
+                    {e.text}
+                  </div>
+                );
               return (
-                <div key={e.id} className="flex gap-2 whitespace-pre-wrap break-words">
-                  <span className="shrink-0 select-none text-green-400">❯</span>
-                  <span className="text-zinc-100">{e.text}</span>
+                <div key={e.id} className="whitespace-pre-wrap break-words text-neutral-300">
+                  <AnsiText text={e.text} />
                 </div>
               );
-            if (e.kind === "note") return <div key={e.id} className={cn("whitespace-pre-wrap break-words", e.tone === "error" ? "text-red-400" : "text-zinc-500")}>{e.text}</div>;
-            return (
-              <div key={e.id} className="whitespace-pre-wrap break-words text-zinc-300">
-                <AnsiText text={e.text} />
-              </div>
-            );
-          })}
-          {running && <div className="mt-0.5 inline-block h-3.5 w-2 animate-pulse bg-zinc-400 align-middle" />}
-        </div>
+            })}
 
-        {/* Prompt */}
-        <div className="flex shrink-0 items-center gap-2 border-t border-zinc-800 bg-zinc-900/60 px-4 py-2.5 font-mono text-[12.5px]">
-          <span className="shrink-0 select-none text-green-400" title={cwd}>
-            {promptCwd} <span className="text-zinc-600">❯</span>
-          </span>
-          <input
-            ref={inputRef}
-            value={input}
-            onChange={(e) => setInput(e.target.value)}
-            onKeyDown={onKeyDown}
-            disabled={!connected}
-            spellCheck={false}
-            autoCapitalize="off"
-            autoComplete="off"
-            placeholder={running ? "running… (Ctrl-C to stop)" : connected ? "" : "connecting…"}
-            className="min-w-0 flex-1 bg-transparent text-zinc-100 caret-green-400 outline-none placeholder:text-zinc-600"
-          />
+            {/* The live line: an inline prompt when it's your turn, a cursor while busy. */}
+            {!connected ? (
+              <div className="text-neutral-500">connecting…</div>
+            ) : running ? (
+              <div className="flex items-center gap-2 text-neutral-500">
+                <span className="inline-block h-4 w-2 animate-pulse bg-neutral-400" />
+                <span className="text-xs">running… press Ctrl-C to stop</span>
+              </div>
+            ) : (
+              <div className="flex items-baseline gap-2">
+                <span className="shrink-0 select-none text-emerald-400" title={cwd}>
+                  {promptCwd} <span className="text-neutral-600">❯</span>
+                </span>
+                <input
+                  ref={inputRef}
+                  value={input}
+                  onChange={(e) => setInput(e.target.value)}
+                  onKeyDown={onKeyDown}
+                  spellCheck={false}
+                  autoCapitalize="off"
+                  autoComplete="off"
+                  autoCorrect="off"
+                  className="min-w-0 flex-1 bg-transparent text-neutral-100 caret-emerald-400 outline-none"
+                />
+              </div>
+            )}
+          </div>
+        </div>
+        {/* Right: work inline with Iris (hidden on narrow screens). */}
+        <div className="hidden w-[380px] shrink-0 flex-col overflow-hidden rounded-xl border bg-card lg:flex">
+          <IrisDock projectId={activeId} onRunCommand={runFromIris} projects={projects} active={active} onSelectProject={setActiveId} />
         </div>
       </div>
-      <p className="mt-2 px-1 text-[11px] text-muted-foreground">
-        Human-operated · {scope === "system" ? "your machine’s shell" : "the active project’s clone"} · Bureau secrets are stripped · repo changes go through tasks, not the terminal.
+
+      <p className="px-1 text-[11px] text-muted-foreground">
+        Human-operated · {scope === "system" ? "your machine's shell" : "the active project's clone"} · Bureau secrets are stripped · repo
+        changes go through tasks, not the terminal.
       </p>
     </div>
   );
@@ -300,9 +384,9 @@ export default function TerminalPage() {
 type AnsiStyle = { fg?: string; bold?: boolean; dim?: boolean; underline?: boolean };
 
 const ANSI_FG: Record<number, string> = {
-  30: "text-zinc-500", 31: "text-red-400", 32: "text-green-400", 33: "text-yellow-400",
-  34: "text-blue-400", 35: "text-fuchsia-400", 36: "text-cyan-400", 37: "text-zinc-200",
-  90: "text-zinc-400", 91: "text-red-300", 92: "text-green-300", 93: "text-yellow-300",
+  30: "text-neutral-500", 31: "text-red-400", 32: "text-emerald-400", 33: "text-yellow-400",
+  34: "text-blue-400", 35: "text-fuchsia-400", 36: "text-cyan-400", 37: "text-neutral-200",
+  90: "text-neutral-400", 91: "text-red-300", 92: "text-emerald-300", 93: "text-yellow-300",
   94: "text-blue-300", 95: "text-fuchsia-300", 96: "text-cyan-300", 97: "text-white",
 };
 

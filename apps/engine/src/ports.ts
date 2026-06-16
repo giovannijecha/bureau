@@ -3,7 +3,7 @@
 // the canPush security gate — fully unit-testable with no DB, git, or network.
 
 import type { Task, TaskId } from "@bureau/core";
-import type { WsEvent, Message, Conversation, Note, NoteSummary, UsageSummary, Notification } from "@bureau/contracts";
+import type { WsEvent, Message, Conversation, Note, NoteSummary, UsageSummary, Notification, GitFileEntry, PullRequest, Issue, EntryCommit, CommitDetail } from "@bureau/contracts";
 
 export interface TaskStore {
   save(task: Task): void;
@@ -60,7 +60,43 @@ export interface VcsPort {
   /** Delete ONE bureau/task-* branch (local + origin). Refuses any non-task ref.
    *  Returns true if it removed the branch. */
   deleteBranch(branch: string): Promise<boolean>;
+  /** Execute a CEO-AUTHORIZED git admin operation (squash/force-push/branch/tag/…).
+   *  The orchestrator validates the human confirm gate BEFORE calling this; the vcs
+   *  layer re-validates every ref argv-side (assertSafeRef) and runs argv-only. */
+  gitAdmin(op: GitAdminOp): Promise<void>;
+  /** Read-only: one directory level of the codebase at `ref` (the embedded browser).
+   *  Returns [] when the clone doesn't exist. */
+  listTree(ref: string, dir: string): Promise<GitFileEntry[]>;
+  /** Read-only: a file's content at `ref`, capped. */
+  showFile(ref: string, path: string): Promise<{ content: string; truncated: boolean }>;
+  /** The GitHub account `gh` is signed in as (read-only), or null if not authenticated. */
+  githubAccount(): Promise<{ login: string; name: string | null } | null>;
+  /** Read-only: the repo's pull requests (via gh). Returns [] if gh can't read them. */
+  prList(): Promise<PullRequest[]>;
+  /** Read-only: the repo's issues (via gh). Returns [] if gh can't read them. */
+  issueList(): Promise<Issue[]>;
+  /** Read-only: the latest commit that touched each entry of `dir` at `ref` (the
+   *  code browser's "latest commit" column). [] when the clone doesn't exist. */
+  treeCommits(ref: string, dir: string): Promise<EntryCommit[]>;
+  /** Read-only: one commit's metadata, file stats, and patch (capped). null if unknown. */
+  commitDetail(ref: string): Promise<CommitDetail | null>;
+  /** Read-only: every file path in the repo at `ref` (the "go to file" finder), capped. */
+  listFiles(ref: string): Promise<{ paths: string[]; truncated: boolean }>;
+  /** Read-only: commits that touched a file, newest first (file history). */
+  fileHistory(ref: string, path: string): Promise<RepoCommit[]>;
 }
+
+/** A resolved, validated git-admin operation — the orchestrator builds this from the
+ *  CEO's authorized request (after the type-to-confirm gate for destructive ops). */
+export type GitAdminOp =
+  | { kind: "squash_all"; branch: string; message: string }
+  | { kind: "force_push"; branch: string }
+  | { kind: "reset_hard"; ref: string }
+  | { kind: "create_branch"; name: string; base?: string }
+  | { kind: "rename_branch"; from: string; to: string }
+  | { kind: "delete_branch"; branch: string }
+  | { kind: "tag"; name: string; message?: string }
+  | { kind: "fetch" };
 
 /** A read-only snapshot of a project's repository, for the Git console. */
 export interface RepoView {

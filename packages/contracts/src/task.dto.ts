@@ -1,7 +1,7 @@
 import { z } from "zod";
 import { MessageDto } from "./message.dto.js";
 
-export const CapabilitySchema = z.enum(["plan", "edit", "test", "review", "document"]);
+export const CapabilitySchema = z.enum(["plan", "edit", "test", "review", "document", "research"]);
 export const StepStatusSchema = z.enum(["pending", "running", "completed", "failed", "blocked_on_gate"]);
 
 export const TaskStatusSchema = z.enum([

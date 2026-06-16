@@ -13,8 +13,9 @@
 //   POST /api/tasks/:id/merge     the final confirm: push → PR → squash-merge
 
 import { createServer, type IncomingMessage, type ServerResponse, type Server } from "node:http";
-import { SendMessageRequestDto, CreateTaskRequestDto, SaveNoteRequestDto, GateDecisionRequestDto } from "@bureau/contracts";
+import { SendMessageRequestDto, CreateTaskRequestDto, SaveNoteRequestDto, GateDecisionRequestDto, GitOpRequestDto } from "@bureau/contracts";
 import type { TaskId } from "@bureau/core";
+import { VcsError } from "@bureau/vcs";
 import { Orchestrator, OrchestratorError } from "./orchestrator.js";
 import type { TaskStore, MessageLog } from "./ports.js";
 import { toTaskSummary, toTaskDetail, latestDiff } from "./summary.js";
@@ -38,6 +39,13 @@ function respondError(res: ServerResponse, err: unknown): void {
   }
   if (err instanceof OrchestratorError) {
     sendJson(res, err.status, { error: err.message });
+    return;
+  }
+  // A rejected ref/path (assertSafeRef / sanitizeTreePath) is bad client input, not a
+  // server fault — surface it as a typed 400 across the whole read-only browser surface
+  // instead of a misleading 500. The security wall already blocked it before any argv.
+  if (err instanceof VcsError) {
+    sendJson(res, 400, { error: err.message });
     return;
   }
   console.error("[engine] unhandled error:", err);
@@ -89,10 +97,87 @@ async function handle(deps: HttpDeps, req: IncomingMessage, res: ServerResponse)
     return;
   }
 
+  // GET /api/git/tree?projectId=&ref=&path= — one directory level of the codebase (read-only).
+  if (method === "GET" && path === "/api/git/tree") {
+    const projectId = url.searchParams.get("projectId") ?? undefined;
+    const ref = url.searchParams.get("ref") ?? undefined;
+    const dir = url.searchParams.get("path") ?? "";
+    sendJson(res, 200, await deps.orchestrator.gitTree(projectId, ref, dir));
+    return;
+  }
+
+  // GET /api/git/show?projectId=&ref=&path= — a file's content at a ref (read-only).
+  if (method === "GET" && path === "/api/git/show") {
+    const projectId = url.searchParams.get("projectId") ?? undefined;
+    const ref = url.searchParams.get("ref") ?? undefined;
+    const filePath = url.searchParams.get("path") ?? "";
+    sendJson(res, 200, await deps.orchestrator.gitShow(projectId, ref, filePath));
+    return;
+  }
+
+  // GET /api/github-account — the connected GitHub account (read-only, via gh CLI).
+  if (method === "GET" && path === "/api/github-account") {
+    sendJson(res, 200, await deps.orchestrator.githubAccount());
+    return;
+  }
+
+  // GET /api/git/prs?projectId= — the repo's pull requests (read-only, via gh).
+  if (method === "GET" && path === "/api/git/prs") {
+    sendJson(res, 200, await deps.orchestrator.prList(url.searchParams.get("projectId") ?? undefined));
+    return;
+  }
+
+  // GET /api/git/issues?projectId= — the repo's issues (read-only, via gh).
+  if (method === "GET" && path === "/api/git/issues") {
+    sendJson(res, 200, await deps.orchestrator.issueList(url.searchParams.get("projectId") ?? undefined));
+    return;
+  }
+
+  // GET /api/git/tree-commits?projectId=&ref=&path= — latest commit per entry (read-only).
+  if (method === "GET" && path === "/api/git/tree-commits") {
+    const projectId = url.searchParams.get("projectId") ?? undefined;
+    const ref = url.searchParams.get("ref") ?? undefined;
+    const dir = url.searchParams.get("path") ?? "";
+    sendJson(res, 200, await deps.orchestrator.gitTreeCommits(projectId, ref, dir));
+    return;
+  }
+
+  // GET /api/git/commit?projectId=&ref= — one commit's detail + patch (read-only).
+  if (method === "GET" && path === "/api/git/commit") {
+    const projectId = url.searchParams.get("projectId") ?? undefined;
+    const ref = url.searchParams.get("ref") ?? undefined;
+    sendJson(res, 200, await deps.orchestrator.gitCommit(projectId, ref));
+    return;
+  }
+
+  // GET /api/git/files?projectId=&ref= — all file paths for the "go to file" finder.
+  if (method === "GET" && path === "/api/git/files") {
+    const projectId = url.searchParams.get("projectId") ?? undefined;
+    const ref = url.searchParams.get("ref") ?? undefined;
+    sendJson(res, 200, await deps.orchestrator.gitFiles(projectId, ref));
+    return;
+  }
+
+  // GET /api/git/file-history?projectId=&ref=&path= — commits that touched a file.
+  if (method === "GET" && path === "/api/git/file-history") {
+    const projectId = url.searchParams.get("projectId") ?? undefined;
+    const ref = url.searchParams.get("ref") ?? undefined;
+    const filePath = url.searchParams.get("path") ?? "";
+    sendJson(res, 200, await deps.orchestrator.gitFileHistory(projectId, ref, filePath));
+    return;
+  }
+
   // POST /api/git/cleanup[?projectId=] — delete leftover bureau/task-* branches.
   if (method === "POST" && path === "/api/git/cleanup") {
     const projectId = url.searchParams.get("projectId") ?? undefined;
     sendJson(res, 200, await deps.orchestrator.cleanupTaskBranches(projectId));
+    return;
+  }
+
+  // POST /api/git/op — run a CEO-authorized git operation (destructive ops need confirmation).
+  if (method === "POST" && path === "/api/git/op") {
+    const body = GitOpRequestDto.parse(await readJson(req));
+    sendJson(res, 200, await deps.orchestrator.runGitOp(body));
     return;
   }
 
@@ -174,7 +259,10 @@ async function handle(deps: HttpDeps, req: IncomingMessage, res: ServerResponse)
   // POST /api/chat — a conversation turn with Iris, scoped to a project + thread.
   if (method === "POST" && path === "/api/chat") {
     const body = SendMessageRequestDto.parse(await readJson(req));
-    sendJson(res, 200, await deps.orchestrator.chat(body.content, body.projectId, body.conversationId, body.attachments));
+    const result = body.ephemeral
+      ? await deps.orchestrator.chatEphemeral(body.content, body.projectId, body.history ?? [], body.attachments)
+      : await deps.orchestrator.chat(body.content, body.projectId, body.conversationId, body.attachments);
+    sendJson(res, 200, result);
     return;
   }
 

@@ -11,3 +11,4 @@ export * from "./memory.dto.js";
 export * from "./usage.dto.js";
 export * from "./notification.dto.js";
 export * from "./git.dto.js";
+export * from "./git-op.dto.js";

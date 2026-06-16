@@ -1,7 +1,7 @@
 "use client";
 
 import { useCallback, useEffect, useRef, useState } from "react";
-import { Sparkles, Compass, Pencil, FlaskConical, Eye, FileText, type LucideIcon } from "lucide-react";
+import { Sparkles, Compass, Telescope, Pencil, FlaskConical, Eye, FileText, type LucideIcon } from "lucide-react";
 import type { WorkerStatus } from "@bureau/contracts";
 import { getHub } from "../../lib/api";
 import { useEngineEvents } from "../../lib/useEngineEvents";
@@ -12,6 +12,7 @@ import { cn } from "../../lib/utils";
 // so this roster can never drift from reality.
 const PERSONA: Record<string, { icon: LucideIcon; desc: string }> = {
   plan: { icon: Compass, desc: "Breaks a request into ordered steps and acceptance criteria." },
+  research: { icon: Telescope, desc: "Investigates the codebase and the web/docs, returning a grounded findings brief." },
   edit: { icon: Pencil, desc: "Applies the change in an isolated git worktree, then surfaces the diff." },
   test: { icon: FlaskConical, desc: "Runs the repository's test suite against the change." },
   review: { icon: Eye, desc: "Inspects the diff and flags issues before it reaches you." },
