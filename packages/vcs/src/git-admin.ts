@@ -28,10 +28,24 @@ export interface GitIdentity {
 const idArgs = (id: GitIdentity): string[] => ["-c", `user.name=${id.name}`, "-c", `user.email=${id.email}`];
 
 /**
- * Squash a branch's ENTIRE history into ONE commit holding the current tree, then
- * force-push it (with-lease). Uses an orphan branch so it works with no common base
- * (mirrors the manual `checkout --orphan` flow, but with identity configured so it
- * never fails on "Author identity unknown"). DESTRUCTIVE — rewrites shared history.
+ * Squash a branch's ENTIRE history into ONE root commit holding THAT branch's current
+ * tree, then force-push it (with-lease). DESTRUCTIVE — rewrites shared history.
+ *
+ * Built on plumbing (`commit-tree` of `<branch>^{tree}`) rather than a working-tree
+ * checkout + temp branch, which makes it:
+ *   • correct regardless of which branch the clone has checked out — it always squashes
+ *     the NAMED branch's tree, never "whatever HEAD happens to point at" (the clone is
+ *     normally parked on the base branch by syncToBase, so a checkout-based squash of a
+ *     different branch would silently publish the wrong tree);
+ *   • idempotent — no temp branch is created, so a failed run can't strand a
+ *     `bureau-squash-tmp` ref that would wedge every later squash;
+ *   • worktree-safe — it mutates the working tree only when the named branch IS the
+ *     clone's checked-out HEAD (then a tree-identical `reset --hard` just moves the ref);
+ *     if another worktree pins the branch, `branch -f` fails closed (clear error, no
+ *     data loss).
+ * An empty repo (e.g. after a "delete all files" task) resolves to git's empty-tree
+ * object → a single empty root commit, never "nothing to commit". Identity is passed via
+ * -c so commit-tree never dies on "identity unknown" on a fresh clone.
  */
 export async function squashAllAndForcePush(
   repoPath: string,
@@ -41,13 +55,20 @@ export async function squashAllAndForcePush(
   runner: Runner = defaultRunner
 ): Promise<void> {
   assertSafeRef(branch, "branch");
-  const tmp = "bureau-squash-tmp";
-  await run(runner, "git", ["-C", repoPath, "checkout", "--orphan", tmp]);
-  await run(runner, "git", ["-C", repoPath, "add", "-A"]);
-  await run(runner, "git", ["-C", repoPath, ...idArgs(id), "commit", "-m", message]);
-  // Replace the target branch with the single-commit one, then publish it.
-  await run(runner, "git", ["-C", repoPath, "branch", "-D", branch]);
-  await run(runner, "git", ["-C", repoPath, "branch", "-m", branch]);
+  // The named branch's current tree (raw exit code — `run` would throw on a missing ref).
+  const treeRes = await runner("git", ["-C", repoPath, "rev-parse", "--verify", "--quiet", `${branch}^{tree}`], {});
+  const tree = treeRes.stdout.trim();
+  if (treeRes.code !== 0 || !tree) throw new VcsError(`Squash target branch "${branch}" was not found`);
+  // A brand-new ROOT commit (no -p parent) holding exactly that tree → all history collapses.
+  const commit = (await run(runner, "git", ["-C", repoPath, ...idArgs(id), "commit-tree", tree, "-m", message])).trim();
+  // Point the branch at the single commit. If it's the clone's checked-out HEAD, reset
+  // --hard so HEAD/index/worktree follow (no file change — same tree); else move the ref.
+  const head = (await runner("git", ["-C", repoPath, "symbolic-ref", "--quiet", "HEAD"], {})).stdout.trim();
+  if (head === `refs/heads/${branch}`) {
+    await run(runner, "git", ["-C", repoPath, "reset", "--hard", commit]);
+  } else {
+    await run(runner, "git", ["-C", repoPath, "branch", "-f", branch, commit]);
+  }
   await run(runner, "git", ["-C", repoPath, "push", "--force-with-lease", "origin", branch]);
 }
 

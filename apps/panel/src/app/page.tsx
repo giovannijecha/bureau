@@ -87,7 +87,9 @@ export default function AssistantPage() {
     try {
       // Re-attach the local action confirmations ("Created …" / git-op results) — the
       // engine doesn't persist them, so without this they'd vanish on every reload/switch.
-      setLog([...(await messagesFor(id)), ...loadNotes(id)]);
+      // Merge-sort by timestamp so each chip lands back in its chronological slot rather
+      // than all piling up at the bottom.
+      setLog(mergeByTime(await messagesFor(id), loadNotes(id)));
     } catch {
       setLog(loadNotes(id));
     }
@@ -543,14 +545,37 @@ let localSeq = 0;
 function local(role: "user" | "iris", content: string): Message {
   return { id: `local-${role}-${++localSeq}`, role, content, createdAt: "" };
 }
+// Notes carry a REAL ISO timestamp (same clock/format the engine stamps messages with —
+// localhost, no skew) so on reload they merge-sort back into their chronological slot in
+// the thread instead of all piling up at the bottom.
 function createdNote(taskId: string, title: string): Message {
-  return { id: `created-${taskId}`, role: "system", content: `Created “${title}” — open it in Tasks`, taskId, createdAt: "" };
+  return { id: `created-${taskId}`, role: "system", content: `Created “${title}” — open it in Tasks`, taskId, createdAt: new Date().toISOString() };
 }
 function opNote(text: string): Message {
-  return { id: `gitop-${++localSeq}`, role: "system", content: text, createdAt: "" };
+  return { id: `gitop-${++localSeq}`, role: "system", content: text, createdAt: new Date().toISOString() };
 }
 function errMsg(e: unknown): string {
   return e instanceof Error ? e.message : String(e);
+}
+
+// Merge persisted server messages with local action chips into one chronological log.
+// Sort by ISO `createdAt`; empty timestamps (legacy notes saved before we stamped them)
+// sort LAST, preserving their old end-of-thread placement. The index tiebreak keeps the
+// sort stable (server messages before notes on an exact timestamp tie).
+function mergeByTime(messages: Message[], notes: Message[]): Message[] {
+  return [...messages, ...notes]
+    .map((m, i) => ({ m, i }))
+    .sort((a, b) => {
+      // Missing timestamps (legacy notes saved before we stamped them) sort LAST,
+      // preserving their old end-of-thread placement.
+      const ta = a.m.createdAt,
+        tb = b.m.createdAt;
+      if (!ta && !tb) return a.i - b.i;
+      if (!ta) return 1;
+      if (!tb) return -1;
+      return ta < tb ? -1 : ta > tb ? 1 : a.i - b.i; // index tiebreak keeps the sort stable
+    })
+    .map((x) => x.m);
 }
 
 // A pending task proposal is ephemeral UI state that the engine doesn't persist, so
