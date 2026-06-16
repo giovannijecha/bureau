@@ -21,16 +21,42 @@ import {
   type LucideProps,
 } from "lucide-react";
 import type { EngineInfo, Project, GithubAccount } from "@bureau/contracts";
-import { getConfig, listProjects, ENGINE_URL, getGithubAccount } from "../../lib/api";
+import { getConfig, listProjects, ENGINE_URL, getGithubAccount, setModels } from "../../lib/api";
 import { useTheme } from "../../lib/useTheme";
 import { useSidebar } from "../../lib/sidebar";
+import { Dropdown } from "../../components/Dropdown";
 import { cn } from "../../lib/utils";
+
+// The per-scope model picker (kept in sync with the engine's KNOWN_MODELS).
+const MODEL_OPTIONS = [
+  { value: "claude-opus-4-8", label: "Opus 4.8 — strongest" },
+  { value: "claude-sonnet-4-6", label: "Sonnet 4.6 — cheaper" },
+  { value: "claude-haiku-4-5", label: "Haiku 4.5 — cheapest" },
+];
+const MODEL_SCOPE_ORDER = ["iris", "plan", "research", "edit", "review", "document"];
+const SCOPE_LABELS: Record<string, string> = {
+  iris: "Iris (chat)",
+  plan: "Planner",
+  research: "Researcher",
+  edit: "Editor",
+  review: "Reviewer",
+  document: "Scribe",
+};
 
 export default function SettingsPage() {
   const [info, setInfo] = useState<EngineInfo | null>(null);
   const [projects, setProjects] = useState<Project[]>([]);
   const [online, setOnline] = useState<boolean | null>(null);
   const [account, setAccount] = useState<GithubAccount | null>(null);
+
+  async function changeModel(scope: string, model: string) {
+    setInfo((prev) => (prev ? { ...prev, models: { ...prev.models, [scope]: model } } : prev)); // optimistic
+    try {
+      await setModels({ [scope]: model });
+    } catch {
+      /* the 5s poll re-syncs the authoritative value */
+    }
+  }
 
   useEffect(() => {
     let alive = true;
@@ -146,6 +172,20 @@ export default function SettingsPage() {
             <p className="text-sm text-muted-foreground">Engine offline.</p>
           )}
         </Card>
+
+        {info && info.models && (
+          <Card title="Models" icon={Cpu}>
+            <p className="text-xs text-muted-foreground">
+              Which model each worker runs on. Switch a scope to a cheaper model to cut cost (see Metrics) — chat is a good candidate. Applies for this
+              session; set <code className="font-mono">BUREAU_MODEL_*</code> on the engine for a permanent default.
+            </p>
+            {MODEL_SCOPE_ORDER.filter((s) => info.models[s] !== undefined).map((s) => (
+              <Row key={s} label={SCOPE_LABELS[s] ?? s}>
+                <Dropdown value={info.models[s]!} options={MODEL_OPTIONS} onChange={(m) => void changeModel(s, m)} buttonClassName="h-8" />
+              </Row>
+            ))}
+          </Card>
+        )}
 
         <Card title="Projects" icon={FolderGit2}>
           {projects.length === 0 ? (

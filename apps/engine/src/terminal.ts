@@ -3,11 +3,12 @@
 // fresh shell spawn in the session's cwd (a bare `cd` is intercepted so the working
 // directory persists), output streams back live, Ctrl-C kills the running command.
 //
-// SECURITY: this is the ONLY human-driven command channel. It is localhost-only and
-// every command is typed or explicitly confirmed by the CEO — Iris can PROPOSE a
-// command but it only runs on the CEO's click, so the canPush() agent wall is
-// untouched (no agent can execute autonomously here). Bureau's own secrets
-// (ANTHROPIC_API_KEY / GH_TOKEN / GITHUB_TOKEN) are stripped from the child env.
+// SECURITY: this is the ONLY human-driven command channel. It is localhost-only +
+// Origin-locked (see ws-origin.ts) and every command is typed or explicitly confirmed by
+// the CEO — Iris can PROPOSE a command but it only runs on the CEO's click, so the
+// canPush() agent wall is untouched (no agent can execute autonomously here). Bureau's
+// own creds AND common secret-shaped env-var names (see isSecretEnvName) are stripped
+// from the child env — advisory hardening, not a denylist guarantee.
 
 import { WebSocketServer, WebSocket } from "ws";
 import { spawn, type ChildProcess } from "node:child_process";
@@ -28,8 +29,20 @@ export interface TerminalDeps {
 
 /** Per-command output cap — guards the socket against `cat hugefile`-style floods. */
 const OUTPUT_CAP = 1_000_000;
-/** Bureau's own credentials never belong in a shell the CEO drives. */
-const SCRUB = ["ANTHROPIC_API_KEY", "GH_TOKEN", "GITHUB_TOKEN"];
+/** Bureau's own credentials never belong in a shell the CEO drives — always stripped. */
+const SCRUB_NAMES = new Set(["ANTHROPIC_API_KEY", "GH_TOKEN", "GITHUB_TOKEN"]);
+/** Common secret-shaped env-var names (case-insensitive) — broadens the scrub beyond
+ *  Bureau's own keys so the CEO's other secrets (AWS_*, OPENAI_API_KEY, *_TOKEN, …) don't
+ *  leak into every child shell. Advisory hardening; canPush() remains the sole push gate. */
+const SECRET_NAME_RE = /(?:API[_-]?KEY|SECRET|TOKEN|PASSWORD|PASSWD|PASSPHRASE|PRIVATE[_-]?KEY|ACCESS[_-]?KEY|CREDENTIAL|CLIENT[_-]?SECRET|BEARER)/i;
+/** Names that match the pattern but are SAFE/needed by legit tooling — never scrubbed. */
+const SCRUB_ALLOW = new Set(["SSH_AUTH_SOCK", "SSH_AGENT_PID", "GIT_ASKPASS", "SSH_ASKPASS"]);
+
+/** True if an env-var name looks like a secret that should be kept out of the CEO's shell. */
+export function isSecretEnvName(name: string): boolean {
+  if (SCRUB_ALLOW.has(name)) return false;
+  return SCRUB_NAMES.has(name) || SECRET_NAME_RE.test(name);
+}
 /** How much recent output to keep per project for Iris's chat context. */
 const RECENT_CAP = 4000;
 
@@ -203,7 +216,9 @@ function shellInvocation(cmd: string): { file: string; args: string[] } {
 
 function scrubbedEnv(): NodeJS.ProcessEnv {
   const env = { ...process.env };
-  for (const k of SCRUB) delete env[k];
+  // Strip Bureau's own creds AND common secret-shaped names BEFORE setting the vars
+  // below, so none of the deliberately-set ones can be collaterally removed.
+  for (const k of Object.keys(env)) if (isSecretEnvName(k)) delete env[k];
   // Premium output: ask tools to emit ANSI colour even though stdout isn't a TTY, and
   // disable interactive pagers (`git log`/`git diff` would otherwise hang on `less`).
   env.FORCE_COLOR = "1";

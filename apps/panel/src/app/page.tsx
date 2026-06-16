@@ -24,7 +24,7 @@ import { useProjects } from "../lib/useProjects";
 import { ProjectPicker } from "../components/ProjectPicker";
 import { ConversationsRail } from "../components/ConversationsRail";
 import { GitOpProposalCard } from "../components/GitOpProposalCard";
-import { RunCommand } from "../components/RunCommand";
+import { RunCommand, type RunResult } from "../components/RunCommand";
 import { Markdown } from "../components/Markdown";
 import { FieldError } from "../components/FieldError";
 import { CharCount } from "../components/CharCount";
@@ -51,8 +51,9 @@ export default function AssistantPage() {
   const [gitOp, setGitOp] = useState<GitOpRequest | null>(null);
   const [gitBranches, setGitBranches] = useState<string[]>([]);
   // Commands the CEO confirmed (clicked "Run" on, in Iris's reply) — run inline, output
-  // shown right here in the chat. Ephemeral per view (a fresh thread starts clean).
-  const [runs, setRuns] = useState<{ id: number; command: string }[]>([]);
+  // shown right here in the chat. Persisted per-conversation so finished runs survive a
+  // reload / thread switch (rehydrated as a static transcript, never re-executed).
+  const [runs, setRuns] = useState<{ id: number; command: string; result?: RunResult }[]>([]);
   const runSeq = useRef(0);
   const runInChat = useCallback((command: string) => {
     setRuns((r) => [...r, { id: ++runSeq.current, command }]);
@@ -79,7 +80,9 @@ export default function AssistantPage() {
     setConvId(id);
     setProposal(loadProposal(id)); // restore a pending proposal for this thread
     setGitOp(loadGitOp(id)); // …and a pending git-op proposal
-    setRuns([]); // command runs are per-view; don't carry them across threads
+    const savedRuns = loadRuns(id); // rehydrate finished command transcripts (static)
+    setRuns(savedRuns);
+    runSeq.current = savedRuns.reduce((m, r) => Math.max(m, r.id), runSeq.current); // avoid id collisions
     setError(null);
     try {
       // Re-attach the local action confirmations ("Created …" / git-op results) — the
@@ -224,6 +227,7 @@ export default function AssistantPage() {
       /* ignore */
     }
     clearNotes(id); // drop the thread's persisted action chips + pending proposals
+    clearRuns(id);
     persistProposal(id, null);
     persistGitOp(id, null);
     await refreshConversations();
@@ -322,7 +326,12 @@ export default function AssistantPage() {
                     <RunCommand
                       command={r.command}
                       projectId={activeId ?? undefined}
-                      onDismiss={() => setRuns((rs) => rs.filter((x) => x.id !== r.id))}
+                      {...(r.result ? { initial: r.result } : {})}
+                      onComplete={(result) => appendRun(convId, { id: r.id, command: r.command, result })}
+                      onDismiss={() => {
+                        setRuns((rs) => rs.filter((x) => x.id !== r.id));
+                        removeRun(convId, r.id);
+                      }}
                     />
                   </div>
                 </div>
@@ -614,6 +623,43 @@ function clearNotes(convId: string): void {
   if (typeof window === "undefined") return;
   try {
     window.localStorage.removeItem(NOTES_KEY(convId));
+  } catch {
+    /* ignore */
+  }
+}
+
+// Finished inline command runs — persisted per conversation so a transcript survives
+// reload / thread-switch. Rehydrated STATICALLY (RunCommand `initial`), never re-executed.
+type StoredRun = { id: number; command: string; result: RunResult };
+const RUNS_KEY = (convId: string) => `bureau.runs.${convId}`;
+function loadRuns(convId: string | null): StoredRun[] {
+  if (!convId || typeof window === "undefined") return [];
+  try {
+    const raw = window.localStorage.getItem(RUNS_KEY(convId));
+    return raw ? (JSON.parse(raw) as StoredRun[]) : [];
+  } catch {
+    return [];
+  }
+}
+function saveRuns(convId: string, runs: StoredRun[]): void {
+  try {
+    window.localStorage.setItem(RUNS_KEY(convId), JSON.stringify(runs.slice(-30))); // bound localStorage
+  } catch {
+    /* storage full / unavailable */
+  }
+}
+function appendRun(convId: string | null, run: StoredRun): void {
+  if (!convId || typeof window === "undefined") return;
+  saveRuns(convId, [...loadRuns(convId).filter((r) => r.id !== run.id), run]); // de-dupe by id
+}
+function removeRun(convId: string | null, id: number): void {
+  if (!convId || typeof window === "undefined") return;
+  saveRuns(convId, loadRuns(convId).filter((r) => r.id !== id));
+}
+function clearRuns(convId: string): void {
+  if (typeof window === "undefined") return;
+  try {
+    window.localStorage.removeItem(RUNS_KEY(convId));
   } catch {
     /* ignore */
   }

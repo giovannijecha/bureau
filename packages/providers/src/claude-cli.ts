@@ -9,6 +9,12 @@
 import { spawn } from "node:child_process";
 import type { Provider, AuthStrategy, Message, ProviderResponse, SendOptions } from "./provider.js";
 import { DEFAULT_MODEL } from "./anthropic.js";
+import { ProviderError, isRetryableError } from "./errors.js";
+import { withRetry } from "./retry.js";
+
+/** Stderr prefix the runner stamps on a timeout, so the retry layer can classify a
+ *  timed-out run as transient (retryable for read-only calls) vs a real CLI error. */
+export const CLI_TIMEOUT_SENTINEL = "BUREAU_CLI_TIMEOUT ";
 
 export interface CliResult {
   readonly stdout: string;
@@ -58,7 +64,7 @@ export const defaultCliRunner: CliRunner = (cli, args, input, cwd, timeoutMs, on
       if (timer) clearTimeout(timer);
       resolve(
         timedOut
-          ? { stdout, stderr: `claude CLI timed out after ${timeoutMs}ms`, code: -1 }
+          ? { stdout, stderr: `${CLI_TIMEOUT_SENTINEL}claude CLI timed out after ${timeoutMs}ms`, code: -1 }
           : { stdout, stderr, code: code ?? -1 }
       );
     });
@@ -115,7 +121,7 @@ export class ClaudeCliProvider implements Provider {
     }
     const { system, prompt } = renderCliPrompt(messages);
     const tools = options?.tools ?? this.tools;
-    const args = ["-p", "--output-format", "json", "--model", this.model];
+    const args = ["-p", "--output-format", "json", "--model", options?.model ?? this.model];
     // Append (don't replace) so Claude Code's default tool/safety guidance is kept.
     if (system !== undefined) args.push("--append-system-prompt", system);
     if (options?.acceptEdits) {
@@ -128,13 +134,16 @@ export class ClaudeCliProvider implements Provider {
     // Tool allowlist LAST (variadic --tools consumes the rest).
     if (tools.length > 0) args.push("--tools", ...tools);
 
-    const { stdout, stderr, code } = await this.run(this.cli, args, prompt, options?.cwd, this.timeoutMs);
-    if (code !== 0) {
-      throw new Error(`claude CLI exited with code ${code}: ${stderr.trim() || "(no stderr)"}`);
-    }
-    const result = parseCliJson(stdout);
-    // The CLI reports the model it used; fall back to the configured one.
-    return { ...result, model: result.model ?? this.model };
+    const exec = async (): Promise<ProviderResponse> => {
+      const { stdout, stderr, code } = await this.run(this.cli, args, prompt, options?.cwd, this.timeoutMs);
+      if (code !== 0) throw cliExitError(code, stderr);
+      const result = parseCliJson(stdout);
+      // The CLI reports the model it used; fall back to the configured one.
+      return { ...result, model: result.model ?? (options?.model ?? this.model) };
+    };
+    // The edit worker (acceptEdits) is NEVER retried — re-running could double-apply a
+    // partial edit. Read-only calls (plan/review/research/chat) retry transient failures.
+    return options?.acceptEdits ? exec() : withRetry(exec, { isRetryable: isRetryableError });
   }
 
   async stream(
@@ -147,10 +156,11 @@ export class ClaudeCliProvider implements Provider {
     }
     const { system, prompt } = renderCliPrompt(messages);
     const tools = options?.tools ?? this.tools;
+    const model = options?.model ?? this.model;
     // stream-json emits newline-delimited events as the agent works; -p mode
     // requires --verbose with it. The edit flags (acceptEdits/add-dir/tools) all
     // still apply — only the output FORMAT differs from send().
-    const args = ["-p", "--output-format", "stream-json", "--verbose", "--model", this.model];
+    const args = ["-p", "--output-format", "stream-json", "--verbose", "--model", model];
     if (system !== undefined) args.push("--append-system-prompt", system);
     if (options?.acceptEdits) {
       args.push("--permission-mode", "acceptEdits");
@@ -159,25 +169,38 @@ export class ClaudeCliProvider implements Provider {
     for (const dir of options?.addDirs ?? []) args.push("--add-dir", dir);
     if (tools.length > 0) args.push("--tools", ...tools);
 
-    // Translate each COMPLETE json line into a human progress chunk as it arrives.
-    // stdout chunks don't align to line boundaries, so buffer until a newline.
-    let buffer = "";
-    const onStdout = (chunk: string): void => {
-      buffer += chunk;
-      let nl: number;
-      while ((nl = buffer.indexOf("\n")) >= 0) {
-        const line = buffer.slice(0, nl);
-        buffer = buffer.slice(nl + 1);
-        emitStreamChunk(line, onChunk);
-      }
+    const exec = async (): Promise<ProviderResponse> => {
+      // Translate each COMPLETE json line into a human progress chunk as it arrives.
+      // stdout chunks don't align to line boundaries, so buffer until a newline. The
+      // buffer is per-attempt (declared here) so a retry starts clean.
+      let buffer = "";
+      const onStdout = (chunk: string): void => {
+        buffer += chunk;
+        let nl: number;
+        while ((nl = buffer.indexOf("\n")) >= 0) {
+          const line = buffer.slice(0, nl);
+          buffer = buffer.slice(nl + 1);
+          emitStreamChunk(line, onChunk);
+        }
+      };
+      const { stdout, stderr, code } = await this.run(this.cli, args, prompt, options?.cwd, this.timeoutMs, onStdout);
+      if (code !== 0) throw cliExitError(code, stderr);
+      return parseStreamJson(stdout, model);
     };
-
-    const { stdout, stderr, code } = await this.run(this.cli, args, prompt, options?.cwd, this.timeoutMs, onStdout);
-    if (code !== 0) {
-      throw new Error(`claude CLI exited with code ${code}: ${stderr.trim() || "(no stderr)"}`);
-    }
-    return parseStreamJson(stdout, this.model);
+    // Edit worker: run once (never re-run a possibly-partial edit). Read-only: retry.
+    return options?.acceptEdits ? exec() : withRetry(exec, { isRetryable: isRetryableError });
   }
+}
+
+/** A non-zero CLI exit → a typed error. A timeout (stamped with the sentinel) is
+ *  TRANSIENT (retryable for read-only calls); any other non-zero exit is PERMANENT
+ *  (a real CLI error/refusal the retry layer must not re-run). */
+function cliExitError(code: number, stderr: string): ProviderError {
+  const timedOut = stderr.startsWith(CLI_TIMEOUT_SENTINEL);
+  return new ProviderError(
+    `claude CLI ${timedOut ? "timed out" : `exited with code ${code}`}: ${stderr.trim() || "(no stderr)"}`,
+    { kind: timedOut ? "transient" : "permanent" }
+  );
 }
 
 // ---------------------------------------------------------------------------
@@ -280,7 +303,8 @@ export function parseStreamJson(stdout: string, fallbackModel: string): Provider
     } else if (obj.type === "result") {
       if (obj.is_error === true || (typeof obj.subtype === "string" && obj.subtype !== "success")) {
         const detail = typeof obj.result === "string" ? obj.result.slice(0, 200) : String(obj.subtype ?? "error");
-        throw new Error(`claude CLI reported an error (${String(obj.subtype ?? "error")}): ${detail}`);
+        // A CLI-reported error (refusal / max-turns / in-session error) is NOT transient.
+        throw new ProviderError(`claude CLI reported an error (${String(obj.subtype ?? "error")}): ${detail}`, { kind: "permanent" });
       }
       if (typeof obj.result === "string") content = obj.result;
       if (typeof obj.usage?.input_tokens === "number") inputTokens = obj.usage.input_tokens;
@@ -312,7 +336,8 @@ export function parseCliJson(stdout: string): ProviderResponse {
   if (obj.is_error === true) {
     const detail = typeof obj.result === "string" ? obj.result.slice(0, 200) : "(no detail)";
     const subtype = typeof obj.subtype === "string" ? obj.subtype : "unknown";
-    throw new Error(`claude CLI reported an error (${subtype}): ${detail}`);
+    // A CLI-reported error is NOT transient — don't let the retry layer re-run it.
+    throw new ProviderError(`claude CLI reported an error (${subtype}): ${detail}`, { kind: "permanent" });
   }
   return {
     content: typeof obj.result === "string" ? obj.result : "",

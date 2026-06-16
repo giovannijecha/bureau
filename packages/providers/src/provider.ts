@@ -23,6 +23,9 @@ export interface ProviderResponse {
 
 export interface SendOptions {
   readonly maxTokens?: number;
+  /** Override the model for THIS call (engine resolves it per scope); falls back to the
+   *  provider's configured default. Lets chat run on a cheaper model than the workers. */
+  readonly model?: string;
   /**
    * Working directory for an AGENTIC provider (the `claude` CLI). Any tool the
    * model runs is confined to this directory — for the `edit` capability it is
