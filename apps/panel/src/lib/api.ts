@@ -62,6 +62,11 @@ export async function getGithubAccount(): Promise<GithubAccount> {
   return json(await fetch(`${BASE}/api/github-account`));
 }
 
+/** Set the per-scope model policy (Settings). Returns the updated map. */
+export async function setModels(models: Record<string, string>): Promise<{ models: Record<string, string> }> {
+  return json(await postJson("/api/config/models", { models }));
+}
+
 /** The repo's pull requests (read-only, via gh). */
 export async function getPrs(projectId?: string): Promise<PullRequest[]> {
   const suffix = projectId ? `?projectId=${encodeURIComponent(projectId)}` : "";

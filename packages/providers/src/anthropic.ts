@@ -10,6 +10,8 @@
 
 import type Anthropic from "@anthropic-ai/sdk";
 import type { Provider, AuthStrategy, Message, ProviderResponse, SendOptions } from "./provider.js";
+import { ProviderError, isRetryableError } from "./errors.js";
+import { withRetry } from "./retry.js";
 
 export const DEFAULT_MODEL = "claude-opus-4-8";
 const DEFAULT_MAX_TOKENS = 16_000; // non-streaming: stay under SDK HTTP timeouts
@@ -40,12 +42,19 @@ export class AnthropicProvider implements Provider {
   async send(messages: Message[], options?: SendOptions): Promise<ProviderResponse> {
     const { system, turns } = splitMessages(messages);
     assertHasTurn(turns);
-    const message = await this.client.messages.create({
-      model: this.model,
-      max_tokens: options?.maxTokens ?? DEFAULT_MAX_TOKENS,
-      ...(system !== undefined ? { system } : {}),
-      messages: turns,
-    });
+    // Retry only the network round-trip on transient failures; toProviderResponse
+    // (which throws on a refusal/truncation) runs OUTSIDE the retry so those are never
+    // retried — they aren't transient.
+    const message = await withRetry(
+      () =>
+        this.client.messages.create({
+          model: options?.model ?? this.model,
+          max_tokens: options?.maxTokens ?? DEFAULT_MAX_TOKENS,
+          ...(system !== undefined ? { system } : {}),
+          messages: turns,
+        }),
+      { isRetryable: isRetryableError }
+    );
     return toProviderResponse(message);
   }
 
@@ -56,14 +65,18 @@ export class AnthropicProvider implements Provider {
   ): Promise<ProviderResponse> {
     const { system, turns } = splitMessages(messages);
     assertHasTurn(turns);
-    const stream = this.client.messages.stream({
-      model: this.model,
-      max_tokens: options?.maxTokens ?? DEFAULT_STREAM_MAX_TOKENS,
-      ...(system !== undefined ? { system } : {}),
-      messages: turns,
-    });
-    stream.on("text", (delta: string) => onChunk(delta));
-    const final = await stream.finalMessage();
+    // A retried stream re-creates the stream and re-emits its text deltas; that's
+    // harmless (only the final summary is persisted) — the engine never double-counts.
+    const final = await withRetry(async () => {
+      const stream = this.client.messages.stream({
+        model: options?.model ?? this.model,
+        max_tokens: options?.maxTokens ?? DEFAULT_STREAM_MAX_TOKENS,
+        ...(system !== undefined ? { system } : {}),
+        messages: turns,
+      });
+      stream.on("text", (delta: string) => onChunk(delta));
+      return stream.finalMessage();
+    }, { isRetryable: isRetryableError });
     return toProviderResponse(final);
   }
 }
@@ -102,8 +115,23 @@ export function splitMessages(messages: Message[]): {
   };
 }
 
-/** Flatten an Anthropic message into the provider-neutral response shape. */
+/**
+ * Flatten an Anthropic message into the provider-neutral response shape — but FAIL LOUD
+ * on a non-success outcome a worker must never treat as a real result: a refusal
+ * (stop_reason 'refusal' or a refusal content block) or a truncation (stop_reason
+ * 'max_tokens', which would hand a worker an incomplete edit). These throw a typed
+ * ProviderError (non-retryable). end_turn / stop_sequence / tool_use / pause_turn are
+ * treated as success (pause_turn returns partial content only with server-side tools,
+ * which Bureau doesn't use yet — revisit if that changes).
+ */
 export function toProviderResponse(message: Anthropic.Message): ProviderResponse {
+  const hasRefusalBlock = message.content.some((b) => (b as { type?: string }).type === "refusal");
+  if (message.stop_reason === "refusal" || hasRefusalBlock) {
+    throw new ProviderError("The model declined to complete this request (refusal).", { kind: "refusal" });
+  }
+  if (message.stop_reason === "max_tokens") {
+    throw new ProviderError("The model response was cut off (max_tokens) — the output is incomplete.", { kind: "truncated" });
+  }
   const content = message.content
     .filter((b): b is Anthropic.TextBlock => b.type === "text")
     .map((b) => b.text)

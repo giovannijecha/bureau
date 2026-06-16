@@ -95,6 +95,73 @@ describe("AnthropicProvider — send", () => {
     const provider = new AnthropicProvider({ authStrategy: stubStrategy, client });
     expect(provider.name).toBe(`anthropic:${DEFAULT_MODEL}`);
   });
+
+  it("honors a per-call model override (options.model)", async () => {
+    const { client, calls } = fakeClient({ createReturn: textMessage("ok") });
+    const provider = new AnthropicProvider({ authStrategy: stubStrategy, client });
+    await provider.send([{ role: "user", content: "hi" }], { model: "claude-sonnet-4-6" });
+    expect(calls.create.model).toBe("claude-sonnet-4-6");
+  });
+});
+
+describe("AnthropicProvider — refusal / truncation / retry (reliability)", () => {
+  it("throws on a refusal stop_reason — never a phantom success", async () => {
+    const { client } = fakeClient({ createReturn: { ...textMessage(""), stop_reason: "refusal" } });
+    const provider = new AnthropicProvider({ authStrategy: stubStrategy, client });
+    await expect(provider.send([{ role: "user", content: "x" }])).rejects.toThrow(/refus|declined/i);
+  });
+
+  it("throws on a refusal content block", async () => {
+    const { client } = fakeClient({ createReturn: { content: [{ type: "refusal" }], usage: { input_tokens: 1, output_tokens: 0 } } });
+    const provider = new AnthropicProvider({ authStrategy: stubStrategy, client });
+    await expect(provider.send([{ role: "user", content: "x" }])).rejects.toThrow(/refus|declined/i);
+  });
+
+  it("throws on a max_tokens truncation — an incomplete result must not pass", async () => {
+    const { client } = fakeClient({ createReturn: { ...textMessage("partial"), stop_reason: "max_tokens" } });
+    const provider = new AnthropicProvider({ authStrategy: stubStrategy, client });
+    await expect(provider.send([{ role: "user", content: "x" }])).rejects.toThrow(/cut off|incomplete|max_tokens/i);
+  });
+
+  it("a normal end_turn still resolves", async () => {
+    const { client } = fakeClient({ createReturn: { ...textMessage("done"), stop_reason: "end_turn" } });
+    const provider = new AnthropicProvider({ authStrategy: stubStrategy, client });
+    expect((await provider.send([{ role: "user", content: "x" }])).content).toBe("done");
+  });
+
+  it("retries a transient 5xx, then succeeds", async () => {
+    let n = 0;
+    const client: any = {
+      messages: {
+        create: vi.fn(async () => {
+          if (n++ < 2) {
+            const e: any = new Error("overloaded");
+            e.status = 529;
+            throw e;
+          }
+          return textMessage("ok");
+        }),
+      },
+    };
+    const provider = new AnthropicProvider({ authStrategy: stubStrategy, client });
+    expect((await provider.send([{ role: "user", content: "x" }])).content).toBe("ok");
+    expect(client.messages.create).toHaveBeenCalledTimes(3);
+  });
+
+  it("does NOT retry a 4xx — fails on the first call", async () => {
+    const client: any = {
+      messages: {
+        create: vi.fn(async () => {
+          const e: any = new Error("bad request");
+          e.status = 400;
+          throw e;
+        }),
+      },
+    };
+    const provider = new AnthropicProvider({ authStrategy: stubStrategy, client });
+    await expect(provider.send([{ role: "user", content: "x" }])).rejects.toThrow(/bad request/);
+    expect(client.messages.create).toHaveBeenCalledTimes(1);
+  });
 });
 
 describe("AnthropicProvider — stream", () => {

@@ -69,7 +69,10 @@ export async function irisRespond(
   repoContext?: string,
   /** Image files the CEO attached to the latest message — saved on disk so the
    *  agent can VIEW them with its Read tool. */
-  attachmentImages?: readonly { name: string; path: string }[]
+  attachmentImages?: readonly { name: string; path: string }[],
+  /** Which model to run the chat turn on (engine-resolved 'iris' scope); falls back to
+   *  the provider default when unset. */
+  modelOverride?: string
 ): Promise<IrisTurn> {
   // Images can't be inlined as text — tell Iris where they are so she Reads (views) them.
   const imgNote =
@@ -92,7 +95,7 @@ You are currently working on the repository ${project.owner}/${project.name} (de
   // Let the CLI read the attachments' directory (outside the repo) so Read can view them.
   const addDirs =
     attachmentImages && attachmentImages.length > 0 ? [...new Set(attachmentImages.map((a) => dirname(a.path)))] : undefined;
-  const opts = { maxTokens: 4000, ...(cwd !== undefined ? { cwd } : {}), ...(addDirs ? { addDirs } : {}) };
+  const opts = { maxTokens: 4000, ...(cwd !== undefined ? { cwd } : {}), ...(addDirs ? { addDirs } : {}), ...(modelOverride !== undefined ? { model: modelOverride } : {}) };
 
   const first = await provider.send(messages, opts);
   let raw = first.content;

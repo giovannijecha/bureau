@@ -7,11 +7,24 @@ import {
   parseCliJson,
   parseStreamJson,
   emitStreamChunk,
+  CLI_TIMEOUT_SENTINEL,
   type CliRunner,
   type CliResult,
 } from "../src/claude-cli.js";
 import { DEFAULT_MODEL } from "../src/anthropic.js";
 import type { Message } from "../src/provider.js";
+
+/** A runner that returns a queued result per call (last one repeats), counting calls. */
+function seqRunner(results: CliResult[]): { run: CliRunner; count: () => number } {
+  let i = 0;
+  const run: CliRunner = async (_cli, _args, _input, _cwd, _t, onStdout) => {
+    const r = results[Math.min(i, results.length - 1)]!;
+    i++;
+    onStdout?.(r.stdout);
+    return r;
+  };
+  return { run, count: () => i };
+}
 
 const stubStrategy = { kind: "cli-delegation" as const, isAvailable: () => true };
 
@@ -153,6 +166,48 @@ describe("ClaudeCliProvider — stream", () => {
     const { run } = fakeRunner({ stdout: "", stderr: "", code: 0 });
     const provider = new ClaudeCliProvider({ authStrategy: stubStrategy, run });
     await expect(provider.stream([{ role: "system", content: "x" }], () => {})).rejects.toThrow(/at least one/);
+  });
+});
+
+describe("ClaudeCliProvider — retry & reliability", () => {
+  const timeout = (): CliResult => ({ stdout: "", stderr: `${CLI_TIMEOUT_SENTINEL}claude CLI timed out after 240000ms`, code: -1 });
+
+  it("retries a read-only call after a TIMEOUT, then succeeds", async () => {
+    const { run, count } = seqRunner([timeout(), { stdout: okJson("recovered"), stderr: "", code: 0 }]);
+    const provider = new ClaudeCliProvider({ authStrategy: stubStrategy, run });
+    const res = await provider.send([{ role: "user", content: "read something" }]); // read-only (no acceptEdits)
+    expect(res.content).toBe("recovered");
+    expect(count()).toBe(2); // one retry
+  });
+
+  it("does NOT retry a non-timeout CLI error — single call", async () => {
+    const { run, count } = seqRunner([{ stdout: "", stderr: "boom", code: 2 }]);
+    const provider = new ClaudeCliProvider({ authStrategy: stubStrategy, run });
+    await expect(provider.send([{ role: "user", content: "x" }])).rejects.toThrow(/exited with code 2/);
+    expect(count()).toBe(1);
+  });
+
+  it("NEVER retries the edit worker (acceptEdits), even on a timeout — no double-apply of a partial edit", async () => {
+    const { run, count } = seqRunner([timeout(), { stdout: okJson("late"), stderr: "", code: 0 }]);
+    const provider = new ClaudeCliProvider({ authStrategy: stubStrategy, run });
+    await expect(
+      provider.stream([{ role: "user", content: "edit" }], () => {}, { acceptEdits: true, cwd: "/wt" })
+    ).rejects.toThrow(/timed out/);
+    expect(count()).toBe(1); // ran exactly once
+  });
+
+  it("honors a per-call model override on the CLI --model arg", async () => {
+    const { run } = fakeRunner({ stdout: okJson("x"), stderr: "", code: 0 });
+    const provider = new ClaudeCliProvider({ authStrategy: stubStrategy, run });
+    // capture via a wrapping runner
+    const seen: string[][] = [];
+    const recording: CliRunner = async (cli, args, input, cwd, t, onStdout) => {
+      seen.push(args);
+      return run(cli, args, input, cwd, t, onStdout);
+    };
+    const p2 = new ClaudeCliProvider({ authStrategy: stubStrategy, run: recording });
+    await p2.send([{ role: "user", content: "hi" }], { model: "claude-sonnet-4-6" });
+    expect(seen[0]).toContain("claude-sonnet-4-6");
   });
 });
 

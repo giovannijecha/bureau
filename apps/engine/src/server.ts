@@ -32,6 +32,7 @@ import { WsHub } from "./ws.js";
 import { TerminalHub } from "./terminal.js";
 import { createHttpServer } from "./http.js";
 import { sameMachineOrigin } from "./ws-origin.js";
+import { modelPolicyFromEnv } from "./models.js";
 import type { EventSink, VcsPort } from "./ports.js";
 
 function env(name: string, fallback?: string): string {
@@ -165,6 +166,7 @@ async function main(): Promise<void> {
     memory,
     usage,
     notifications,
+    models: modelPolicyFromEnv(),
     ids: () => randomUUID(),
     clock: () => new Date().toISOString(),
   });

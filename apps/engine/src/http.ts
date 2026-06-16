@@ -14,7 +14,7 @@
 //   POST /api/tasks/:id/open-pr   push → open a PR for review on GitHub, NO merge
 
 import { createServer, type IncomingMessage, type ServerResponse, type Server } from "node:http";
-import { SendMessageRequestDto, CreateTaskRequestDto, SaveNoteRequestDto, GateDecisionRequestDto, GitOpRequestDto } from "@bureau/contracts";
+import { SendMessageRequestDto, CreateTaskRequestDto, SaveNoteRequestDto, GateDecisionRequestDto, GitOpRequestDto, SetModelsRequestDto } from "@bureau/contracts";
 import type { TaskId } from "@bureau/core";
 import { VcsError } from "@bureau/vcs";
 import { Orchestrator, OrchestratorError } from "./orchestrator.js";
@@ -82,6 +82,13 @@ async function handle(deps: HttpDeps, req: IncomingMessage, res: ServerResponse)
   // GET /api/config — engine status for Settings.
   if (method === "GET" && path === "/api/config") {
     sendJson(res, 200, deps.orchestrator.engineInfo());
+    return;
+  }
+
+  // POST /api/config/models — set the per-scope model policy (validated; 422 on unknown).
+  if (method === "POST" && path === "/api/config/models") {
+    const body = SetModelsRequestDto.parse(await readJson(req));
+    sendJson(res, 200, { models: deps.orchestrator.setModels(body.models) });
     return;
   }
 

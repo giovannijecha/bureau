@@ -33,6 +33,7 @@ import { mkdir, writeFile, rm } from "node:fs/promises";
 
 import type { TaskStore, VcsPort, EventSink, MessageLog, ConversationStore, MemoryPort, UsagePort, NotificationStore, RepoView, GitAdminOp } from "./ports.js";
 import { ProjectRegistry, toProjectDto, type ProjectConfig } from "./projects.js";
+import { defaultModelPolicy, resolveModel, isKnownModel, MODEL_SCOPES, type ModelPolicy } from "./models.js";
 import { OrchestratorError } from "./errors.js";
 import { irisRespond } from "./iris.js";
 import { buildHub } from "./hub.js";
@@ -40,6 +41,12 @@ import { journalPath, journalMarkdown, notePath } from "./memory.js";
 import { ASSIGNEE } from "./summary.js";
 
 export { OrchestratorError };
+
+// Per-step wall-clock backstop. Set ABOVE each worker's OWN self-timeout (CLI 240s,
+// test runner 600s) so a normal slow-but-progressing run never trips it — this only
+// catches a hung promise that never settles (e.g. a wedged stream).
+const STEP_TIMEOUT_MS = 300_000; // 5 min — > the 240s CLI cap
+const TEST_STEP_TIMEOUT_MS = 660_000; // 11 min — > the test runner's 600s self-timeout
 
 export interface OrchestratorDeps {
   readonly store: TaskStore;
@@ -54,6 +61,8 @@ export interface OrchestratorDeps {
   readonly memory: MemoryPort;
   readonly usage: UsagePort;
   readonly notifications: NotificationStore;
+  /** Per-scope model policy (iris + each worker). Defaults to all-Opus when omitted. */
+  readonly models?: ModelPolicy;
   readonly ids: () => string;
   readonly clock: () => string;
 }
@@ -63,8 +72,12 @@ const DEFAULT_CONVERSATION_TITLE = "New chat";
 export class Orchestrator {
   /** In-flight background pipelines, keyed by task id (for settle / graceful drain). */
   private readonly running = new Map<string, Promise<void>>();
+  /** Which model each scope runs on — mutable (the CEO can change it in Settings). */
+  private readonly modelPolicy: ModelPolicy;
 
-  constructor(private readonly d: OrchestratorDeps) {}
+  constructor(private readonly d: OrchestratorDeps) {
+    this.modelPolicy = { ...(d.models ?? defaultModelPolicy()) };
+  }
 
   /** The projects the CEO can work on. */
   listProjects(): Project[] {
@@ -355,7 +368,21 @@ export class Orchestrator {
       provider: { name: this.d.provider.name, available: this.providerAvailable },
       projectCount: this.d.projects.list().length,
       inflightTasks: this.running.size,
+      models: { ...this.modelPolicy },
     };
+  }
+
+  /** Set the model for one or more scopes (Settings). Validates each id against the
+   *  known list (so an unpriced/unsupported model can't be selected) and ignores any
+   *  unknown scope. In-memory for the session — env (BUREAU_MODEL_*) is the durable set. */
+  setModels(models: Record<string, string>): Record<string, string> {
+    for (const [scope, model] of Object.entries(models)) {
+      if (!isKnownModel(model)) {
+        throw new OrchestratorError(`Unknown model "${model}" — choose a supported model.`, 422);
+      }
+      if ((MODEL_SCOPES as readonly string[]).includes(scope)) this.modelPolicy[scope] = model;
+    }
+    return { ...this.modelPolicy };
   }
 
   /** A conversation turn with Iris, scoped to a project + conversation thread.
@@ -398,7 +425,7 @@ export class Orchestrator {
         .join("\n\n") || undefined;
     let turn;
     try {
-      turn = await irisRespond(this.d.provider, history, irisProject, cwd, context, images);
+      turn = await irisRespond(this.d.provider, history, irisProject, cwd, context, images, resolveModel(this.modelPolicy, "iris"));
     } finally {
       // The agent has Read the images during the turn — drop the temp dir so image
       // attachments don't accumulate on disk over the daemon's life.
@@ -454,7 +481,7 @@ export class Orchestrator {
 
     let turn;
     try {
-      turn = await irisRespond(this.d.provider, msgs, irisProject, cwd, context, images);
+      turn = await irisRespond(this.d.provider, msgs, irisProject, cwd, context, images, resolveModel(this.modelPolicy, "iris"));
     } finally {
       if (imagesDir) await rm(imagesDir, { recursive: true, force: true }).catch(() => {});
     }
@@ -692,6 +719,19 @@ export class Orchestrator {
 
   /** The background pipeline. Race-safe against a concurrent stop: it reloads the
    *  task before every transition and bails the moment it's no longer running. */
+  /** Race a worker's execute() against a wall-clock budget so a hung/never-settling
+   *  worker can't park a task forever. On timeout it rejects → the existing pipeline
+   *  catch fails the step + aborts. The underlying promise (and any CLI subprocess,
+   *  which self-kills sooner) is left to settle/clean up on its own. */
+  private withStepTimeout<T>(capability: string, p: Promise<T>): Promise<T> {
+    const ms = capability === "test" ? TEST_STEP_TIMEOUT_MS : STEP_TIMEOUT_MS;
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    const timeout = new Promise<never>((_resolve, reject) => {
+      timer = setTimeout(() => reject(new Error(`Step "${capability}" exceeded its time budget (${Math.round(ms / 1000)}s).`)), ms);
+    });
+    return Promise.race([p, timeout]).finally(() => clearTimeout(timer));
+  }
+
   private async runPipeline(taskId: string): Promise<void> {
     const branch = this.branchFor(taskId);
     let currentStepId: StepId | undefined;
@@ -736,16 +776,20 @@ export class Orchestrator {
         const reviewDiff =
           step.capability === "review" ? await vcs.reviewDiff(worktreePath, `origin/${project.baseBranch}`) : undefined;
         const testCommand = step.capability === "test" ? project.testCommand : undefined;
-        const out = await this.d.capabilities.get(step.capability).execute({
-          step,
-          worktreePath,
-          context: this.stepContext(taskId, planned.id),
-          ...(reviewDiff !== undefined ? { diff: reviewDiff } : {}),
-          ...(testCommand !== undefined ? { testCommand } : {}),
-          // Pipe the worker's live output to the panel as it works.
-          onChunk: (chunk) =>
-            this.d.events.emit({ type: "step_progress", taskId, stepId: planned.id, capability: step.capability, chunk }),
-        });
+        const out = await this.withStepTimeout(
+          step.capability,
+          this.d.capabilities.get(step.capability).execute({
+            step,
+            worktreePath,
+            context: this.stepContext(taskId, planned.id),
+            model: resolveModel(this.modelPolicy, step.capability),
+            ...(reviewDiff !== undefined ? { diff: reviewDiff } : {}),
+            ...(testCommand !== undefined ? { testCommand } : {}),
+            // Pipe the worker's live output to the panel as it works.
+            onChunk: (chunk) =>
+              this.d.events.emit({ type: "step_progress", taskId, stepId: planned.id, capability: step.capability, chunk }),
+          })
+        );
         this.recordUsage(step.capability, taskId, out.usage); // tokens were spent regardless of a concurrent stop
         if (this.requireTask(taskId).status !== "executing") return; // stopped during the step
         if (out.artifacts.length > 0) this.addArtifacts(this.requireTask(taskId), out.artifacts);
@@ -862,15 +906,19 @@ export class Orchestrator {
         const reviewDiff =
           step.capability === "review" ? await vcs.reviewDiff(worktreePath, `origin/${project.baseBranch}`) : undefined;
         const testCommand = step.capability === "test" ? project.testCommand : undefined;
-        const out = await this.d.capabilities.get(step.capability).execute({
-          step,
-          worktreePath,
-          context: this.stepContext(taskId, planned.id, changeRequest),
-          ...(reviewDiff !== undefined ? { diff: reviewDiff } : {}),
-          ...(testCommand !== undefined ? { testCommand } : {}),
-          onChunk: (chunk) =>
-            this.d.events.emit({ type: "step_progress", taskId, stepId: planned.id, capability: step.capability, chunk }),
-        });
+        const out = await this.withStepTimeout(
+          step.capability,
+          this.d.capabilities.get(step.capability).execute({
+            step,
+            worktreePath,
+            context: this.stepContext(taskId, planned.id, changeRequest),
+            model: resolveModel(this.modelPolicy, step.capability),
+            ...(reviewDiff !== undefined ? { diff: reviewDiff } : {}),
+            ...(testCommand !== undefined ? { testCommand } : {}),
+            onChunk: (chunk) =>
+              this.d.events.emit({ type: "step_progress", taskId, stepId: planned.id, capability: step.capability, chunk }),
+          })
+        );
         this.recordUsage(step.capability, taskId, out.usage);
         if (this.requireTask(taskId).status !== "executing") return; // stopped during the step
         if (out.artifacts.length > 0) this.addArtifacts(this.requireTask(taskId), out.artifacts);

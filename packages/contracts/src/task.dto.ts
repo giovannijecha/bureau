@@ -79,8 +79,16 @@ export const EngineInfoDto = z.object({
   provider: z.object({ name: z.string(), available: z.boolean() }),
   projectCount: z.number().int().nonnegative(),
   inflightTasks: z.number().int().nonnegative(),
+  /** The model each scope runs on (scope → model id): "iris" + each worker capability. */
+  models: z.record(z.string(), z.string()),
 });
 export type EngineInfo = z.infer<typeof EngineInfoDto>;
+
+/** Settings write: set the model for one or more scopes (the engine validates each id). */
+export const SetModelsRequestDto = z.object({
+  models: z.record(z.string(), z.string()),
+});
+export type SetModelsRequest = z.infer<typeof SetModelsRequestDto>;
 
 /** Full task view for the Assistant panel: summary + pipeline + gates + diff + PR.
  *  Deliberately omits on-disk paths (e.g. worktreePath) — the panel never needs

@@ -7,8 +7,14 @@ export type {
   AuthStrategyKind,
   Message,
   ProviderResponse,
+  SendOptions,
 } from "./provider.js";
 export { ProviderRegistry } from "./registry.js";
+
+// Reliability: typed errors + retry-with-backoff (used inside the adapters; ProviderError
+// is exported so the engine can special-case a refusal in a step's failure reason).
+export { ProviderError, isRetryableError, type ProviderErrorKind } from "./errors.js";
+export { withRetry, type RetryOptions } from "./retry.js";
 
 // Adapters
 export {

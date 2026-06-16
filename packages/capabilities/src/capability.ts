@@ -11,6 +11,9 @@ export interface CapabilityInput {
   readonly testCommand?: readonly string[];
   /** When set, the worker streams its output here as it works (live progress). */
   readonly onChunk?: (chunk: string) => void;
+  /** Which model to run this step on (the engine resolves it per scope); falls back to
+   *  the provider's configured default when unset. */
+  readonly model?: string;
 }
 
 export interface CapabilityOutput {
