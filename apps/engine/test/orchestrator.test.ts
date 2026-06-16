@@ -11,7 +11,7 @@ import { Orchestrator, buildRepoContext } from "../src/orchestrator.js";
 import { ProjectRegistry, type ProjectConfig } from "../src/projects.js";
 import type { TaskStore, VcsPort, MessageLog, ConversationStore, MemoryPort, UsagePort, UsageEvent, NotificationStore } from "../src/ports.js";
 import type { Notification } from "@bureau/contracts";
-import { toTaskDetail } from "../src/summary.js";
+import { toTaskDetail, isMerged, prOpen } from "../src/summary.js";
 
 // ── fakes ────────────────────────────────────────────────────────────────────
 
@@ -485,7 +485,21 @@ describe("buildRepoContext (Iris's git awareness)", () => {
     expect(ctx).toContain("feature-x");
     expect(ctx).toContain("leftover Bureau task branch"); // task branches called out separately
     expect(ctx).toContain("abc1234 Cold War README");
-    expect(ctx).toMatch(/do NOT claim you can.?t see/i); // tells Iris she HAS this info
+    expect(ctx).toMatch(/can.?t see them/i); // tells Iris she HAS this info (don't claim otherwise)
+    expect(ctx).toMatch(/propos\w+ a gitOp/i); // and that admin is done via an inline gitOp, not raw git
+  });
+
+  it("flags LOCAL-only branches (exist locally but not on origin) as real — so Iris won't deny them", () => {
+    const ctx = buildRepoContext({
+      cloned: true,
+      branch: "main",
+      branches: ["main"], // on GitHub (origin)
+      localBranches: ["main", "test", "bureau/task-x"], // local; 'test' is local-only
+      commits: [],
+    });
+    expect(ctx).toMatch(/Local-only branches[^\n]*test/i); // test surfaced as a real local branch
+    expect(ctx).toMatch(/do NOT say they don't exist/i);
+    expect(ctx).not.toMatch(/Local-only branches[^\n]*bureau\/task-x/); // leftover task branches excluded
   });
 
   it("is empty when the repo isn't cloned", () => {
@@ -618,6 +632,36 @@ describe("confirmMerge", () => {
   it("throws 409 when there is no open review gate", async () => {
     const draft = orch.createTask(PROPOSAL);
     await expect(orch.confirmMerge(draft.id)).rejects.toMatchObject({ status: 409 });
+    expect(vcs.calls.push).toHaveLength(0);
+  });
+});
+
+// ── openPrForReview — push + open a PR, but NOT merge (the "test branch on GitHub") ──
+
+describe("openPrForReview", () => {
+  it("pushes + opens the PR but NEVER merges; the task reads PR-open, not merged", async () => {
+    const draft = orch.createTask(PROPOSAL);
+    await orch.startTask(draft.id);
+    await orch.settle(draft.id);
+    expect(canPush(store.load(draft.id)!)).toBe(false); // parked at an OPEN gate
+
+    const result = await orch.openPrForReview(draft.id);
+
+    expect(result.status).toBe("completed");
+    expect(canPush(result)).toBe(true); // same wall as a merge — the gate authorized the push
+    expect(vcs.calls.push).toHaveLength(1);
+    expect(vcs.calls.openPr).toHaveLength(1);
+    expect(vcs.calls.mergePr).toHaveLength(0); // ← the whole point: nothing merged to main
+    expect(isMerged(result)).toBe(false);
+    expect(prOpen(result)).toBe(true);
+    expect(result.artifacts.some((a) => a.kind === "pr_open")).toBe(true);
+    expect(result.artifacts.some((a) => a.kind === "pr_url")).toBe(false);
+    expect(vcs.calls.removeWorktree.some((c) => c.force)).toBe(true); // local worktree released
+  });
+
+  it("throws 409 when there is no open review gate (nothing pushed)", async () => {
+    const draft = orch.createTask(PROPOSAL);
+    await expect(orch.openPrForReview(draft.id)).rejects.toMatchObject({ status: 409 });
     expect(vcs.calls.push).toHaveLength(0);
   });
 });

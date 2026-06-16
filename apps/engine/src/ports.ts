@@ -103,7 +103,11 @@ export interface RepoView {
   readonly cloned: boolean;
   readonly branch: string | null;
   readonly commits: readonly RepoCommit[];
+  /** Branches on origin (GitHub). */
   readonly branches: readonly string[];
+  /** Branches that exist LOCALLY (refs/heads) — may include some not yet pushed to
+   *  origin. Optional so test fakes needn't supply it; the real adapter always does. */
+  readonly localBranches?: readonly string[];
 }
 
 export interface RepoCommit {

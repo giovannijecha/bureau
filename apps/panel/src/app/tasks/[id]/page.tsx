@@ -8,6 +8,7 @@ import {
   Play,
   Square,
   GitMerge,
+  GitPullRequest,
   Loader2,
   AlertCircle,
   CheckCircle2,
@@ -26,7 +27,7 @@ import {
   Check,
 } from "lucide-react";
 import type { TaskDetail, PipelineStep, TimelineEntry } from "@bureau/contracts";
-import { getTask, startTask, stopTask, mergeTask, decideGate, deleteTask } from "../../../lib/api";
+import { getTask, startTask, stopTask, mergeTask, openPrForReview, decideGate, deleteTask } from "../../../lib/api";
 import { useEngineEvents } from "../../../lib/useEngineEvents";
 import { useConfirm } from "../../../components/ConfirmDialog";
 import { DiffView } from "../../../components/DiffView";
@@ -323,6 +324,18 @@ export default function TaskDetailPage({ params }: { params: { id: string } }) {
           </a>
         </div>
       )}
+
+      {/* PR opened for review on GitHub — NOT merged. The branch lives there; the CEO
+          tests it and merges (or closes) on GitHub. */}
+      {task.prOpen && task.prUrl && (
+        <div className="mt-4 flex flex-wrap items-center gap-2 rounded-xl border border-blue-500/30 bg-blue-500/5 px-4 py-3 text-sm">
+          <GitPullRequest className="h-4 w-4 shrink-0 text-blue-400" />
+          <span className="text-foreground">PR open for review (not merged) — test it, then merge on GitHub:</span>
+          <a href={task.prUrl} target="_blank" rel="noreferrer" className="font-medium text-blue-400 underline underline-offset-2">
+            {task.prUrl}
+          </a>
+        </div>
+      )}
     </div>
   );
 }
@@ -394,6 +407,7 @@ function WorkerOutput({
 function ReviewBar({ id, busy, act }: { id: string; busy: boolean; act: (fn: () => Promise<TaskDetail>) => void }) {
   const confirm = useConfirm();
   const [requesting, setRequesting] = useState(false);
+  const [pending, setPending] = useState<null | "merge" | "pr">(null);
   const [notes, setNotes] = useState("");
   const trimmed = notes.trim();
 
@@ -435,25 +449,55 @@ function ReviewBar({ id, busy, act }: { id: string; busy: boolean; act: (fn: () 
   }
 
   return (
-    <div className="flex flex-wrap items-center justify-between gap-3 border-t bg-muted/40 px-4 py-3">
-      <span className="text-sm text-muted-foreground">
-        Approve to squash-merge into <code className="font-mono">main</code>, ask for changes, or reject.
-      </span>
-      <div className="flex shrink-0 flex-wrap gap-2">
+    <div className="space-y-3 border-t bg-muted/40 px-4 py-3.5">
+      <p className="text-sm font-medium text-foreground">Happy with the changes? Choose how to land them:</p>
+      {/* The two "approve" outcomes as distinct, labelled choices — so it's clear which
+          does what (a git novice shouldn't have to guess between two similar buttons). */}
+      <div className="grid gap-2 sm:grid-cols-2">
         <button
-          onClick={() => act(() => decideGate(id, "approved"))}
+          onClick={() => {
+            setPending("merge");
+            act(() => decideGate(id, "approved"));
+          }}
           disabled={busy}
-          className="inline-flex h-9 items-center gap-1.5 rounded-md bg-green-600 px-3.5 text-sm font-medium text-white transition-colors hover:bg-green-700 disabled:opacity-50"
+          className="flex items-start gap-2.5 rounded-lg border border-green-600/50 bg-green-600/10 p-3 text-left transition-colors hover:bg-green-600/15 disabled:opacity-50"
         >
-          {busy ? <Loader2 className="h-4 w-4 animate-spin" /> : <GitMerge className="h-4 w-4" />}
-          Approve &amp; merge
+          {pending === "merge" && busy ? (
+            <Loader2 className="mt-0.5 h-4 w-4 shrink-0 animate-spin text-green-500" />
+          ) : (
+            <GitMerge className="mt-0.5 h-4 w-4 shrink-0 text-green-500" />
+          )}
+          <span>
+            <span className="block text-sm font-semibold text-foreground">Merge into main</span>
+            <span className="block text-xs text-muted-foreground">Apply the changes to your main branch now. The usual choice.</span>
+          </span>
         </button>
+        <button
+          onClick={() => {
+            setPending("pr");
+            act(() => openPrForReview(id));
+          }}
+          disabled={busy}
+          className="flex items-start gap-2.5 rounded-lg border border-blue-500/40 bg-blue-500/5 p-3 text-left transition-colors hover:bg-blue-500/10 disabled:opacity-50"
+        >
+          {pending === "pr" && busy ? (
+            <Loader2 className="mt-0.5 h-4 w-4 shrink-0 animate-spin text-blue-400" />
+          ) : (
+            <GitPullRequest className="mt-0.5 h-4 w-4 shrink-0 text-blue-400" />
+          )}
+          <span>
+            <span className="block text-sm font-semibold text-foreground">Open a PR instead</span>
+            <span className="block text-xs text-muted-foreground">Put it on GitHub on its own branch — you review and merge it there. Nothing touches main yet.</span>
+          </span>
+        </button>
+      </div>
+      <div className="flex flex-wrap items-center gap-2">
         <button
           onClick={() => setRequesting(true)}
           disabled={busy}
-          className="inline-flex h-9 items-center gap-1.5 rounded-md border bg-background px-3.5 text-sm font-medium transition-colors hover:bg-accent disabled:opacity-50"
+          className="inline-flex h-8 items-center gap-1.5 rounded-md border bg-background px-3 text-xs font-medium transition-colors hover:bg-accent disabled:opacity-50"
         >
-          <Pencil className="h-4 w-4" />
+          <Pencil className="h-3.5 w-3.5" />
           Request changes
         </button>
         <button
@@ -468,9 +512,9 @@ function ReviewBar({ id, busy, act }: { id: string; busy: boolean; act: (fn: () 
             act(() => decideGate(id, "rejected"));
           }}
           disabled={busy}
-          className="inline-flex h-9 items-center gap-1.5 rounded-md px-3.5 text-sm font-medium text-red-500 transition-colors hover:bg-red-500/10 disabled:opacity-50"
+          className="inline-flex h-8 items-center gap-1.5 rounded-md px-3 text-xs font-medium text-red-500 transition-colors hover:bg-red-500/10 disabled:opacity-50"
         >
-          <XCircle className="h-4 w-4" />
+          <XCircle className="h-3.5 w-3.5" />
           Reject
         </button>
       </div>

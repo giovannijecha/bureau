@@ -19,11 +19,12 @@ import {
   FileText,
   Image as ImageIcon,
 } from "lucide-react";
-import type { Message, TaskProposal, Conversation, Attachment } from "@bureau/contracts";
-import { chat, createTask, listConversations, deleteConversation, messagesFor } from "../lib/api";
+import type { Message, TaskProposal, Conversation, Attachment, GitOpRequest } from "@bureau/contracts";
+import { chat, createTask, listConversations, deleteConversation, messagesFor, getGitInfo } from "../lib/api";
 import { useProjects } from "../lib/useProjects";
 import { ProjectPicker } from "../components/ProjectPicker";
 import { ConversationsRail } from "../components/ConversationsRail";
+import { GitOpProposalCard } from "../components/GitOpProposalCard";
 import { Markdown } from "../components/Markdown";
 import { FieldError } from "../components/FieldError";
 import { CharCount } from "../components/CharCount";
@@ -49,6 +50,8 @@ export default function AssistantPage() {
   const [input, setInput] = useState("");
   const [log, setLog] = useState<Message[]>([]);
   const [proposal, setProposal] = useState<TaskProposal | null>(null);
+  const [gitOp, setGitOp] = useState<GitOpRequest | null>(null);
+  const [gitBranches, setGitBranches] = useState<string[]>([]);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [conversations, setConversations] = useState<Conversation[]>([]);
@@ -70,11 +73,14 @@ export default function AssistantPage() {
   const selectConv = useCallback(async (id: string) => {
     setConvId(id);
     setProposal(loadProposal(id)); // restore a pending proposal for this thread
+    setGitOp(loadGitOp(id)); // …and a pending git-op proposal
     setError(null);
     try {
-      setLog(await messagesFor(id));
+      // Re-attach the local action confirmations ("Created …" / git-op results) — the
+      // engine doesn't persist them, so without this they'd vanish on every reload/switch.
+      setLog([...(await messagesFor(id)), ...loadNotes(id)]);
     } catch {
-      setLog([]);
+      setLog(loadNotes(id));
     }
   }, []);
 
@@ -82,6 +88,7 @@ export default function AssistantPage() {
     setConvId(null);
     setLog([]);
     setProposal(null);
+    setGitOp(null);
     setError(null);
     inputRef.current?.focus();
   }, []);
@@ -112,7 +119,17 @@ export default function AssistantPage() {
   // Keep the newest message in view as the log grows or Iris is replying.
   useEffect(() => {
     bottomRef.current?.scrollIntoView({ behavior: "smooth", block: "end" });
-  }, [log, busy, proposal]);
+  }, [log, busy, proposal, gitOp]);
+
+  // When Iris proposes a git-op, fetch the repo's branches once so the card can offer
+  // a branch autocomplete (lazy — only on the first proposal, never on a plain chat).
+  useEffect(() => {
+    if (gitOp && gitBranches.length === 0) {
+      getGitInfo(activeId ?? undefined)
+        .then((g) => setGitBranches(g.branches))
+        .catch(() => {});
+    }
+  }, [gitOp, gitBranches.length, activeId]);
 
   async function onSend() {
     const content = input.trim();
@@ -126,7 +143,9 @@ export default function AssistantPage() {
     setError(null);
     setComposerErr(null);
     setProposal(null);
+    setGitOp(null);
     persistProposal(convId, null); // clear up-front so a failed send can't resurrect the old proposal
+    persistGitOp(convId, null);
     const atts = attachments;
     const shown = content + (atts.length ? `${content ? "\n\n" : ""}📎 ${atts.map((a) => a.name).join(", ")}` : "");
     setLog((l) => [...l, local("user", shown)]);
@@ -136,9 +155,11 @@ export default function AssistantPage() {
       const res = await chat(content, activeId ?? undefined, convId ?? undefined, atts.length ? atts : undefined);
       setLog((l) => [...l, res.reply]);
       setConvId(res.conversationId); // always adopt the server's authoritative thread id
-      // Persist (or clear) the proposal for this thread so it survives reload / switch.
+      // Persist (or clear) the proposal/git-op for this thread so it survives reload / switch.
       setProposal(res.proposal ?? null);
       persistProposal(res.conversationId, res.proposal ?? null);
+      setGitOp(res.gitOp ?? null);
+      persistGitOp(res.conversationId, res.gitOp ?? null);
       void refreshConversations();
     } catch (e) {
       setError(errMsg(e));
@@ -195,6 +216,9 @@ export default function AssistantPage() {
     } catch {
       /* ignore */
     }
+    clearNotes(id); // drop the thread's persisted action chips + pending proposals
+    persistProposal(id, null);
+    persistGitOp(id, null);
     await refreshConversations();
     if (id === convId) newChat();
   }
@@ -214,7 +238,9 @@ export default function AssistantPage() {
       const task = await createTask(proposal, activeId ?? undefined);
       setProposal(null);
       persistProposal(convId, null);
-      setLog((l) => [...l, createdNote(task.id, proposal.title)]);
+      const note = createdNote(task.id, proposal.title);
+      setLog((l) => [...l, note]);
+      appendNote(convId, note); // survive reload / conversation-switch
     } catch (e) {
       setError(errMsg(e));
     } finally {
@@ -222,7 +248,7 @@ export default function AssistantPage() {
     }
   }
 
-  const empty = log.length === 0 && !proposal;
+  const empty = log.length === 0 && !proposal && !gitOp;
 
   return (
     <div className="flex h-full">
@@ -262,6 +288,24 @@ export default function AssistantPage() {
                   onKeep={() => {
                     setProposal(null);
                     persistProposal(convId, null);
+                  }}
+                />
+              )}
+              {gitOp && (
+                <GitOpProposalCard
+                  gitOp={gitOp}
+                  branches={gitBranches}
+                  projectId={activeId ?? undefined}
+                  onRan={(text) => {
+                    setGitOp(null);
+                    persistGitOp(convId, null);
+                    const note = opNote(text);
+                    setLog((l) => [...l, note]);
+                    appendNote(convId, note); // survive reload / conversation-switch
+                  }}
+                  onDismiss={() => {
+                    setGitOp(null);
+                    persistGitOp(convId, null);
                   }}
                 />
               )}
@@ -360,10 +404,13 @@ export default function AssistantPage() {
 
 function ChatBubble({ message, onRun }: { message: Message; onRun?: (cmd: string) => void }) {
   if (message.role === "system") {
+    // A git-op result note links to Git (where the branch/tag now lives); a task note
+    // links to its task; otherwise fall back to the task list.
+    const href = message.taskId ? `/tasks/${message.taskId}` : message.id.startsWith("gitop-") ? "/git" : "/tasks";
     return (
       <div className="flex justify-center">
         <Link
-          href={message.taskId ? `/tasks/${message.taskId}` : "/tasks"}
+          href={href}
           className="inline-flex items-center gap-2 rounded-lg border bg-card px-3 py-2 text-sm text-muted-foreground transition-colors hover:bg-accent/50"
         >
           <CheckCircle2 className="h-4 w-4 text-green-500" />
@@ -472,6 +519,9 @@ function local(role: "user" | "iris", content: string): Message {
 function createdNote(taskId: string, title: string): Message {
   return { id: `created-${taskId}`, role: "system", content: `Created “${title}” — open it in Tasks`, taskId, createdAt: "" };
 }
+function opNote(text: string): Message {
+  return { id: `gitop-${++localSeq}`, role: "system", content: text, createdAt: "" };
+}
 function errMsg(e: unknown): string {
   return e instanceof Error ? e.message : String(e);
 }
@@ -495,6 +545,59 @@ function persistProposal(convId: string | null, proposal: TaskProposal | null): 
     else window.localStorage.removeItem(PROPOSAL_KEY(convId));
   } catch {
     /* storage unavailable — proposal just won't persist */
+  }
+}
+
+// A pending git-op proposal — same ephemeral, per-conversation persistence as a task proposal.
+const GITOP_KEY = (convId: string) => `bureau.gitop.${convId}`;
+function loadGitOp(convId: string | null): GitOpRequest | null {
+  if (!convId || typeof window === "undefined") return null;
+  try {
+    const raw = window.localStorage.getItem(GITOP_KEY(convId));
+    return raw ? (JSON.parse(raw) as GitOpRequest) : null;
+  } catch {
+    return null;
+  }
+}
+function persistGitOp(convId: string | null, gitOp: GitOpRequest | null): void {
+  if (!convId || typeof window === "undefined") return;
+  try {
+    if (gitOp) window.localStorage.setItem(GITOP_KEY(convId), JSON.stringify(gitOp));
+    else window.localStorage.removeItem(GITOP_KEY(convId));
+  } catch {
+    /* storage unavailable — git-op proposal just won't persist */
+  }
+}
+
+// Action confirmations ("Created …" / git-op results) are client-only chips the engine
+// doesn't store — persist them per conversation so they survive a reload / thread switch
+// instead of vanishing the moment the chat re-loads from the server.
+const NOTES_KEY = (convId: string) => `bureau.notes.${convId}`;
+function loadNotes(convId: string | null): Message[] {
+  if (!convId || typeof window === "undefined") return [];
+  try {
+    const raw = window.localStorage.getItem(NOTES_KEY(convId));
+    return raw ? (JSON.parse(raw) as Message[]) : [];
+  } catch {
+    return [];
+  }
+}
+function appendNote(convId: string | null, note: Message): void {
+  if (!convId || typeof window === "undefined") return;
+  try {
+    const notes = loadNotes(convId);
+    notes.push(note);
+    window.localStorage.setItem(NOTES_KEY(convId), JSON.stringify(notes));
+  } catch {
+    /* storage unavailable — note just won't persist */
+  }
+}
+function clearNotes(convId: string): void {
+  if (typeof window === "undefined") return;
+  try {
+    window.localStorage.removeItem(NOTES_KEY(convId));
+  } catch {
+    /* ignore */
   }
 }
 

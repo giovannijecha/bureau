@@ -178,6 +178,15 @@ export async function headBranch(clonePath: string, runner: Runner = defaultRunn
   return out.code === 0 ? out.stdout.trim() || null : null;
 }
 
+/** The clone's LOCAL branches (refs/heads). Lets Iris see branches that exist locally
+ *  but aren't pushed to origin yet — so she never claims a real local branch "doesn't
+ *  exist" just because it isn't on GitHub. Best-effort (empty on a fresh/edge-case repo). */
+export async function localBranches(clonePath: string, runner: Runner = defaultRunner): Promise<string[]> {
+  const out = await runner("git", ["-C", clonePath, "for-each-ref", "--format=%(refname:short)", "refs/heads"], {});
+  if (out.code !== 0) return [];
+  return out.stdout.split("\n").map((s) => s.trim()).filter(Boolean);
+}
+
 /** Branch names under a ref namespace (e.g. "refs/heads", "refs/remotes/origin"). */
 async function refsUnder(clonePath: string, namespace: string, runner: Runner): Promise<string[]> {
   const out = await runner("git", ["-C", clonePath, "for-each-ref", "--format=%(refname:short)", namespace], {});

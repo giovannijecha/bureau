@@ -46,7 +46,9 @@ export interface Gate {
 // Artifact — a file or diff produced by a capability
 // ---------------------------------------------------------------------------
 
-export type ArtifactKind = "diff" | "file" | "report" | "pr_url" | "merge_error";
+// pr_url = merged PR (landed on main); pr_open = PR opened for review, NOT merged
+// (the branch lives on GitHub, the CEO merges it there).
+export type ArtifactKind = "diff" | "file" | "report" | "pr_url" | "pr_open" | "merge_error";
 
 export interface Artifact {
   readonly id: ArtifactId;

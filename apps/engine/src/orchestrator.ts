@@ -3,9 +3,10 @@
 // holds the decisive powers — START / STOP a task, and the final CONFIRM-MERGE.
 //
 // THE SECURITY WALL: push()/openPr()/mergePr() run from exactly one place
-// (confirmMerge), inside an `if (canPush(task))` branch. canPush lives in
-// @bureau/core and is the sole gate. startTask only commits locally — it never
-// pushes — so nothing reaches GitHub until the CEO confirms.
+// (landBranch — reached only via confirmMerge [merge] or openPrForReview [PR, no
+// merge]), inside an `if (canPush(task))` branch. canPush lives in @bureau/core and
+// is the sole gate. startTask only commits locally — it never pushes — so nothing
+// reaches GitHub until the CEO confirms (merge OR open-PR; both require canPush).
 //
 // Each task belongs to a PROJECT (a GitHub repo). The orchestrator resolves the
 // task's project and a VCS port bound to it, so one engine serves many repos.
@@ -407,9 +408,10 @@ export class Orchestrator {
     const reply = this.appendChatMessage(conversation.id, "iris", turn.reply);
     this.recordUsage("iris", null, turn.usage);
     this.d.conversations.touch(conversation.id, this.d.clock());
-    return turn.proposal
-      ? { reply, conversationId: conversation.id, proposal: turn.proposal }
-      : { reply, conversationId: conversation.id };
+    const base = { reply, conversationId: conversation.id };
+    if (turn.proposal) return { ...base, proposal: turn.proposal };
+    if (turn.gitOp) return { ...base, gitOp: turn.gitOp };
+    return base;
   }
 
   /** A STATELESS turn with Iris — used by the embedded terminal dock. Persists
@@ -458,7 +460,10 @@ export class Orchestrator {
     }
     this.recordUsage("iris", null, turn.usage);
     const reply: Message = { id: this.d.ids(), role: "iris", content: turn.reply, createdAt: this.d.clock() };
-    return turn.proposal ? { reply, conversationId: "", proposal: turn.proposal } : { reply, conversationId: "" };
+    const base = { reply, conversationId: "" };
+    if (turn.proposal) return { ...base, proposal: turn.proposal };
+    if (turn.gitOp) return { ...base, gitOp: turn.gitOp };
+    return base;
   }
 
   /** The CEO's pinned System Memory notes (kind=note, not auto journals) folded into
@@ -993,14 +998,30 @@ export class Orchestrator {
   }
 
   /** The CEO's final confirmation: push, open the PR, squash-merge to main, clean up.
-   *  This is the ONE code path that reaches GitHub, and only when canPush()===true. */
+   *  Delegates to landBranch — the ONE code path that reaches GitHub, only when canPush(). */
   async confirmMerge(taskId: string): Promise<Task> {
+    return this.landBranch(taskId, true);
+  }
+
+  /** Push the branch + open a PR for review on GitHub, but DON'T merge it — the branch
+   *  and the open PR live on GitHub for the CEO to test and merge (or close) there. The
+   *  SAME security wall as a merge: the gate approval authorizes the push, canPush() must
+   *  hold; it simply stops before mergePr and keeps the branch (no --delete). */
+  async openPrForReview(taskId: string): Promise<Task> {
+    return this.landBranch(taskId, false);
+  }
+
+  /** THE single GitHub-reaching path. Approve the open pr_approval gate, complete the
+   *  task, and — only when canPush()===true — push the branch and open its PR; when
+   *  `merge`, also squash-merge to main and delete the branch. push()/openPr()/mergePr()
+   *  live ONLY here, behind the canPush wall. */
+  private async landBranch(taskId: string, merge: boolean): Promise<Task> {
     let task = this.requireTask(taskId);
     const gate = task.gates.find((g) => g.status === "open");
     if (gate === undefined) {
       throw new OrchestratorError(`Task ${taskId} has no open review gate.`, 409);
     }
-    // Only the pr_approval gate authorizes a merge. (canPush() independently requires
+    // Only the pr_approval gate authorizes a push. (canPush() independently requires
     // it, so this never weakens the wall — it just fails fast + documents intent.)
     if (gate.kind !== "pr_approval") {
       throw new OrchestratorError(`Task ${taskId}'s open gate is "${gate.kind}", not a merge approval.`, 409);
@@ -1012,7 +1033,7 @@ export class Orchestrator {
 
     // ── THE SECURITY WALL ──────────────────────────────────────────────────
     if (!canPush(task)) {
-      console.warn(`[engine] confirmMerge: canPush is false for task ${task.id} — nothing pushed.`);
+      console.warn(`[engine] landBranch: canPush is false for task ${task.id} — nothing pushed.`);
       return task;
     }
     // Resolve push + PR/merge from ONE project (the task's stable id), so the
@@ -1027,20 +1048,27 @@ export class Orchestrator {
     try {
       await vcs.push(worktreePath, branch);
       prUrl = await vcs.openPr(branch, title, prBody(task.goal));
-      await vcs.mergePr(branch);
-      // Full success — the change is on main. Record the merged PR.
-      task = this.addArtifacts(task, [
-        { id: this.d.ids() as ArtifactId, kind: "pr_url", ref: prUrl, producedByStep: lastStep, createdAt: this.d.clock() },
-      ]);
-      this.notify("merged", task.id, "Merged to main", `“${truncate(task.goal)}” is merged — ${prUrl}`);
+      if (merge) {
+        await vcs.mergePr(branch);
+        // Full success — the change is on main. Record the MERGED PR.
+        task = this.addArtifacts(task, [
+          { id: this.d.ids() as ArtifactId, kind: "pr_url", ref: prUrl, producedByStep: lastStep, createdAt: this.d.clock() },
+        ]);
+        this.notify("merged", task.id, "Merged to main", `“${truncate(task.goal)}” is merged — ${prUrl}`);
+      } else {
+        // PR opened for review — NOT merged. The branch stays on GitHub for the CEO.
+        task = this.addArtifacts(task, [
+          { id: this.d.ids() as ArtifactId, kind: "pr_open", ref: prUrl, producedByStep: lastStep, createdAt: this.d.clock() },
+        ]);
+        this.notify("review", task.id, "PR opened for review", `“${truncate(task.goal)}” is on GitHub as an open PR — review and merge it there: ${prUrl}`);
+      }
     } catch (err) {
-      // The merge didn't complete (e.g. conflicts, branch protection). Record an
-      // honest merge_error so the panel shows "merge failed" instead of a false
-      // "merged" — and keep the PR link (if one was opened) so the CEO can resolve
-      // it on GitHub. The task stays `completed` (the CEO approved + did their part),
-      // but `merged` is now derived from the absence of this error.
-      console.error(`[engine] merge failed for task ${task.id}: ${errMessage(err)}${prUrl !== undefined ? ` (PR opened: ${prUrl})` : ""}`);
-      this.notify("merge_failed", task.id, "Merge didn't land", `“${truncate(task.goal)}” couldn't merge: ${errMessage(err)}${prUrl !== undefined ? ` (PR ${prUrl})` : ""}`);
+      // The push/PR/merge didn't complete (e.g. conflicts, branch protection). Record an
+      // honest merge_error so the panel shows "didn't land" instead of a false success —
+      // keeping the PR link (if one was opened) so the CEO can resolve it on GitHub. The
+      // task stays `completed` (the CEO approved + did their part).
+      console.error(`[engine] ${merge ? "merge" : "open-PR"} failed for task ${task.id}: ${errMessage(err)}${prUrl !== undefined ? ` (PR opened: ${prUrl})` : ""}`);
+      this.notify("merge_failed", task.id, merge ? "Merge didn't land" : "Couldn't open the PR", `“${truncate(task.goal)}” ${merge ? "couldn't merge" : "couldn't open a PR"}: ${errMessage(err)}${prUrl !== undefined ? ` (PR ${prUrl})` : ""}`);
       task = this.addArtifacts(task, [
         ...(prUrl !== undefined
           ? [{ id: this.d.ids() as ArtifactId, kind: "pr_url" as const, ref: prUrl, producedByStep: lastStep, createdAt: this.d.clock() }]
@@ -1195,18 +1223,27 @@ export function buildRepoContext(view: RepoView): string {
   if (!view.cloned) return "";
   const real = view.branches.filter((b) => !b.startsWith("bureau/"));
   const internal = view.branches.filter((b) => b.startsWith("bureau/"));
+  // Branches that exist LOCALLY but are NOT on origin yet — Iris must know these so she
+  // never tells the CEO a real branch "doesn't exist" just because it isn't on GitHub.
+  const originSet = new Set(view.branches);
+  const localOnly = (view.localBranches ?? []).filter((b) => !b.startsWith("bureau/") && !originSet.has(b));
   const lines = ["Repository git state (read-only, current — provided to you so you do NOT need to run git):"];
   if (view.branch) lines.push(`- Checked-out branch: ${view.branch}`);
   lines.push(
-    `- Branches: ${real.join(", ") || "(none)"}` +
+    `- Branches on GitHub (origin): ${real.join(", ") || "(none)"}` +
       (internal.length > 0 ? ` — plus ${internal.length} leftover Bureau task branch(es): ${internal.join(", ")}` : "")
   );
+  if (localOnly.length > 0) {
+    lines.push(
+      `- Local-only branches (these EXIST locally with their content, but are NOT on GitHub yet): ${localOnly.join(", ")}. They are real — do NOT say they don't exist. To publish one to GitHub, propose a create_branch gitOp with that exact name (Bureau pushes the existing local branch as-is).`
+    );
+  }
   if (view.commits.length > 0) {
     lines.push("- Recent commits (newest first):");
     for (const c of view.commits.slice(0, 8)) lines.push(`  - ${c.hash} ${c.subject} (${c.author}, ${c.date})`);
   }
   lines.push(
-    "Use this to answer about branches and history accurately — do NOT claim you can't see them. You still cannot run git or push/delete branches (branch administration is the CEO's job); if asked to delete branches, explain that and offer the exact git commands."
+    "This is the LIVE state, refreshed at the start of this turn — use it to answer about branches and history accurately, and do NOT claim it's a stale snapshot or that you can't see them. You can't run git yourself, but you CAN do branch/tag/history administration by PROPOSING a gitOp (the CEO authorizes it inline and Bureau mirrors it to GitHub) — never hand the CEO raw git commands to run."
   );
   return lines.join("\n");
 }

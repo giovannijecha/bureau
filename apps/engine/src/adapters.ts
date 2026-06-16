@@ -19,6 +19,7 @@ import {
   recentCommits,
   remoteBranches,
   headBranch,
+  localBranches,
   pruneTaskBranches,
   deleteTaskBranch,
   squashAllAndForcePush,
@@ -145,12 +146,13 @@ export class RealVcs implements VcsPort {
     if (!existsSync(join(this.cfg.canonicalPath, ".git"))) {
       return { cloned: false, branch: null, commits: [], branches: [] };
     }
-    const [branch, commits, branches] = await Promise.all([
+    const [branch, commits, branches, locals] = await Promise.all([
       headBranch(this.cfg.canonicalPath, this.runner),
       recentCommits(this.cfg.canonicalPath, commitLimit, this.runner),
       remoteBranches(this.cfg.canonicalPath, this.runner),
+      localBranches(this.cfg.canonicalPath, this.runner),
     ]);
-    return { cloned: true, branch, commits, branches };
+    return { cloned: true, branch, commits, branches, localBranches: locals };
   }
 
   pruneTaskBranches(keep: readonly string[]): Promise<string[]> {

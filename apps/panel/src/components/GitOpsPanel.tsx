@@ -9,31 +9,9 @@ import { Wrench, AlertTriangle, Loader2, CheckCircle2 } from "lucide-react";
 import type { GitOpKind, GitOpRequest } from "@bureau/contracts";
 import { DESTRUCTIVE_GIT_OPS } from "@bureau/contracts";
 import { runGitOp } from "../lib/api";
+import { GIT_OPS as OPS, GIT_OP_FIELD_LABELS as LABELS, BRANCH_FIELDS, type GitOpField as Field } from "../lib/gitOps";
 import { Dropdown } from "./Dropdown";
 import { cn } from "../lib/utils";
-
-type Field = "branch" | "name" | "from" | "to" | "base" | "ref" | "message";
-
-const OPS: { kind: GitOpKind; label: string; desc: string; fields: Field[] }[] = [
-  { kind: "squash_all", label: "Squash all → one commit + push", desc: "Rewrites the branch's entire history into a single commit and force-pushes it.", fields: ["branch", "message"] },
-  { kind: "force_push", label: "Force-push (with lease)", desc: "Force-push the branch to origin — refuses if the remote moved since.", fields: ["branch"] },
-  { kind: "reset_hard", label: "Hard reset", desc: "Reset the branch to a ref (e.g. origin/main) — discards local commits.", fields: ["branch", "ref"] },
-  { kind: "create_branch", label: "Create branch", desc: "Create a new branch, optionally off a base ref.", fields: ["name", "base"] },
-  { kind: "rename_branch", label: "Rename branch", desc: "Rename a branch.", fields: ["from", "to"] },
-  { kind: "delete_branch", label: "Delete branch", desc: "Delete a local branch.", fields: ["branch"] },
-  { kind: "tag", label: "Create tag", desc: "Create a tag (annotated when a message is given).", fields: ["name", "message"] },
-  { kind: "fetch", label: "Fetch + prune", desc: "Fetch and prune from origin.", fields: [] },
-];
-
-const LABELS: Record<Field, string> = {
-  branch: "Branch",
-  name: "Name",
-  from: "From branch",
-  to: "To branch",
-  base: "Base ref (optional)",
-  ref: "Reset to ref",
-  message: "Message",
-};
 
 export function GitOpsPanel({ branches, projectId, onDone }: { branches: string[]; projectId: string | undefined; onDone: () => void }) {
   const [kind, setKind] = useState<GitOpKind>("squash_all");
@@ -114,7 +92,7 @@ export function GitOpsPanel({ branches, projectId, onDone }: { branches: string[
               value={f[field] ?? ""}
               onChange={(e) => set(field, e.target.value)}
               placeholder={LABELS[field]}
-              list={field === "branch" || field === "from" || field === "base" || field === "ref" ? "git-branches" : undefined}
+              list={BRANCH_FIELDS.has(field) ? "git-branches" : undefined}
               spellCheck={false}
               autoComplete="off"
               className="h-9 w-full rounded-md border bg-background px-3 text-sm outline-none focus:border-primary"

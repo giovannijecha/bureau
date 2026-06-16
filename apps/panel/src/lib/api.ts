@@ -263,6 +263,11 @@ export async function stopTask(id: string): Promise<TaskDetail> {
 export async function mergeTask(id: string): Promise<TaskDetail> {
   return json(await postJson(`/api/tasks/${encodeURIComponent(id)}/merge`));
 }
+/** Push the branch + open a PR for review on GitHub WITHOUT merging — the branch
+ *  lives on GitHub for the CEO to test and merge there. Same gate as a merge. */
+export async function openPrForReview(id: string): Promise<TaskDetail> {
+  return json(await postJson(`/api/tasks/${encodeURIComponent(id)}/open-pr`));
+}
 
 /** Permanently delete a task (stops it first if it's still live). */
 export async function deleteTask(id: string): Promise<void> {
