@@ -31,6 +31,7 @@ import { RealVcs, DbMessageLog, DbConversationStore, VaultStore, DbUsage, DbNoti
 import { WsHub } from "./ws.js";
 import { TerminalHub } from "./terminal.js";
 import { createHttpServer } from "./http.js";
+import { sameMachineOrigin } from "./ws-origin.js";
 import type { EventSink, VcsPort } from "./ports.js";
 
 function env(name: string, fallback?: string): string {
@@ -196,8 +197,19 @@ async function main(): Promise<void> {
 
   // Route WebSocket upgrades by path. Both hubs use noServer:true — a single
   // dispatcher hands each upgrade to the right one (the panel feed vs the terminal).
+  //
+  // SECURITY — Origin check: a WebSocket connection is NOT bound by the same-origin
+  // policy, so without this ANY website open in the CEO's browser could connect to
+  // ws://localhost/terminal and run arbitrary shell commands on this machine. We allow
+  // only same-machine (localhost/127.0.0.1/::1) browser origins; a missing Origin is a
+  // non-browser client (curl/CLI) which can already run local commands anyway and poses
+  // no cross-site risk. Any other (a real website's) Origin is rejected.
   const wsHub = hub;
   server.on("upgrade", (req, socket, head) => {
+    if (!sameMachineOrigin(req.headers.origin)) {
+      socket.destroy();
+      return;
+    }
     const pathname = new URL(req.url ?? "/", "http://localhost").pathname;
     if (pathname === "/ws") wsHub.handleUpgrade(req, socket, head);
     else if (pathname === "/terminal") terminal.handleUpgrade(req, socket, head);
@@ -209,7 +221,10 @@ async function main(): Promise<void> {
   const reclaimed = await orchestrator.reconcile();
   if (reclaimed > 0) console.log(`[engine] reconcile: aborted ${reclaimed} interrupted task(s) from a previous run.`);
 
-  server.listen(port, () => {
+  // Bind to loopback ONLY — never 0.0.0.0. The engine drives a shell (the terminal) and
+  // must not be reachable from other machines on the network; "localhost only" is now
+  // enforced, not just documented.
+  server.listen(port, "127.0.0.1", () => {
     console.log(`Bureau engine listening on http://localhost:${port} (ws: /ws)`);
     console.log(`Projects: ${projects.list().map((p) => `${p.owner}/${p.name}`).join(", ")}`);
   });

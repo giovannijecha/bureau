@@ -12,8 +12,10 @@ const SHELL_LANGS = new Set(["bash", "sh", "shell", "zsh", "console", "powershel
  * bold, links, and paragraph spacing. Inherits the surrounding font size so it
  * reads well in a chat bubble or a note page alike.
  *
- * When `onRun` is given, a shell code block gets a "Run in terminal" button — the
- * mechanism by which Iris proposes a command the CEO runs with one click.
+ * When `onRun` is given, a shell code block gets a "Run" button — the mechanism by which
+ * Iris proposes a command the CEO runs. Behaviour depends on the consumer's `onRun`: on
+ * the Assistant page it stages an inline RunCommand (executes in the chat after a confirm);
+ * in the Terminal's IrisDock it pre-fills the terminal for the CEO to review and run.
  */
 export function Markdown({ source, onRun }: { source: string; onRun?: ((code: string) => void) | undefined }) {
   const lines = source.replace(/\r\n/g, "\n").split("\n");
@@ -75,9 +77,9 @@ export function Markdown({ source, onRun }: { source: string; onRun?: ((code: st
             <button
               onClick={() => onRun!(codeStr)}
               className="absolute right-2 top-2 inline-flex items-center gap-1 rounded-md border bg-background/90 px-2 py-1 text-[11px] font-medium text-muted-foreground opacity-0 backdrop-blur transition-opacity hover:text-foreground focus:opacity-100 group-hover/code:opacity-100"
-              title="Run this command in the Bureau terminal"
+              title="Run this command and show the output here"
             >
-              <Play className="h-3 w-3" /> Run in terminal
+              <Play className="h-3 w-3" /> Run
             </button>
           )}
         </div>
