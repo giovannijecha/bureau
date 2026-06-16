@@ -31,14 +31,15 @@ export interface TerminalDeps {
 const OUTPUT_CAP = 1_000_000;
 /** Bureau's own credentials never belong in a shell the CEO drives — always stripped. */
 const SCRUB_NAMES = new Set(["ANTHROPIC_API_KEY", "GH_TOKEN", "GITHUB_TOKEN"]);
-/** Common secret-shaped env-var names (case-insensitive) — broadens the scrub beyond
- *  Bureau's own keys so the CEO's other secrets (AWS_*, OPENAI_API_KEY, *_TOKEN, …) don't
- *  leak into every child shell. Advisory hardening; canPush() remains the sole push gate. */
-const SECRET_NAME_RE = /(?:API[_-]?KEY|SECRET|TOKEN|PASSWORD|PASSWD|PASSPHRASE|PRIVATE[_-]?KEY|ACCESS[_-]?KEY|CREDENTIAL|CLIENT[_-]?SECRET|BEARER)/i;
+/** Common secret-shaped env-var names — the secret word must be a whole SEGMENT (bounded
+ *  by ^/$/_/-) so it broadens the scrub to the CEO's other secrets (AWS_*, OPENAI_API_KEY,
+ *  *_TOKEN, …) WITHOUT over-matching e.g. TOKENIZERS_PARALLELISM. Applied to the PROJECT
+ *  shell (where Iris's commands run); advisory hardening, canPush() stays the sole gate. */
+const SECRET_NAME_RE = /(?:^|[_-])(?:API[_-]?KEY|SECRET|TOKEN|PASSWORD|PASSWD|PASSPHRASE|PRIVATE[_-]?KEY|ACCESS[_-]?KEY|CREDENTIALS?|CLIENT[_-]?SECRET|BEARER)(?:$|[_-])/i;
 /** Names that match the pattern but are SAFE/needed by legit tooling — never scrubbed. */
 const SCRUB_ALLOW = new Set(["SSH_AUTH_SOCK", "SSH_AGENT_PID", "GIT_ASKPASS", "SSH_ASKPASS"]);
 
-/** True if an env-var name looks like a secret that should be kept out of the CEO's shell. */
+/** True if an env-var name looks like a secret that should be kept out of the project shell. */
 export function isSecretEnvName(name: string): boolean {
   if (SCRUB_ALLOW.has(name)) return false;
   return SCRUB_NAMES.has(name) || SECRET_NAME_RE.test(name);
@@ -52,6 +53,9 @@ const SHELL_LABEL = IS_WIN ? "powershell" : "sh";
 interface Session {
   cwd: string;
   child: ChildProcess | null;
+  /** "project" = the repo clone (Iris's commands may run here → broad secret scrub);
+   *  "system" = the CEO's own machine shell (keep their env; scrub only Bureau's keys). */
+  scope: "project" | "system";
 }
 
 export class TerminalHub {
@@ -89,7 +93,7 @@ export class TerminalHub {
     // CEO's own machine, unrelated to the repo).
     const startCwd = scope === "system" ? homedir() : this.deps.resolveCwd(projectId);
     const recentKey = scope === "system" ? null : this.deps.resolveId(projectId);
-    const session: Session = { cwd: this.safeCwd(startCwd), child: null };
+    const session: Session = { cwd: this.safeCwd(startCwd), child: null, scope };
 
     const send = (frame: Record<string, unknown>): void => {
       if (ws.readyState === WebSocket.OPEN) ws.send(JSON.stringify(frame));
@@ -168,7 +172,7 @@ export class TerminalHub {
     try {
       // detached on posix → the shell leads its own process group, so killTree can
       // signal the whole group (the shell + everything it launched).
-      child = spawn(file, args, { cwd: session.cwd, env: scrubbedEnv(), windowsHide: true, ...(IS_WIN ? {} : { detached: true }) });
+      child = spawn(file, args, { cwd: session.cwd, env: scrubbedEnv(session.scope === "project"), windowsHide: true, ...(IS_WIN ? {} : { detached: true }) });
     } catch (e) {
       send({ type: "output", data: `failed to start shell: ${(e as Error).message}\n` });
       send({ type: "exit", code: -1 });
@@ -214,11 +218,13 @@ function shellInvocation(cmd: string): { file: string; args: string[] } {
   return { file: process.env.SHELL && process.env.SHELL.trim() !== "" ? process.env.SHELL : "/bin/sh", args: ["-c", cmd] };
 }
 
-function scrubbedEnv(): NodeJS.ProcessEnv {
+function scrubbedEnv(broad: boolean): NodeJS.ProcessEnv {
   const env = { ...process.env };
-  // Strip Bureau's own creds AND common secret-shaped names BEFORE setting the vars
-  // below, so none of the deliberately-set ones can be collaterally removed.
-  for (const k of Object.keys(env)) if (isSecretEnvName(k)) delete env[k];
+  // PROJECT shell (Iris's commands may run): strip Bureau's creds AND common secret-shaped
+  // names. SYSTEM shell (the CEO's own machine): strip ONLY Bureau's own keys, so the CEO's
+  // real env (NPM_TOKEN, AWS_*, …) is preserved for their own tooling. Runs BEFORE the vars
+  // set below so none of those are collaterally removed.
+  for (const k of Object.keys(env)) if (broad ? isSecretEnvName(k) : SCRUB_NAMES.has(k)) delete env[k];
   // Premium output: ask tools to emit ANSI colour even though stdout isn't a TTY, and
   // disable interactive pagers (`git log`/`git diff` would otherwise hang on `less`).
   env.FORCE_COLOR = "1";

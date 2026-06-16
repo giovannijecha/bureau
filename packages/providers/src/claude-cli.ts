@@ -58,7 +58,9 @@ export const defaultCliRunner: CliRunner = (cli, args, input, cwd, timeoutMs, on
     child.stderr.on("data", (d: Buffer) => (stderr += d.toString()));
     child.on("error", (err: Error) => {
       if (timer) clearTimeout(timer);
-      resolve({ stdout: "", stderr: String(err), code: -1 });
+      // If we already fired the kill timer, this error is the teardown of a TIMEOUT —
+      // stamp the sentinel so it's classified transient (retryable), like the close path.
+      resolve(timedOut ? { stdout, stderr: `${CLI_TIMEOUT_SENTINEL}${String(err)}`, code: -1 } : { stdout: "", stderr: String(err), code: -1 });
     });
     child.on("close", (code: number | null) => {
       if (timer) clearTimeout(timer);
@@ -143,7 +145,9 @@ export class ClaudeCliProvider implements Provider {
     };
     // The edit worker (acceptEdits) is NEVER retried — re-running could double-apply a
     // partial edit. Read-only calls (plan/review/research/chat) retry transient failures.
-    return options?.acceptEdits ? exec() : withRetry(exec, { isRetryable: isRetryableError });
+    // retries:2 keeps the worst case (≤3 × the 240s self-timeout) under the orchestrator's
+    // per-step backstop so a slow retry can actually complete instead of being killed.
+    return options?.acceptEdits ? exec() : withRetry(exec, { isRetryable: isRetryableError, retries: 2 });
   }
 
   async stream(
@@ -187,8 +191,9 @@ export class ClaudeCliProvider implements Provider {
       if (code !== 0) throw cliExitError(code, stderr);
       return parseStreamJson(stdout, model);
     };
-    // Edit worker: run once (never re-run a possibly-partial edit). Read-only: retry.
-    return options?.acceptEdits ? exec() : withRetry(exec, { isRetryable: isRetryableError });
+    // Edit worker: run once (never re-run a possibly-partial edit). Read-only: retry
+    // (retries:2 — see send() — bounds the worst case under the per-step backstop).
+    return options?.acceptEdits ? exec() : withRetry(exec, { isRetryable: isRetryableError, retries: 2 });
   }
 }
 

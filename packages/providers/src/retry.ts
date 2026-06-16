@@ -29,8 +29,10 @@ export async function withRetry<T>(fn: () => Promise<T>, opts: RetryOptions = {}
     } catch (err) {
       lastErr = err;
       if (attempt === retries || !isRetryable(err)) throw err;
+      // Equal jitter: a delay in [ceil/2, ceil) — keeps spread but never fires with zero
+      // backoff (full jitter can hit 0, briefly hammering an overloaded endpoint).
       const ceil = Math.min(capMs, baseMs * 2 ** attempt);
-      const delay = Math.floor(Math.random() * ceil); // full jitter — spreads retries
+      const delay = Math.floor(ceil / 2 + Math.random() * (ceil / 2));
       opts.onRetry?.(attempt + 1, delay, err);
       await sleep(delay);
     }

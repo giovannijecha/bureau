@@ -52,7 +52,8 @@ export default function SettingsPage() {
   async function changeModel(scope: string, model: string) {
     setInfo((prev) => (prev ? { ...prev, models: { ...prev.models, [scope]: model } } : prev)); // optimistic
     try {
-      await setModels({ [scope]: model });
+      const res = await setModels({ [scope]: model });
+      setInfo((prev) => (prev ? { ...prev, models: res.models } : prev)); // authoritative — avoids a poll-race revert
     } catch {
       /* the 5s poll re-syncs the authoritative value */
     }
