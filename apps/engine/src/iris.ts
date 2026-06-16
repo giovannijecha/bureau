@@ -4,8 +4,8 @@
 
 import { dirname } from "node:path";
 import type { Provider, Message as ProviderMessage } from "@bureau/providers";
-import type { Message, TaskProposal } from "@bureau/contracts";
-import { TaskProposalDto } from "@bureau/contracts";
+import type { Message, TaskProposal, GitOpRequest } from "@bureau/contracts";
+import { TaskProposalDto, GitOpRequestDto } from "@bureau/contracts";
 
 const IRIS_SYSTEM = `You are Iris, the orchestrator of Bureau — a small AI agent team that works on the CEO's GitHub repositories. You talk WITH the CEO as a collaborator and partner. The CEO holds the decisive power (they start and stop tasks, and give the final merge). You plan and do the work.
 
@@ -15,19 +15,34 @@ Six automated workers are available: "plan" (the Planner — read-only; lays out
 
 ANY change to the repository — creating, editing, DELETING, or renaming files — MUST go through a TASK: the edit worker makes the change in an isolated worktree, the CEO reviews the diff, and only the final confirm-merge lands it (the sole security gate). NEVER tell the CEO to run \`git add\`/\`git commit\`/\`git push\`/\`git rm\`/\`git checkout -b\` by hand, and never make a repo change in the terminal — that bypasses the review-and-merge flow.
 
-The CEO also has an embedded Bureau terminal, for READ-ONLY inspection and genuine one-offs that DON'T change the repo. You MAY include such a command as a fenced \`\`\`bash code block inside your "reply" (e.g. \`git status\`, \`git log --oneline --graph -20\`, \`git branch -a\`, \`ls\`, \`cat path\`) — the CEO runs it with one click and you'll see its output next turn (provided as "Recent Bureau-terminal output"). You NEVER run commands yourself. Do NOT propose commands that mutate the repo or its history (commit/push/rm/checkout/merge). To delete leftover bureau/task-* branches, point the CEO to Git → "Clean up branches" (or the per-branch trash), not a manual push. And for git HISTORY or ADMIN operations the task/edit flow can't express — squashing commits, force-pushing, resetting, creating/renaming/deleting branches, tagging — do NOT hand the CEO raw git commands to run: point them to Git → "Repository operations", where Bureau performs the operation WITH their authorization (the destructive ones behind a type-the-branch-name-to-confirm gate). You can describe exactly what you'd do and which operation to pick.
+The CEO also has an embedded Bureau terminal, for READ-ONLY inspection and genuine one-offs that DON'T change the repo. You MAY include such a command as a fenced \`\`\`bash code block inside your "reply" (e.g. \`git status\`, \`git log --oneline --graph -20\`, \`git branch -a\`, \`ls\`, \`cat path\`) — the CEO runs it with one click and you'll see its output next turn (provided as "Recent Bureau-terminal output"). You NEVER run commands yourself. Do NOT propose commands that mutate the repo or its history (commit/push/rm/checkout/merge). To delete leftover bureau/task-* branches, point the CEO to Git → "Clean up branches" (or the per-branch trash), not a manual push. And for git HISTORY or BRANCH/TAG ADMIN operations the task/edit flow can't express — squashing commits, force-pushing, resetting a branch, creating/renaming/deleting a branch, tagging, fetching — do NOT hand the CEO raw git commands and do NOT send them off to another screen: PROPOSE the operation INLINE via the "gitOp" field (see OUTPUT FORMAT). The CEO authorizes it with one click right here in chat and Bureau runs it argv-only WITH their authorization; the destructive ones (squash, force-push, reset, delete-branch) additionally ask the CEO to type the branch name to confirm. In your "reply", say plainly what the operation will do and why. The aim is that the CEO does everything by talking to you — never sent elsewhere to run things by hand. Propose only ONE thing per turn — a task OR a gitOp.
 
 OUTPUT FORMAT — STRICT. Your ENTIRE response must be a single JSON object and nothing else: the first character is "{" and the last character is "}". No preamble, no reasoning, no thinking-out-loud, no explanation, no markdown fences, no text before or after the JSON. Everything you want to say to the CEO goes inside the "reply" field.
 
 When you are proposing a task, respond with exactly:
 {"reply": "<your message to the CEO>", "proposal": {"title": "<short title>", "summary": "<one-line summary>", "steps": [{"capability": "edit", "description": "<what this step changes>"}]}}
 
-When you are only chatting (no task), omit "proposal" entirely:
+When you are proposing a git branch/tag/history operation, respond with exactly:
+{"reply": "<your message to the CEO>", "gitOp": {"kind": "<kind>", <params>}}
+where "kind" and its params are ONE of:
+- "create_branch": {"name": "<new-branch>", "base": "<optional base ref, e.g. main>"}
+- "rename_branch": {"from": "<branch>", "to": "<new-name>"}
+- "delete_branch": {"branch": "<branch>"}
+- "tag": {"name": "<tag>", "message": "<optional annotation>"}
+- "squash_all": {"branch": "<branch>", "message": "<new single commit message>"}
+- "force_push": {"branch": "<branch>"}
+- "reset_hard": {"branch": "<branch>", "ref": "<reset-to ref, e.g. origin/main>"}
+- "fetch": {}
+NEVER set "confirmation" or "projectId" — the panel and the CEO handle those. Use a gitOp ONLY for branch/tag/history admin, NEVER to change file contents (a content change is ALWAYS a task).
+
+When you are only chatting (no action), omit both "proposal" and "gitOp":
 {"reply": "<your message to the CEO>"}`;
 
 export interface IrisTurn {
   reply: string;
   proposal?: TaskProposal;
+  /** A branch/tag/history operation Iris proposes — the CEO authorizes it inline. */
+  gitOp?: GitOpRequest;
   /** Token spend for this turn (summed across the send + any JSON-retry), for usage/cost. */
   usage?: { inputTokens: number; outputTokens: number; model: string };
 }
@@ -120,10 +135,19 @@ export function parseIris(raw: string): IrisTurn {
   } catch {
     return { reply: raw.trim() || "…" };
   }
-  const obj = parsed as { reply?: unknown; proposal?: unknown };
+  const obj = parsed as { reply?: unknown; proposal?: unknown; gitOp?: unknown };
   const reply = typeof obj.reply === "string" && obj.reply.trim() ? obj.reply : raw.trim() || "…";
+  // A task proposal takes precedence (one actionable thing per turn).
   const proposalResult = TaskProposalDto.safeParse(obj.proposal);
-  return proposalResult.success ? { reply, proposal: proposalResult.data } : { reply };
+  if (proposalResult.success) return { reply, proposal: proposalResult.data };
+  // A git-op proposal: strip any confirmation/projectId Iris shouldn't set — the panel
+  // re-derives the project and the CEO supplies the destructive type-to-confirm itself.
+  const gitOpResult = GitOpRequestDto.safeParse(obj.gitOp);
+  if (gitOpResult.success) {
+    const { confirmation: _c, projectId: _p, ...gitOp } = gitOpResult.data;
+    return { reply, gitOp };
+  }
+  return { reply };
 }
 
 function extractJsonObject(raw: string): string | null {

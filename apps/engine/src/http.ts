@@ -11,6 +11,7 @@
 //   POST /api/tasks/:id/start     run the pipeline (local commit, no push)
 //   POST /api/tasks/:id/stop      abort + clean up
 //   POST /api/tasks/:id/merge     the final confirm: push → PR → squash-merge
+//   POST /api/tasks/:id/open-pr   push → open a PR for review on GitHub, NO merge
 
 import { createServer, type IncomingMessage, type ServerResponse, type Server } from "node:http";
 import { SendMessageRequestDto, CreateTaskRequestDto, SaveNoteRequestDto, GateDecisionRequestDto, GitOpRequestDto } from "@bureau/contracts";
@@ -334,8 +335,8 @@ async function handle(deps: HttpDeps, req: IncomingMessage, res: ServerResponse)
     return;
   }
 
-  // POST /api/tasks/:id/(start|stop|merge)
-  const actionMatch = /^\/api\/tasks\/([^/]+)\/(start|stop|merge)$/.exec(path);
+  // POST /api/tasks/:id/(start|stop|merge|open-pr)
+  const actionMatch = /^\/api\/tasks\/([^/]+)\/(start|stop|merge|open-pr)$/.exec(path);
   if (method === "POST" && actionMatch) {
     const id = decodeURIComponent(actionMatch[1]!);
     const action = actionMatch[2];
@@ -344,7 +345,9 @@ async function handle(deps: HttpDeps, req: IncomingMessage, res: ServerResponse)
         ? await deps.orchestrator.startTask(id)
         : action === "stop"
           ? await deps.orchestrator.stopTask(id)
-          : await deps.orchestrator.confirmMerge(id);
+          : action === "open-pr"
+            ? await deps.orchestrator.openPrForReview(id)
+            : await deps.orchestrator.confirmMerge(id);
     sendJson(res, 200, toTaskDetail(task));
     return;
   }

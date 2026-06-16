@@ -28,6 +28,7 @@ export function toTaskSummary(task: Task): TaskSummary {
     completedStepCount: task.steps.filter((s) => s.status === "completed" || s.status === "blocked_on_gate").length,
     pendingGates: task.gates.filter((g) => g.status === "pending" || g.status === "open").length,
     merged: isMerged(task),
+    prOpen: prOpen(task),
   };
 }
 
@@ -42,26 +43,38 @@ export function mergeError(task: Task): string | null {
   return null;
 }
 
-/** True only when the task genuinely landed on main: completed, has a PR URL, and
- *  no recorded merge error. Distinguishes a real merge from a confirmed-but-failed one. */
+/** True only when the task genuinely landed on main: completed, has a MERGED PR URL
+ *  (pr_url), and no recorded merge error. A PR merely OPENED for review (pr_open) does
+ *  NOT count as merged. Distinguishes a real merge from a confirmed-but-failed one. */
 export function isMerged(task: Task): boolean {
-  return task.status === "completed" && prUrl(task) !== null && mergeError(task) === null;
+  return task.status === "completed" && mergedPrUrl(task) !== null && mergeError(task) === null;
+}
+
+/** True when the task's branch was pushed and a PR OPENED for review, but NOT merged —
+ *  the branch + PR live on GitHub and the CEO merges (or closes) it there. */
+export function prOpen(task: Task): boolean {
+  return task.status === "completed" && artifactRef(task, "pr_open") !== null && mergedPrUrl(task) === null && mergeError(task) === null;
 }
 
 /** The most recently produced diff for a task, or null if none yet. */
 export function latestDiff(task: Task): string | null {
-  for (let i = task.artifacts.length - 1; i >= 0; i--) {
-    const a = task.artifacts[i]!;
-    if (a.kind === "diff") return a.ref;
-  }
-  return null;
+  return artifactRef(task, "diff");
 }
 
-/** The opened PR URL for a task, or null if none yet. */
+/** The displayable PR URL — whether the PR was merged (pr_url) or just opened (pr_open). */
 export function prUrl(task: Task): string | null {
+  return mergedPrUrl(task) ?? artifactRef(task, "pr_open");
+}
+
+/** Only a MERGED PR's URL (the pr_url artifact) — gates isMerged. */
+function mergedPrUrl(task: Task): string | null {
+  return artifactRef(task, "pr_url");
+}
+
+/** The most recent artifact ref of a given kind, or null. */
+function artifactRef(task: Task, kind: Task["artifacts"][number]["kind"]): string | null {
   for (let i = task.artifacts.length - 1; i >= 0; i--) {
-    const a = task.artifacts[i]!;
-    if (a.kind === "pr_url") return a.ref;
+    if (task.artifacts[i]!.kind === kind) return task.artifacts[i]!.ref;
   }
   return null;
 }

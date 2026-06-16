@@ -1,5 +1,6 @@
 import { z } from "zod";
 import { MessageDto } from "./message.dto.js";
+import { GitOpRequestDto } from "./git-op.dto.js";
 
 export const CapabilitySchema = z.enum(["plan", "edit", "test", "review", "document", "research"]);
 export const StepStatusSchema = z.enum(["pending", "running", "completed", "failed", "blocked_on_gate"]);
@@ -28,6 +29,9 @@ export const TaskSummaryDto = z.object({
   pendingGates: z.number().int().nonnegative(),
   /** True only when the task genuinely landed on main (completed + PR + no merge error). */
   merged: z.boolean(),
+  /** True when the branch was pushed + a PR opened for review, but NOT merged — the
+   *  branch lives on GitHub for the CEO to test and merge there. */
+  prOpen: z.boolean(),
 });
 
 export const GateDecisionRequestDto = z.object({
@@ -101,12 +105,17 @@ export const TaskProposalDto = z.object({
   steps: z.array(z.object({ capability: CapabilitySchema, description: z.string() })).min(1),
 });
 
-/** Iris's reply to a chat turn, optionally carrying a task proposal. */
+/** Iris's reply to a chat turn. She may carry ONE actionable proposal: a task (a
+ *  pipeline that changes repo CONTENT) or a git-op (a branch/tag/history ADMIN action
+ *  the CEO authorizes inline — runs through the same gated /api/git/op endpoint). */
 export const ChatResponseDto = z.object({
   reply: MessageDto,
   /** The conversation this turn belongs to (created on the fly when none was given). */
   conversationId: z.string(),
   proposal: TaskProposalDto.optional(),
+  /** A git history/branch/tag operation Iris proposes — the CEO authorizes (and, for
+   *  destructive ops, type-to-confirms) it inline; the panel never auto-runs it. */
+  gitOp: GitOpRequestDto.optional(),
 });
 
 export const CreateTaskRequestDto = z.object({

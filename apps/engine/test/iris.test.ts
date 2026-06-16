@@ -69,6 +69,27 @@ describe("parseIris", () => {
     expect(t.reply).toBe("hi");
     expect(t.proposal).toBeUndefined();
   });
+
+  it("extracts a git-op proposal and strips confirmation/projectId Iris shouldn't set", () => {
+    const t = parseIris(JSON.stringify({ reply: "I'll create it.", gitOp: { kind: "create_branch", name: "test", base: "main", confirmation: "test", projectId: "x" } }));
+    expect(t.reply).toBe("I'll create it.");
+    expect(t.gitOp).toEqual({ kind: "create_branch", name: "test", base: "main" });
+    expect(t.gitOp?.confirmation).toBeUndefined(); // never pre-confirmed by Iris
+    expect(t.gitOp?.projectId).toBeUndefined(); // the panel scopes the project
+    expect(t.proposal).toBeUndefined();
+  });
+
+  it("a task proposal takes precedence over a git-op when both are present", () => {
+    const t = parseIris(JSON.stringify({ reply: "hi", proposal: { title: "T", summary: "S", steps: [{ capability: "edit", description: "d" }] }, gitOp: { kind: "fetch" } }));
+    expect(t.proposal?.title).toBe("T");
+    expect(t.gitOp).toBeUndefined();
+  });
+
+  it("drops an invalid git-op shape but keeps the reply", () => {
+    const t = parseIris(JSON.stringify({ reply: "hi", gitOp: { kind: "not_a_real_op" } }));
+    expect(t.reply).toBe("hi");
+    expect(t.gitOp).toBeUndefined();
+  });
 });
 
 describe("irisRespond", () => {

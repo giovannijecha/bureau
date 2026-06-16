@@ -330,14 +330,16 @@ export default function GitPage() {
                   </div>
                   <div className="divide-y">
                     {ts.map((t) => {
-                      const mergeFailed = t.status === "completed" && !t.merged;
+                      const mergeFailed = t.status === "completed" && !t.merged && !t.prOpen;
                       const inFlight = t.status === "planning" || t.status === "executing" || t.status === "awaiting_human";
-                      const label = t.merged ? "merged" : mergeFailed ? "merge failed" : t.status.replace(/_/g, " ");
+                      const label = t.merged ? "merged" : t.prOpen ? "PR open" : mergeFailed ? "merge failed" : t.status.replace(/_/g, " ");
                       const badge = t.merged
                         ? STATUS_COLOR.completed
-                        : mergeFailed
-                          ? "border-red-500/40 text-red-500"
-                          : STATUS_COLOR[t.status] ?? "border-border text-muted-foreground";
+                        : t.prOpen
+                          ? "border-blue-500/40 text-blue-400"
+                          : mergeFailed
+                            ? "border-red-500/40 text-red-500"
+                            : STATUS_COLOR[t.status] ?? "border-border text-muted-foreground";
                       const branch = `bureau/task-${t.id}`;
                       return (
                         <div key={t.id} className="group/branch flex items-center gap-3 px-4 py-3 transition-colors hover:bg-muted/50">
