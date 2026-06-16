@@ -20,6 +20,13 @@ describe("isSecretEnvName — terminal env-scrub", () => {
     }
   });
 
+  it("does NOT over-match non-secret names that merely contain a secret word", () => {
+    // The secret word must be a whole segment — these are NOT secrets.
+    for (const k of ["TOKENIZERS_PARALLELISM", "PRIMARY_KEY", "SIGNING_KEY", "PUBLIC_KEY"]) {
+      expect(isSecretEnvName(k)).toBe(false);
+    }
+  });
+
   it("allows secret-shaped-but-safe names through (ssh agent / git askpass)", () => {
     for (const k of ["SSH_AUTH_SOCK", "SSH_AGENT_PID", "GIT_ASKPASS", "SSH_ASKPASS"]) {
       expect(isSecretEnvName(k)).toBe(false);

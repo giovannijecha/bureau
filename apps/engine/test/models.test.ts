@@ -1,5 +1,6 @@
 import { describe, it, expect } from "vitest";
 import { defaultModelPolicy, modelPolicyFromEnv, resolveModel, isKnownModel, KNOWN_MODELS, MODEL_SCOPES } from "../src/models.js";
+import { priceFor } from "../src/usage.js";
 
 describe("model policy", () => {
   it("defaults every scope to the Opus model (no behavior change)", () => {
@@ -25,5 +26,13 @@ describe("model policy", () => {
     const p = modelPolicyFromEnv({ BUREAU_MODEL_IRIS: "claude-sonnet-4-6", BUREAU_MODEL_EDIT: "not-a-model" });
     expect(p.iris).toBe("claude-sonnet-4-6"); // applied
     expect(p.edit).toBe("claude-opus-4-8"); // bad id ignored → default
+  });
+
+  it("every selectable model has a price (no selectable-but-unpriced drift)", () => {
+    for (const m of KNOWN_MODELS) {
+      const price = priceFor(m);
+      expect(price.inPerM).toBeGreaterThan(0);
+      expect(price.outPerM).toBeGreaterThan(0);
+    }
   });
 });

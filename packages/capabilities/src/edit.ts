@@ -65,6 +65,10 @@ export async function runAgenticFileWorker(
     { role: "system", content: systemPrompt },
     { role: "user", content: opts.prompt ?? buildEditPrompt(input) },
   ];
+  // INVARIANT: acceptEdits doubles as the "this call MUTATES the worktree" signal — the
+  // provider never retries a call with acceptEdits=true (a retried partial edit would
+  // double-apply). Any MUTATING worker (edit, document) MUST keep acceptEdits=true;
+  // read-only workers (plan/review/research) pass false and are safe to retry.
   const sendOpts = {
     maxTokens: 8_000,
     cwd: input.worktreePath,

@@ -22,15 +22,15 @@ const TRANSIENT_NODE_CODES = new Set(["ECONNRESET", "ETIMEDOUT", "ECONNREFUSED",
 
 /**
  * True when an error is a transient failure worth retrying: a ProviderError flagged
- * retryable, an HTTP 408/409/429 or 5xx (duck-typed `status` — we never import the SDK),
- * or a known transient Node connection code. Everything else (a 4xx, a refusal, a real
- * CLI error) is NOT retried.
+ * retryable, an HTTP 408/429 or 5xx (duck-typed `status` — we never import the SDK), or
+ * a known transient Node connection code. Everything else — a 4xx (incl. 409 Conflict,
+ * which isn't generically safe to replay), a refusal, a real CLI error — is NOT retried.
  */
 export function isRetryableError(err: unknown): boolean {
   if (err instanceof ProviderError) return err.retryable;
   if (typeof err !== "object" || err === null) return false;
   const e = err as { status?: unknown; code?: unknown };
-  if (typeof e.status === "number" && (e.status === 408 || e.status === 409 || e.status === 429 || e.status >= 500)) return true;
+  if (typeof e.status === "number" && (e.status === 408 || e.status === 429 || e.status >= 500)) return true;
   if (typeof e.code === "string" && TRANSIENT_NODE_CODES.has(e.code)) return true;
   return false;
 }

@@ -42,11 +42,12 @@ import { ASSIGNEE } from "./summary.js";
 
 export { OrchestratorError };
 
-// Per-step wall-clock backstop. Set ABOVE each worker's OWN self-timeout (CLI 240s,
-// test runner 600s) so a normal slow-but-progressing run never trips it — this only
-// catches a hung promise that never settles (e.g. a wedged stream).
-const STEP_TIMEOUT_MS = 300_000; // 5 min — > the 240s CLI cap
-const TEST_STEP_TIMEOUT_MS = 660_000; // 11 min — > the test runner's 600s self-timeout
+// Per-step wall-clock backstop. Set ABOVE each worker's OWN self-timeout AND its retry
+// budget so a normal slow-but-retrying run never trips it — this only catches a hung
+// promise that never settles (e.g. a wedged stream). A read-only CLI step retries ≤2×,
+// each capped at the 240s CLI self-kill → ≤3 × 240s ≈ 12min worst case, so 15min headroom.
+const STEP_TIMEOUT_MS = 900_000; // 15 min — > 3 × the 240s CLI cap (retries:2)
+const TEST_STEP_TIMEOUT_MS = 660_000; // 11 min — > the test runner's 600s self-timeout (no retries)
 
 export interface OrchestratorDeps {
   readonly store: TaskStore;
@@ -376,10 +377,14 @@ export class Orchestrator {
    *  known list (so an unpriced/unsupported model can't be selected) and ignores any
    *  unknown scope. In-memory for the session — env (BUREAU_MODEL_*) is the durable set. */
   setModels(models: Record<string, string>): Record<string, string> {
-    for (const [scope, model] of Object.entries(models)) {
+    // Validate the WHOLE batch before mutating anything — all-or-nothing, so a bad id in
+    // a multi-scope write never leaves some scopes silently changed behind a 422.
+    for (const model of Object.values(models)) {
       if (!isKnownModel(model)) {
         throw new OrchestratorError(`Unknown model "${model}" — choose a supported model.`, 422);
       }
+    }
+    for (const [scope, model] of Object.entries(models)) {
       if ((MODEL_SCOPES as readonly string[]).includes(scope)) this.modelPolicy[scope] = model;
     }
     return { ...this.modelPolicy };
