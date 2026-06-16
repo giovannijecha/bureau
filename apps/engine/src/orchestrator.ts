@@ -38,7 +38,7 @@ import { OrchestratorError } from "./errors.js";
 import { irisRespond } from "./iris.js";
 import { buildHub } from "./hub.js";
 import { journalPath, journalMarkdown, notePath } from "./memory.js";
-import { ASSIGNEE, prOpen, prUrl } from "./summary.js";
+import { ASSIGNEE, prOpen, prUrl, isMerged } from "./summary.js";
 
 export { OrchestratorError };
 
@@ -73,6 +73,8 @@ const DEFAULT_CONVERSATION_TITLE = "New chat";
 export class Orchestrator {
   /** In-flight background pipelines, keyed by task id (for settle / graceful drain). */
   private readonly running = new Map<string, Promise<void>>();
+  /** Tasks with an in-flight deferred merge — serializes mergeOpenPr against a double-click. */
+  private readonly merging = new Set<string>();
   /** Which model each scope runs on — mutable (the CEO can change it in Settings). */
   private readonly modelPolicy: ModelPolicy;
 
@@ -1070,6 +1072,10 @@ export class Orchestrator {
    *  is completed with its gate approved). On failure records an honest merge_error. */
   async mergeOpenPr(taskId: string): Promise<Task> {
     let task = this.requireTask(taskId);
+    if (isMerged(task)) return task; // idempotent — a racing 2nd call must not record a false error
+    if (this.merging.has(taskId)) {
+      throw new OrchestratorError(`Task ${taskId} is already being merged.`, 409); // serialize concurrent merges
+    }
     if (!prOpen(task)) {
       throw new OrchestratorError(`Task ${taskId} has no open PR awaiting a merge.`, 409);
     }
@@ -1077,22 +1083,29 @@ export class Orchestrator {
     if (!canPush(task)) {
       throw new OrchestratorError(`Task ${taskId} isn't authorized to merge.`, 409);
     }
-    const vcs = this.d.vcs(this.resolveProject(task));
-    const branch = this.branchFor(task.id);
-    const url = prUrl(task) ?? "";
-    const lastStep = task.steps[task.steps.length - 1]!.id;
+    this.merging.add(taskId);
     try {
-      await vcs.mergePr(branch);
-      // Record the MERGED PR (pr_url) so the task now reads "merged", not "PR open".
-      task = this.addArtifacts(task, [{ id: this.d.ids() as ArtifactId, kind: "pr_url", ref: url, producedByStep: lastStep, createdAt: this.d.clock() }]);
-      this.notify("merged", task.id, "Merged to main", `“${truncate(task.goal)}” is merged${url ? ` — ${url}` : ""}.`);
-    } catch (err) {
-      this.notify("merge_failed", task.id, "Merge didn't land", `“${truncate(task.goal)}” couldn't merge: ${errMessage(err)}${url ? ` (PR ${url})` : ""}`);
-      task = this.addArtifacts(task, [{ id: this.d.ids() as ArtifactId, kind: "merge_error", ref: errMessage(err), producedByStep: lastStep, createdAt: this.d.clock() }]);
+      const vcs = this.d.vcs(this.resolveProject(task));
+      const branch = this.branchFor(task.id);
+      const url = prUrl(task) ?? "";
+      const lastStep = task.steps[task.steps.length - 1]!.id;
+      try {
+        await vcs.mergePr(branch);
+        // Record the MERGED PR (pr_url) so the task now reads "merged", not "PR open".
+        task = this.addArtifacts(task, [{ id: this.d.ids() as ArtifactId, kind: "pr_url", ref: url, producedByStep: lastStep, createdAt: this.d.clock() }]);
+        this.notify("merged", task.id, "Merged to main", `“${truncate(task.goal)}” is merged${url ? ` — ${url}` : ""}.`);
+      } catch (err) {
+        // The PR is still open + mergeable (prOpen tolerates a merge_error), so the CEO
+        // keeps the in-Bureau retry — this records an honest error, not a dead end.
+        this.notify("merge_failed", task.id, "Merge didn't land", `“${truncate(task.goal)}” couldn't merge: ${errMessage(err)}${url ? ` (PR ${url})` : ""}`);
+        task = this.addArtifacts(task, [{ id: this.d.ids() as ArtifactId, kind: "merge_error", ref: errMessage(err), producedByStep: lastStep, createdAt: this.d.clock() }]);
+      }
+      this.emitTaskUpdated(task);
+      await this.journalTask(task);
+      return task;
+    } finally {
+      this.merging.delete(taskId);
     }
-    this.emitTaskUpdated(task);
-    await this.journalTask(task);
-    return task;
   }
 
   /** THE single GitHub-reaching path. Approve the open pr_approval gate, complete the
