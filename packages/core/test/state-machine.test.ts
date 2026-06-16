@@ -469,6 +469,14 @@ describe("transition() — COMPLETE_TASK", () => {
     expect(next.decisionLog.at(-1)).toMatchObject({ type: "task_completed" });
   });
 
+  it("completes a step parked at its (now-approved) gate so counts read 1/1, not 0/1", () => {
+    const task = makeTask({ status: "executing", steps: [makeStep({ id: sid("s1"), status: "blocked_on_gate" })] });
+    const next = transition(task, { type: "COMPLETE_TASK" });
+
+    expect(next.status).toBe("completed");
+    expect(next.steps[0]!.status).toBe("completed");
+  });
+
   it.each(ALL_STATUSES.filter((s) => s !== "executing"))(
     "is illegal from status %s",
     (status) => {

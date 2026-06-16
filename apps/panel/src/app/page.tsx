@@ -25,11 +25,16 @@ import { useProjects } from "../lib/useProjects";
 import { ProjectPicker } from "../components/ProjectPicker";
 import { ConversationsRail } from "../components/ConversationsRail";
 import { Markdown } from "../components/Markdown";
+import { FieldError } from "../components/FieldError";
+import { CharCount } from "../components/CharCount";
 import { useConfirm } from "../components/ConfirmDialog";
 import { cn } from "../lib/utils";
 
+const MESSAGE_MAX = 32_000; // mirrors SendMessageRequestDto.content.max(32_000)
+
 const ASSIGNEE: Record<string, string> = {
   plan: "Planner",
+  research: "Researcher",
   edit: "Editor",
   test: "Tester",
   review: "Reviewer",
@@ -49,6 +54,7 @@ export default function AssistantPage() {
   const [conversations, setConversations] = useState<Conversation[]>([]);
   const [convId, setConvId] = useState<string | null>(null);
   const [attachments, setAttachments] = useState<Attachment[]>([]);
+  const [composerErr, setComposerErr] = useState<string | null>(null);
   const inputRef = useRef<HTMLTextAreaElement>(null);
   const bottomRef = useRef<HTMLDivElement>(null);
   const fileRef = useRef<HTMLInputElement>(null);
@@ -110,9 +116,15 @@ export default function AssistantPage() {
 
   async function onSend() {
     const content = input.trim();
-    if ((!content && attachments.length === 0) || busy) return;
+    if (busy) return;
+    if (input.length > MESSAGE_MAX) {
+      setComposerErr(`Message is too long — keep it under ${MESSAGE_MAX.toLocaleString()} characters.`);
+      return;
+    }
+    if (!content && attachments.length === 0) return;
     setBusy(true);
     setError(null);
+    setComposerErr(null);
     setProposal(null);
     persistProposal(convId, null); // clear up-front so a failed send can't resurrect the old proposal
     const atts = attachments;
@@ -138,29 +150,35 @@ export default function AssistantPage() {
   async function onFiles(e: ChangeEvent<HTMLInputElement>) {
     const files = Array.from(e.target.files ?? []);
     e.target.value = ""; // allow re-selecting the same file
-    setError(null);
     const room = 8 - attachments.length;
+    if (room <= 0) {
+      setComposerErr("You can attach up to 8 files — remove one to add another.");
+      return;
+    }
+    let msg: string | null = null;
     const next: Attachment[] = [];
-    for (const file of files.slice(0, Math.max(0, room))) {
+    for (const file of files.slice(0, room)) {
       try {
         if (file.type.startsWith("image/")) {
           if (file.size > 8_000_000) {
-            setError(`“${file.name}” is too large (max 8 MB).`);
+            msg = `“${file.name}” is too large (max 8 MB for an image).`;
             continue;
           }
           const dataUrl = await readFile(file, "dataURL");
           next.push({ name: file.name, kind: "image", content: dataUrl.includes(",") ? dataUrl.slice(dataUrl.indexOf(",") + 1) : dataUrl, mediaType: file.type || "image/png" });
         } else {
           if (file.size > 256_000) {
-            setError(`“${file.name}” is too large (max 256 KB for a text file).`);
+            msg = `“${file.name}” is too large (max 256 KB for a text file).`;
             continue;
           }
           next.push({ name: file.name, kind: "text", content: await readFile(file, "text") });
         }
       } catch {
-        setError(`Couldn’t read “${file.name}”.`);
+        msg = `Couldn’t read “${file.name}”.`;
       }
     }
+    if (!msg && files.length > room) msg = `Added the first ${room} — you can attach up to 8 files.`;
+    setComposerErr(msg);
     if (next.length) setAttachments((a) => [...a, ...next]);
   }
 
@@ -313,15 +331,21 @@ export default function AssistantPage() {
                 />
                 <ProjectPicker compact projects={projects} active={active} onChange={setActiveId} />
               </div>
-              <button
-                onClick={onSend}
-                disabled={busy || (!input.trim() && attachments.length === 0)}
-                aria-label="Send"
-                className="flex h-8 w-8 items-center justify-center rounded-lg bg-primary text-primary-foreground transition-colors hover:bg-primary/90 disabled:opacity-40"
-              >
-                {busy ? <Loader2 className="h-4 w-4 animate-spin" /> : <Send className="h-4 w-4" />}
-              </button>
+              <div className="flex items-center gap-2.5">
+                <CharCount value={input.length} max={MESSAGE_MAX} />
+                <button
+                  onClick={onSend}
+                  disabled={busy || input.length > MESSAGE_MAX || (!input.trim() && attachments.length === 0)}
+                  aria-label="Send"
+                  className="flex h-8 w-8 items-center justify-center rounded-lg bg-primary text-primary-foreground transition-colors hover:bg-primary/90 disabled:opacity-40"
+                >
+                  {busy ? <Loader2 className="h-4 w-4 animate-spin" /> : <Send className="h-4 w-4" />}
+                </button>
+              </div>
             </div>
+          </div>
+          <div className="px-1">
+            <FieldError message={composerErr} />
           </div>
           <p className="mt-2 text-center text-[11px] text-muted-foreground">
             Iris proposes tasks — you decide. <kbd className="rounded border px-1 py-px font-sans text-[10px]">Enter</kbd> to send ·{" "}
@@ -353,7 +377,7 @@ function ChatBubble({ message, onRun }: { message: Message; onRun?: (cmd: string
     <div className={cn("flex", isUser ? "justify-end" : "justify-start")}>
       <div
         className={cn(
-          "max-w-[82%] rounded-2xl px-4 py-2.5 text-sm leading-relaxed",
+          "max-w-[90%] rounded-2xl px-4 py-2.5 text-sm leading-relaxed sm:max-w-[82%]",
           isUser ? "whitespace-pre-wrap bg-primary text-primary-foreground" : "border bg-card"
         )}
       >
@@ -366,17 +390,12 @@ function ChatBubble({ message, onRun }: { message: Message; onRun?: (cmd: string
 }
 
 function TypingIndicator() {
-  // Iris refreshes the repo clone and reads it before answering — say so, like a
-  // good assistant, so the wait reads as "working", not "stuck".
   return (
     <div className="flex justify-start">
-      <div className="flex items-center gap-2 rounded-2xl border bg-card px-4 py-3">
-        <span className="flex items-center gap-1">
-          <span className="h-1.5 w-1.5 animate-bounce rounded-full bg-muted-foreground/70 [animation-delay:-0.3s]" />
-          <span className="h-1.5 w-1.5 animate-bounce rounded-full bg-muted-foreground/70 [animation-delay:-0.15s]" />
-          <span className="h-1.5 w-1.5 animate-bounce rounded-full bg-muted-foreground/70" />
-        </span>
-        <span className="text-xs text-muted-foreground">Iris is reading the repo…</span>
+      <div className="flex items-center gap-1.5 rounded-2xl border bg-card px-4 py-3">
+        <span className="h-1.5 w-1.5 animate-bounce rounded-full bg-muted-foreground/70 [animation-delay:-0.3s]" />
+        <span className="h-1.5 w-1.5 animate-bounce rounded-full bg-muted-foreground/70 [animation-delay:-0.15s]" />
+        <span className="h-1.5 w-1.5 animate-bounce rounded-full bg-muted-foreground/70" />
       </div>
     </div>
   );

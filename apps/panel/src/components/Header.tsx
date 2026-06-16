@@ -14,9 +14,11 @@ import {
   BarChart3,
   Bell,
   Terminal,
+  Menu,
   type LucideIcon,
 } from "lucide-react";
 import { useEngineOnline } from "../lib/useEngineOnline";
+import { useSidebar } from "../lib/sidebar";
 import { ThemeToggle } from "./ThemeToggle";
 import { NotificationBell } from "./NotificationBell";
 import { cn } from "../lib/utils";
@@ -50,10 +52,18 @@ export function Header() {
   const section = SECTIONS.find((s) => s.match(pathname)) ?? SECTIONS[0]!;
   const Icon = section.icon;
   const online = useEngineOnline();
+  const { openDrawer } = useSidebar();
+
+  const navBtn =
+    "flex h-9 w-9 shrink-0 items-center justify-center rounded-lg text-muted-foreground transition-colors hover:bg-accent hover:text-foreground";
 
   return (
-    <header className="flex h-16 shrink-0 items-center justify-between gap-3 border-b bg-background px-6">
-      <div className="flex min-w-0 items-center gap-3">
+    <header className="flex h-16 shrink-0 items-center justify-between gap-2 border-b bg-background px-3 sm:gap-3 sm:px-6">
+      <div className="flex min-w-0 items-center gap-2 sm:gap-3">
+        {/* Mobile: open the off-canvas nav drawer (sidebar is hidden on phones). */}
+        <button onClick={openDrawer} aria-label="Open navigation" className={cn(navBtn, "md:hidden")}>
+          <Menu className="h-5 w-5" />
+        </button>
         <div className="flex h-9 w-9 shrink-0 items-center justify-center rounded-lg bg-primary/10 text-primary">
           <Icon className="h-[18px] w-[18px]" />
         </div>

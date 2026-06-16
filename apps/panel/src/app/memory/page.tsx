@@ -8,6 +8,9 @@ import { listNotes, getNote, saveNote, deleteNote } from "../../lib/api";
 import { useEngineEvents } from "../../lib/useEngineEvents";
 import { useConfirm } from "../../components/ConfirmDialog";
 import { Markdown } from "../../components/Markdown";
+import { FieldError } from "../../components/FieldError";
+import { IrisDock } from "../../components/IrisDock";
+import { useProjects } from "../../lib/useProjects";
 import { cn } from "../../lib/utils";
 
 type Compose = { title: string; body: string; path: string | null };
@@ -16,6 +19,7 @@ type Pane = { mode: "view"; note: Note } | { mode: "compose"; initial: Compose }
 export default function MemoryPage() {
   const router = useRouter();
   const confirm = useConfirm();
+  const { projects, active, activeId, setActiveId } = useProjects();
   const [notes, setNotes] = useState<NoteSummary[] | null>(null);
   const [q, setQ] = useState("");
   const [pane, setPane] = useState<Pane>({ mode: "empty" });
@@ -220,6 +224,17 @@ export default function MemoryPage() {
         )}
         </div>
       </div>
+
+      {/* Iris dock — your personal memory assistant (hidden on narrow screens) */}
+      <div className="hidden w-[360px] shrink-0 flex-col overflow-hidden border-l lg:flex">
+        <IrisDock
+          projectId={activeId}
+          projects={projects}
+          active={active}
+          onSelectProject={setActiveId}
+          emptyHint="Your memory assistant. Ask Iris about your saved notes — she can explain them, spot overlaps or stale/duplicate entries, and suggest cleaner wording or consolidations to keep the vault tidy. She reads your notes; apply any edits from the editor."
+        />
+      </div>
     </div>
   );
 }
@@ -307,6 +322,7 @@ function Composer({ initial, onCancel, onSaved }: { initial: Compose; onCancel: 
           <button
             onClick={() => void save()}
             disabled={busy || title.trim() === ""}
+            title={title.trim() === "" ? "Add a title to save" : undefined}
             className="inline-flex h-8 items-center gap-1.5 rounded-md bg-primary px-3 text-xs font-medium text-primary-foreground transition-colors hover:bg-primary/90 disabled:opacity-50"
           >
             {busy ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <Save className="h-3.5 w-3.5" />}
@@ -323,7 +339,8 @@ function Composer({ initial, onCancel, onSaved }: { initial: Compose; onCancel: 
           autoFocus={!editing}
           className="h-10 w-full rounded-md border bg-background px-3 text-sm font-medium outline-none focus:border-primary"
         />
-        {error && <p className="mt-2 text-sm text-destructive">⚠ {error}</p>}
+        {title.trim() === "" && !error && <p className="mt-1.5 text-xs text-muted-foreground">A title is required to save.</p>}
+        <FieldError message={error} />
       </div>
 
       {/* Split: editor + live preview (stacks on narrow screens). */}

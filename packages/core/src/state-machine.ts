@@ -218,12 +218,18 @@ export function transition(task: Task, event: TransitionEvent): Task {
       };
     }
 
-    case "COMPLETE_TASK":
+    case "COMPLETE_TASK": {
       assertStatus(task, "executing", event.type);
-      return patch(task, now, { status: "completed" }, {
+      // A step that ran and parked at its (now-approved) gate is accepted as the task
+      // completes — mark it completed so step counts and timelines are honest, not "0/1".
+      const completedSteps = task.steps.map((s) =>
+        s.status === "blocked_on_gate" ? { ...s, status: "completed" as const, completedAt: s.completedAt ?? now } : s
+      );
+      return patch({ ...task, steps: completedSteps }, now, { status: "completed" }, {
         type: "task_completed",
         at: now,
       } satisfies DecisionEntry);
+    }
 
     case "ABORT_TASK":
       // Aborting also terminalises any in-flight step, so a stopped task never

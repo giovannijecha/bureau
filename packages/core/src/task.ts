@@ -10,7 +10,7 @@ export type StepId = string & { readonly __brand: "StepId" };
 export type GateId = string & { readonly __brand: "GateId" };
 export type ArtifactId = string & { readonly __brand: "ArtifactId" };
 
-export type CapabilityKind = "plan" | "edit" | "test" | "review" | "document";
+export type CapabilityKind = "plan" | "edit" | "test" | "review" | "document" | "research";
 
 export type GateKind = "plan_review" | "diff_review" | "pr_approval";
 

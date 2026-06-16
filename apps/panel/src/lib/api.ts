@@ -15,7 +15,18 @@ import type {
   UsageSummary,
   Notification,
   GitInfo,
+  GitTree,
+  GitFileContent,
+  GithubAccount,
+  PullRequest,
+  Issue,
+  TreeCommits,
+  CommitDetail,
+  FileList,
+  FileHistory,
   Attachment,
+  GitOpRequest,
+  GitOpResult,
 } from "@bureau/contracts";
 
 export const ENGINE_URL = process.env.NEXT_PUBLIC_ENGINE_URL ?? "http://localhost:4319";
@@ -46,6 +57,23 @@ export async function getConfig(): Promise<EngineInfo> {
   return json(await fetch(`${BASE}/api/config`));
 }
 
+/** The connected GitHub account (read-only, via the gh CLI) for Settings. */
+export async function getGithubAccount(): Promise<GithubAccount> {
+  return json(await fetch(`${BASE}/api/github-account`));
+}
+
+/** The repo's pull requests (read-only, via gh). */
+export async function getPrs(projectId?: string): Promise<PullRequest[]> {
+  const suffix = projectId ? `?projectId=${encodeURIComponent(projectId)}` : "";
+  return json(await fetch(`${BASE}/api/git/prs${suffix}`));
+}
+
+/** The repo's issues (read-only, via gh). */
+export async function getIssues(projectId?: string): Promise<Issue[]> {
+  const suffix = projectId ? `?projectId=${encodeURIComponent(projectId)}` : "";
+  return json(await fetch(`${BASE}/api/git/issues${suffix}`));
+}
+
 /** The Agent-Activity Hub: worker status + cross-task activity + review queue. */
 export async function getHub(): Promise<Hub> {
   return json(await fetch(`${BASE}/api/hub`));
@@ -55,6 +83,58 @@ export async function getHub(): Promise<Hub> {
 export async function getGitInfo(projectId?: string): Promise<GitInfo> {
   const suffix = projectId ? `?projectId=${encodeURIComponent(projectId)}` : "";
   return json(await fetch(`${BASE}/api/git${suffix}`));
+}
+
+/** Read-only codebase browser: one directory level of the repo at `ref`. */
+export async function getGitTree(projectId: string | undefined, ref: string | undefined, path: string): Promise<GitTree> {
+  const params = new URLSearchParams();
+  if (projectId) params.set("projectId", projectId);
+  if (ref) params.set("ref", ref);
+  if (path) params.set("path", path);
+  return json(await fetch(`${BASE}/api/git/tree?${params.toString()}`));
+}
+
+/** Read-only codebase browser: a file's content at `ref`. */
+export async function getGitShow(projectId: string | undefined, ref: string | undefined, path: string): Promise<GitFileContent> {
+  const params = new URLSearchParams();
+  if (projectId) params.set("projectId", projectId);
+  if (ref) params.set("ref", ref);
+  params.set("path", path);
+  return json(await fetch(`${BASE}/api/git/show?${params.toString()}`));
+}
+
+/** Read-only: the latest commit that touched each entry of a directory at `ref`
+ *  (the code browser's "latest commit" column — loaded after the tree). */
+export async function getTreeCommits(projectId: string | undefined, ref: string | undefined, path: string): Promise<TreeCommits> {
+  const params = new URLSearchParams();
+  if (projectId) params.set("projectId", projectId);
+  if (ref) params.set("ref", ref);
+  if (path) params.set("path", path);
+  return json(await fetch(`${BASE}/api/git/tree-commits?${params.toString()}`));
+}
+
+/** Read-only: one commit's metadata, file stats, and patch (the diff viewer). */
+export async function getCommit(projectId: string | undefined, ref: string): Promise<CommitDetail> {
+  const params = new URLSearchParams({ ref });
+  if (projectId) params.set("projectId", projectId);
+  return json(await fetch(`${BASE}/api/git/commit?${params.toString()}`));
+}
+
+/** Read-only: every file path in the repo at `ref` (the "go to file" finder). */
+export async function getFiles(projectId: string | undefined, ref: string | undefined): Promise<FileList> {
+  const params = new URLSearchParams();
+  if (projectId) params.set("projectId", projectId);
+  if (ref) params.set("ref", ref);
+  return json(await fetch(`${BASE}/api/git/files?${params.toString()}`));
+}
+
+/** Read-only: commits that touched a file, newest first (file history). */
+export async function getFileHistory(projectId: string | undefined, ref: string | undefined, path: string): Promise<FileHistory> {
+  const params = new URLSearchParams();
+  if (projectId) params.set("projectId", projectId);
+  if (ref) params.set("ref", ref);
+  params.set("path", path);
+  return json(await fetch(`${BASE}/api/git/file-history?${params.toString()}`));
 }
 
 /** Delete leftover bureau/task-* branches (keeps in-flight tasks). Returns the result. */
@@ -68,6 +148,12 @@ export async function deleteBranch(branch: string, projectId?: string): Promise<
   const params = new URLSearchParams({ name: branch });
   if (projectId) params.set("projectId", projectId);
   return json(await fetch(`${BASE}/api/git/branch?${params.toString()}`, { method: "DELETE" }));
+}
+
+/** Run a CEO-AUTHORIZED git history/admin operation (squash, force-push, branch/tag admin).
+ *  Destructive ops require `confirmation` to exactly match the target branch (server-enforced). */
+export async function runGitOp(req: GitOpRequest): Promise<GitOpResult> {
+  return json(await postJson("/api/git/op", req));
 }
 
 /** Usage & cost metrics. `days` limits the look-back window (omit for all-time). */
@@ -142,6 +228,17 @@ export async function chat(
   attachments?: Attachment[]
 ): Promise<ChatResponse> {
   return json(await postJson("/api/chat", { content, projectId, conversationId, attachments }));
+}
+
+/** A STATELESS turn with Iris (the terminal dock) — persists nothing server-side, so
+ *  it never appears in the Assistant. Pass the prior turns inline so Iris keeps context. */
+export async function chatEphemeral(
+  content: string,
+  projectId: string | undefined,
+  history: { role: "user" | "iris"; content: string }[],
+  attachments?: Attachment[]
+): Promise<ChatResponse> {
+  return json(await postJson("/api/chat", { content, projectId, ephemeral: true, history, attachments }));
 }
 
 /** Materialize a proposal into a draft task in the active project. */

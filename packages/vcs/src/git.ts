@@ -324,6 +324,277 @@ export async function push(
   await run(runner, "git", ["-C", worktreePath, "push", "-u", "origin", branch]);
 }
 
+// ── Read-only codebase browser (the embedded-GitHub Git page) ───────────────────
+
+/** A repo-relative path, sanitized to stay inside the tree (no "..", no leading "-",
+ *  no absolute) — for the read-only browser. Returns "" for the repo root. */
+function sanitizeTreePath(p: string): string {
+  const t = (p ?? "").replace(/^[/\\]+/, "").replace(/[/\\]+$/, "").trim();
+  if (t === "") return "";
+  if (!/^[A-Za-z0-9._/-]+$/.test(t) || t.split("/").some((s) => s === "" || s === ".." || s.startsWith("-"))) {
+    throw new VcsError(`Unsafe path "${p}".`);
+  }
+  return t;
+}
+
+export interface TreeEntry {
+  readonly name: string;
+  readonly path: string;
+  readonly type: "blob" | "tree";
+}
+
+/** One directory level of the tree at `ref` (git ls-tree, NOT recursive). Read-only;
+ *  ref + path validated; argv-only. `-z` ⇒ NUL-delimited records with paths emitted
+ *  VERBATIM (git's default C-quoting of non-ASCII names is disabled), so a Unicode or
+ *  spaced filename stays a real, clickable path. Dirs first, then files, alphabetical. */
+export async function listTree(repoPath: string, ref: string, dir: string, runner: Runner = defaultRunner): Promise<TreeEntry[]> {
+  assertSafeRef(ref, "ref");
+  const cleanDir = sanitizeTreePath(dir);
+  const args = ["-C", repoPath, "ls-tree", "-z", ref];
+  if (cleanDir !== "") args.push("--", `${cleanDir}/`);
+  const out = await run(runner, "git", args);
+  const entries: TreeEntry[] = [];
+  for (const rec of out.split("\0")) {
+    // `<mode> <type> <sha>\t<path>` — path may contain spaces/newlines, so match it greedily.
+    const m = /^\d+ (blob|tree) [0-9a-f]+\t([\s\S]+)$/.exec(rec);
+    if (!m) continue;
+    const full = m[2]!;
+    entries.push({ name: full.split("/").pop() || full, path: full, type: m[1] === "tree" ? "tree" : "blob" });
+  }
+  entries.sort((a, b) => (a.type !== b.type ? (a.type === "tree" ? -1 : 1) : a.name.localeCompare(b.name)));
+  return entries;
+}
+
+/** A file's content at `ref` (git show ref:path), capped. Read-only; validated. */
+export async function showFile(
+  repoPath: string,
+  ref: string,
+  filePath: string,
+  runner: Runner = defaultRunner
+): Promise<{ content: string; truncated: boolean }> {
+  assertSafeRef(ref, "ref");
+  const clean = sanitizeTreePath(filePath);
+  if (clean === "") throw new VcsError("No file path given.");
+  const result = await runner("git", ["-C", repoPath, "show", `${ref}:${clean}`], {});
+  if (result.code !== 0) throw new VcsError(`Could not read "${clean}" at ${ref}: ${result.stderr.trim() || "not found"}`);
+  const CAP = 700_000;
+  if (result.stdout.length <= CAP) return { content: result.stdout, truncated: false };
+  // Cut at the last newline before the cap so the tail isn't a half-line / split surrogate.
+  const cut = result.stdout.lastIndexOf("\n", CAP);
+  return { content: result.stdout.slice(0, cut > 0 ? cut : CAP), truncated: true };
+}
+
+export interface EntryCommit {
+  readonly path: string;
+  readonly hash: string;
+  readonly subject: string;
+  readonly date: string; // committer date, strict ISO (for relative-time formatting)
+}
+
+/**
+ * The most-recent commit that touched each entry of `dir` at `ref` — the GitHub-style
+ * "latest commit per file" column. Read-only; `ref` validated; every path sits behind
+ * a `--` so a "-"-leading filename can't be read as a flag. Bounded concurrency keeps a
+ * wide directory from spawning hundreds of git processes; an entry with no resolvable
+ * history is simply omitted. Loaded SEPARATELY from listTree so the tree renders instantly
+ * (GitHub fills the commit column progressively for the same reason).
+ */
+export async function treeLastCommits(
+  repoPath: string,
+  ref: string,
+  dir: string,
+  runner: Runner = defaultRunner
+): Promise<EntryCommit[]> {
+  assertSafeRef(ref, "ref");
+  // Cap the entries we resolve commits for: each is its own `git log -1` subprocess, so
+  // a directory with thousands of entries (vendored deps, generated output) would spawn
+  // thousands of processes per view. Like GitHub, fill the column only up to a bound and
+  // leave the rest blank — the file LIST itself (listTree) is unbounded and renders fully.
+  const MAX_ENTRIES = 300;
+  const entries = (await listTree(repoPath, ref, dir, runner)).slice(0, MAX_ENTRIES);
+  const out: EntryCommit[] = [];
+  let i = 0;
+  const worker = async (): Promise<void> => {
+    while (i < entries.length) {
+      const e = entries[i++]!;
+      const r = await runner("git", ["-C", repoPath, "log", "-1", "--format=%h%x1f%s%x1f%cI", ref, "--", e.path], {});
+      if (r.code !== 0) continue;
+      const [hash = "", subject = "", date = ""] = r.stdout.trim().split("\x1f");
+      if (hash && date) out.push({ path: e.path, hash, subject, date }); // need a date for relative-time
+    }
+  };
+  const CONCURRENCY = 12;
+  await Promise.all(Array.from({ length: Math.min(CONCURRENCY, entries.length) }, () => worker()));
+  return out;
+}
+
+/**
+ * Every file path in the repo at `ref` (recursive) — the data behind the "go to file"
+ * finder. Read-only; `ref` validated. Capped so a huge monorepo can't flood the client;
+ * `truncated` flags when the list was cut.
+ */
+export async function listAllFiles(
+  repoPath: string,
+  ref: string,
+  runner: Runner = defaultRunner
+): Promise<{ paths: string[]; truncated: boolean }> {
+  assertSafeRef(ref, "ref");
+  // `-z` ⇒ NUL-delimited + paths VERBATIM (no C-quoting), so a Unicode/spaced filename is
+  // a real path the finder can open. Don't trim — a NUL field is already exact.
+  const out = await runner("git", ["-C", repoPath, "ls-tree", "-r", "--name-only", "-z", ref], {});
+  if (out.code !== 0) return { paths: [], truncated: false };
+  const all = out.stdout.split("\0").filter(Boolean);
+  const CAP = 20_000;
+  return all.length > CAP ? { paths: all.slice(0, CAP), truncated: true } : { paths: all, truncated: false };
+}
+
+/** Commits that touched `filePath`, newest first (file history). Read-only; `ref`
+ *  validated, path sanitized, path behind `--`. Empty on an untracked/edge-case path. */
+export async function fileHistory(
+  repoPath: string,
+  ref: string,
+  filePath: string,
+  limit: number,
+  runner: Runner = defaultRunner
+): Promise<RepoCommit[]> {
+  assertSafeRef(ref, "ref");
+  const clean = sanitizeTreePath(filePath);
+  if (clean === "") throw new VcsError("No file path given.");
+  const n = Math.max(1, Math.min(100, Math.floor(limit)));
+  const fmt = "%h%x1f%an%x1f%ad%x1f%s%x1e";
+  const out = await runner("git", ["-C", repoPath, "log", "-n", String(n), "--date=short", `--pretty=format:${fmt}`, ref, "--", clean], {});
+  if (out.code !== 0) return [];
+  return out.stdout
+    .split("\x1e")
+    .map((r) => r.trim())
+    .filter(Boolean)
+    .map((r) => {
+      const [hash = "", author = "", date = "", subject = ""] = r.split("\x1f");
+      return { hash, author, date, subject };
+    });
+}
+
+export interface CommitFile {
+  readonly path: string;
+  readonly additions: number;
+  readonly deletions: number;
+  readonly binary: boolean;
+}
+
+export interface CommitDetail {
+  readonly hash: string;
+  readonly author: string;
+  readonly date: string; // committer date, strict ISO
+  readonly subject: string;
+  readonly body: string;
+  readonly files: readonly CommitFile[];
+  readonly patch: string;
+  readonly truncated: boolean;
+}
+
+/**
+ * One commit's metadata, per-file stats, and full patch (capped) — the diff viewer
+ * behind the Commits tab + file history. Read-only; `ref` validated; argv-only.
+ * Returns null when `ref` doesn't resolve. Three cheap `git show` calls (meta /
+ * numstat / patch) — run only when the CEO clicks a single commit.
+ */
+export async function showCommit(repoPath: string, ref: string, runner: Runner = defaultRunner): Promise<CommitDetail | null> {
+  assertSafeRef(ref, "commit ref");
+  const meta = await runner("git", ["-C", repoPath, "show", "-s", "--format=%H%x1f%an%x1f%cI%x1f%s%x1f%b", ref], {});
+  if (meta.code !== 0) return null;
+  const [hash = "", author = "", date = "", subject = "", ...rest] = meta.stdout.trim().split("\x1f");
+  const body = rest.join("\x1f").trim();
+  // `--numstat -z`: NUL-delimited, paths verbatim (no quoting). A stat token is
+  // "additions \t deletions \t [path]"; "-" in either column ⇒ binary. On a RENAME the
+  // path field is EMPTY and the next two NUL fields are the old then the NEW path — so
+  // we read the new path instead of the literal "old => new" arrow string.
+  const stat = await runner("git", ["-C", repoPath, "show", ref, "--format=", "--numstat", "-z"], {});
+  const files: CommitFile[] = [];
+  if (stat.code === 0) {
+    const tokens = stat.stdout.split("\0");
+    let i = 0;
+    while (i < tokens.length) {
+      const m = /^(-|\d+)\t(-|\d+)\t([\s\S]*)$/.exec(tokens[i] ?? "");
+      if (!m) {
+        i++;
+        continue;
+      }
+      const binary = m[1] === "-" || m[2] === "-";
+      let p = m[3]!;
+      if (p === "") {
+        p = tokens[i + 2] ?? tokens[i + 1] ?? ""; // rename: old, NEW
+        i += 3;
+      } else {
+        i += 1;
+      }
+      if (p) files.push({ path: p, additions: binary ? 0 : Number(m[1]), deletions: binary ? 0 : Number(m[2]), binary });
+    }
+  }
+  const patchRes = await runner("git", ["-C", repoPath, "show", ref, "--format=", "--patch"], {});
+  const raw = patchRes.code === 0 ? patchRes.stdout : "";
+  const CAP = 400_000;
+  if (raw.length <= CAP) return { hash: hash || ref, author, date, subject, body, files, patch: raw, truncated: false };
+  // Cut at the last newline before the cap so the final hunk/line isn't sheared mid-token.
+  const cut = raw.lastIndexOf("\n", CAP);
+  return { hash: hash || ref, author, date, subject, body, files, patch: raw.slice(0, cut > 0 ? cut : CAP), truncated: true };
+}
+
+/** The GitHub account `gh` is authenticated as (read-only), or null if not signed in.
+ *  Reuses the existing `gh` auth — no OAuth, no stored token. */
+export async function ghAccount(runner: Runner = defaultRunner): Promise<{ login: string; name: string | null } | null> {
+  const result = await runner("gh", ["api", "user"], {});
+  if (result.code !== 0) return null;
+  try {
+    const u = JSON.parse(result.stdout) as { login?: string; name?: string | null };
+    return u.login ? { login: u.login, name: u.name ?? null } : null;
+  } catch {
+    return null;
+  }
+}
+
+export interface PrInfo {
+  readonly number: number;
+  readonly title: string;
+  readonly author: string;
+  readonly state: string;
+  readonly url: string;
+  readonly draft: boolean;
+}
+
+/** Read-only list of the repo's pull requests via `gh pr list --json`. Returns []
+ *  (never throws) if gh isn't authenticated or the repo has none. `ownerRepo` is "owner/repo". */
+export async function prList(ownerRepo: string, runner: Runner = defaultRunner): Promise<PrInfo[]> {
+  const result = await runner("gh", ["pr", "list", "--repo", ownerRepo, "--state", "all", "--limit", "50", "--json", "number,title,author,state,url,isDraft"], {});
+  if (result.code !== 0) return [];
+  try {
+    const arr = JSON.parse(result.stdout) as { number: number; title: string; author?: { login?: string }; state: string; url: string; isDraft?: boolean }[];
+    return arr.map((p) => ({ number: p.number, title: p.title, author: p.author?.login ?? "", state: p.state.toLowerCase(), url: p.url, draft: p.isDraft ?? false }));
+  } catch {
+    return [];
+  }
+}
+
+export interface IssueInfo {
+  readonly number: number;
+  readonly title: string;
+  readonly author: string;
+  readonly state: string;
+  readonly url: string;
+}
+
+/** Read-only list of the repo's issues via `gh issue list --json`. Returns [] (never
+ *  throws) if gh isn't authenticated or issues are disabled/none. */
+export async function issueList(ownerRepo: string, runner: Runner = defaultRunner): Promise<IssueInfo[]> {
+  const result = await runner("gh", ["issue", "list", "--repo", ownerRepo, "--state", "all", "--limit", "50", "--json", "number,title,author,state,url"], {});
+  if (result.code !== 0) return [];
+  try {
+    const arr = JSON.parse(result.stdout) as { number: number; title: string; author?: { login?: string }; state: string; url: string }[];
+    return arr.map((i) => ({ number: i.number, title: i.title, author: i.author?.login ?? "", state: i.state.toLowerCase(), url: i.url }));
+  } catch {
+    return [];
+  }
+}
+
 /**
  * Open a PR via `gh` and return its URL. Call ONLY after canPush() === true
  * (engine-gated). `ownerRepo` is "owner/repo".

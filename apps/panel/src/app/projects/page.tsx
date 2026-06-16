@@ -16,6 +16,7 @@ import {
   Sparkles,
   Terminal as TerminalIcon,
   GitCommit,
+  LayoutDashboard,
 } from "lucide-react";
 import type { TaskSummary, GitInfo } from "@bureau/contracts";
 import { useProjects } from "../../lib/useProjects";
@@ -124,9 +125,13 @@ export default function ProjectsPage() {
                   </div>
                   <div className="min-w-0 flex-1">
                     <div className="flex items-center gap-2">
-                      <span className="truncate font-semibold">
+                      <Link
+                        href={`/projects/${p.id}`}
+                        onClick={() => setActiveId(p.id)}
+                        className="truncate font-semibold transition-colors hover:text-primary"
+                      >
                         {p.owner}/{p.name}
-                      </span>
+                      </Link>
                       {isActive && (
                         <span className="rounded-full border border-primary/30 bg-primary/10 px-2 py-0.5 text-[10px] font-medium uppercase tracking-wide text-primary">
                           Active
@@ -170,7 +175,8 @@ export default function ProjectsPage() {
 
                 {/* Quick actions — each scopes this project active first. */}
                 <div className="mt-3 flex flex-wrap items-center gap-1.5">
-                  <Action icon={Sparkles} label="Chat" onClick={() => go(p.id, "/")} primary />
+                  <Action icon={LayoutDashboard} label="Open" onClick={() => go(p.id, `/projects/${p.id}`)} primary />
+                  <Action icon={Sparkles} label="Chat" onClick={() => go(p.id, "/")} />
                   <Action icon={GitBranch} label="Git" onClick={() => go(p.id, "/git")} />
                   <Action icon={TerminalIcon} label="Terminal" onClick={() => go(p.id, "/terminal")} />
                   <Action icon={ListTodo} label="Tasks" onClick={() => go(p.id, "/tasks")} />

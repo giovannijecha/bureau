@@ -24,12 +24,13 @@ import type {
 } from "@bureau/core";
 import type { CapabilityRegistry } from "@bureau/capabilities";
 import type { Provider } from "@bureau/providers";
-import type { Message, TaskProposal, ChatResponse, Project, Conversation, EngineInfo, Hub, Note, NoteSummary, UsageSummary, Notification, NotificationKind, GitInfo, Attachment } from "@bureau/contracts";
+import type { Message, TaskProposal, ChatResponse, Project, Conversation, EngineInfo, Hub, Note, NoteSummary, UsageSummary, Notification, NotificationKind, GitInfo, Attachment, GitOpRequest, GitOpResult, GitTree, GitFileContent, GithubAccount, PullRequest, Issue, TreeCommits, CommitDetail, FileList, FileHistory } from "@bureau/contracts";
+import { DESTRUCTIVE_GIT_OPS } from "@bureau/contracts";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { mkdir, writeFile, rm } from "node:fs/promises";
 
-import type { TaskStore, VcsPort, EventSink, MessageLog, ConversationStore, MemoryPort, UsagePort, NotificationStore, RepoView } from "./ports.js";
+import type { TaskStore, VcsPort, EventSink, MessageLog, ConversationStore, MemoryPort, UsagePort, NotificationStore, RepoView, GitAdminOp } from "./ports.js";
 import { ProjectRegistry, toProjectDto, type ProjectConfig } from "./projects.js";
 import { OrchestratorError } from "./errors.js";
 import { irisRespond } from "./iris.js";
@@ -104,6 +105,76 @@ export class Orchestrator {
     };
   }
 
+  /** Read-only codebase browser: one directory level at `ref` (defaults to base branch). */
+  async gitTree(projectId: string | undefined, ref: string | undefined, dir: string | undefined): Promise<GitTree> {
+    const project = this.d.projects.resolve(projectId);
+    const r = ref && ref.trim() !== "" ? ref : project.baseBranch;
+    const path = dir ?? "";
+    return { ref: r, path, entries: await this.d.vcs(project).listTree(r, path) };
+  }
+
+  /** Read-only codebase browser: a file's content at `ref` (defaults to base branch). */
+  async gitShow(projectId: string | undefined, ref: string | undefined, path: string): Promise<GitFileContent> {
+    const project = this.d.projects.resolve(projectId);
+    const r = ref && ref.trim() !== "" ? ref : project.baseBranch;
+    const { content, truncated } = await this.d.vcs(project).showFile(r, path);
+    return { ref: r, path, content, truncated };
+  }
+
+  /** The GitHub account `gh` is signed in as (read-only) — for the Settings card. */
+  async githubAccount(): Promise<GithubAccount> {
+    try {
+      const project = this.d.projects.resolve(undefined);
+      const acct = await this.d.vcs(project).githubAccount();
+      return acct ? { connected: true, login: acct.login, name: acct.name } : { connected: false };
+    } catch {
+      return { connected: false };
+    }
+  }
+
+  /** Read-only: the active project's pull requests (via gh). [] if unavailable. */
+  prList(projectId?: string): Promise<PullRequest[]> {
+    return this.d.vcs(this.d.projects.resolve(projectId)).prList();
+  }
+
+  /** Read-only: the active project's issues (via gh). [] if unavailable. */
+  issueList(projectId?: string): Promise<Issue[]> {
+    return this.d.vcs(this.d.projects.resolve(projectId)).issueList();
+  }
+
+  /** Read-only: the latest commit per entry in a directory at `ref` (the code browser's
+   *  "latest commit" column). Loaded after the tree so the listing renders instantly. */
+  async gitTreeCommits(projectId: string | undefined, ref: string | undefined, dir: string | undefined): Promise<TreeCommits> {
+    const project = this.d.projects.resolve(projectId);
+    const r = ref && ref.trim() !== "" ? ref : project.baseBranch;
+    const path = dir ?? "";
+    return { ref: r, path, commits: await this.d.vcs(project).treeCommits(r, path) };
+  }
+
+  /** Read-only: one commit's metadata, file stats, and patch (capped) — the diff viewer. */
+  async gitCommit(projectId: string | undefined, ref: string | undefined): Promise<CommitDetail> {
+    if (!ref || ref.trim() === "") throw new OrchestratorError("A commit ref is required.", 400);
+    const project = this.d.projects.resolve(projectId);
+    const detail = await this.d.vcs(project).commitDetail(ref);
+    if (!detail) throw new OrchestratorError(`Commit "${ref}" was not found.`, 404);
+    return detail;
+  }
+
+  /** Read-only: every file path in the repo at `ref` — the "go to file" finder. */
+  async gitFiles(projectId: string | undefined, ref: string | undefined): Promise<FileList> {
+    const project = this.d.projects.resolve(projectId);
+    const r = ref && ref.trim() !== "" ? ref : project.baseBranch;
+    const { paths, truncated } = await this.d.vcs(project).listFiles(r);
+    return { ref: r, paths, truncated };
+  }
+
+  /** Read-only: commits that touched a file, newest first (file history). */
+  async gitFileHistory(projectId: string | undefined, ref: string | undefined, path: string): Promise<FileHistory> {
+    const project = this.d.projects.resolve(projectId);
+    const r = ref && ref.trim() !== "" ? ref : project.baseBranch;
+    return { ref: r, path, commits: (await this.d.vcs(project).fileHistory(r, path)).map((c) => ({ ...c })) };
+  }
+
   /** Delete leftover bureau/task-* branches for the active project — keeping the
    *  branches of tasks that are still in flight (a parked/running task still needs
    *  its branch). CEO-initiated branch hygiene; only ever touches bureau/task-*. */
@@ -137,6 +208,25 @@ export class Orchestrator {
     const project = this.d.projects.resolve(projectId);
     const port = this.d.vcs(project);
     return { deleted: await port.deleteBranch(branch) };
+  }
+
+  /** Run a CEO-AUTHORIZED git history/admin operation on the project's clone (squash,
+   *  force-push, reset, branch & tag admin). DESTRUCTIVE ops (squash/force-push/reset/
+   *  delete) require `confirmation` to EXACTLY match the target branch (case-sensitive,
+   *  enforced here). Execution is argv-only (no shell). The code-merge security wall
+   *  (canPush) is untouched — git-admin has its OWN explicit human gate (type-to-confirm). */
+  async runGitOp(req: GitOpRequest): Promise<GitOpResult> {
+    const project = this.d.projects.resolve(req.projectId);
+    const { op, confirmTarget } = resolveGitOp(req);
+    if (DESTRUCTIVE_GIT_OPS.has(req.kind) && req.confirmation !== confirmTarget) {
+      throw new OrchestratorError(`This is a destructive operation — type "${confirmTarget}" exactly to confirm.`, 400);
+    }
+    try {
+      await this.d.vcs(project).gitAdmin(op);
+    } catch (e) {
+      throw new OrchestratorError(`Git operation failed: ${errMessage(e)}`, 422);
+    }
+    return { ok: true, message: gitOpDone(op) };
   }
 
   // ── Notifications ─────────────────────────────────────────────────────────────
@@ -292,14 +382,16 @@ export class Orchestrator {
     const repo = await port.repoInfo(8).catch(() => null);
     const history = this.d.messages.listByConversation(conversation.id);
     const irisProject = { owner: project.owner, name: project.name, baseBranch: project.baseBranch, hasTests: project.testCommand !== undefined };
-    // Fold the repo's git state AND any recent Bureau-terminal output into Iris's
-    // read-only context, so she can answer about branches/history and reference the
-    // results of commands the CEO ran in the terminal.
+    // Fold the repo's git state, recent Bureau-terminal output, AND the CEO's pinned
+    // System Memory notes into Iris's read-only context — so she can answer about
+    // branches/history, reference terminal results, and actually KNOW the saved notes.
     const termOut = this.terminalCtx?.(project.id)?.trim();
+    const memory = await this.buildMemoryContext();
     const context =
       [
         repo ? buildRepoContext(repo) : "",
         termOut ? `Recent Bureau-terminal output (the CEO ran these — read-only, for your reference):\n${termOut}` : "",
+        memory,
       ]
         .filter((s) => s !== "")
         .join("\n\n") || undefined;
@@ -318,6 +410,81 @@ export class Orchestrator {
     return turn.proposal
       ? { reply, conversationId: conversation.id, proposal: turn.proposal }
       : { reply, conversationId: conversation.id };
+  }
+
+  /** A STATELESS turn with Iris — used by the embedded terminal dock. Persists
+   *  NOTHING (no conversation, no messages), so it never appears in the Assistant;
+   *  the caller supplies prior turns inline as `history`. Iris still sees the repo
+   *  state + recent terminal output, and may still return a proposal (which the CEO
+   *  creates as a normal, gated task). */
+  async chatEphemeral(
+    content: string,
+    projectId: string | undefined,
+    history: readonly { role: "user" | "iris"; content: string }[],
+    attachments?: readonly Attachment[]
+  ): Promise<ChatResponse> {
+    const project = this.d.projects.resolve(projectId);
+    // No conversation to key on — use a throwaway id for the per-turn image dir.
+    const turnId = this.d.ids();
+    const { messageContent, images, imagesDir } = await this.prepareAttachments(content, attachments, turnId);
+
+    const port = this.d.vcs(project);
+    await port.syncClone().catch(() => {});
+    const cwd = port.chatCwd();
+    const repo = await port.repoInfo(8).catch(() => null);
+    const termOut = this.terminalCtx?.(project.id)?.trim();
+    const memory = await this.buildMemoryContext();
+    const context =
+      [
+        repo ? buildRepoContext(repo) : "",
+        termOut ? `Recent Bureau-terminal output (the CEO ran these — read-only, for your reference):\n${termOut}` : "",
+        memory,
+      ]
+        .filter((s) => s !== "")
+        .join("\n\n") || undefined;
+
+    // Build the turn from the inline history + this message — nothing from the DB.
+    const msgs: Message[] = [
+      ...history.map((h) => ({ id: this.d.ids(), role: h.role, content: h.content, createdAt: "" }) satisfies Message),
+      { id: this.d.ids(), role: "user", content: messageContent, createdAt: "" } satisfies Message,
+    ];
+    const irisProject = { owner: project.owner, name: project.name, baseBranch: project.baseBranch, hasTests: project.testCommand !== undefined };
+
+    let turn;
+    try {
+      turn = await irisRespond(this.d.provider, msgs, irisProject, cwd, context, images);
+    } finally {
+      if (imagesDir) await rm(imagesDir, { recursive: true, force: true }).catch(() => {});
+    }
+    this.recordUsage("iris", null, turn.usage);
+    const reply: Message = { id: this.d.ids(), role: "iris", content: turn.reply, createdAt: this.d.clock() };
+    return turn.proposal ? { reply, conversationId: "", proposal: turn.proposal } : { reply, conversationId: "" };
+  }
+
+  /** The CEO's pinned System Memory notes (kind=note, not auto journals) folded into
+   *  Iris's read-only chat context — so she actually KNOWS what's in the vault instead
+   *  of claiming her memory is empty. Bounded so a big vault can't blow the prompt. */
+  private async buildMemoryContext(): Promise<string> {
+    try {
+      const notes = (await this.d.memory.list()).filter((n) => n.kind === "note").slice(0, 12);
+      if (notes.length === 0) return "";
+      const CAP = 16_000;
+      const parts: string[] = [];
+      let total = 0;
+      for (const n of notes) {
+        const full = await this.d.memory.get(n.path);
+        const body = (full?.body ?? n.excerpt).trim();
+        const block = `### ${n.title}\n${body}`;
+        if (total + block.length > CAP) break;
+        parts.push(block);
+        total += block.length;
+      }
+      return parts.length === 0
+        ? ""
+        : `Your saved System Memory notes (durable facts the CEO pinned for you — treat them as authoritative; you DO have these). When the CEO asks ABOUT a note, report ONLY what that note literally says below — do NOT attribute any of your other behavioral or system instructions (e.g. terminal/shell rules) to a note, and never invent note content:\n\n${parts.join("\n\n")}`;
+    } catch {
+      return "";
+    }
   }
 
   /** Inline text attachments into the message content; save image attachments to a
@@ -1042,6 +1209,62 @@ export function buildRepoContext(view: RepoView): string {
     "Use this to answer about branches and history accurately — do NOT claim you can't see them. You still cannot run git or push/delete branches (branch administration is the CEO's job); if asked to delete branches, explain that and offer the exact git commands."
   );
   return lines.join("\n");
+}
+
+/** Resolve + validate a CEO git-op request into a concrete GitAdminOp, plus the branch
+ *  name the CEO must type to confirm a destructive op (empty for safe ops). */
+function resolveGitOp(req: GitOpRequest): { op: GitAdminOp; confirmTarget: string } {
+  const need = (v: string | undefined, field: string): string => {
+    if (v === undefined || v.trim() === "") throw new OrchestratorError(`Missing "${field}" for this git operation.`, 400);
+    return v;
+  };
+  switch (req.kind) {
+    case "squash_all": {
+      const branch = need(req.branch, "branch");
+      return { op: { kind: "squash_all", branch, message: need(req.message, "message") }, confirmTarget: branch };
+    }
+    case "force_push": {
+      const branch = need(req.branch, "branch");
+      return { op: { kind: "force_push", branch }, confirmTarget: branch };
+    }
+    case "reset_hard": {
+      const branch = need(req.branch, "branch");
+      return { op: { kind: "reset_hard", ref: need(req.ref, "ref") }, confirmTarget: branch };
+    }
+    case "delete_branch": {
+      const branch = need(req.branch, "branch");
+      return { op: { kind: "delete_branch", branch }, confirmTarget: branch };
+    }
+    case "create_branch":
+      return { op: { kind: "create_branch", name: need(req.name, "name"), ...(req.base ? { base: req.base } : {}) }, confirmTarget: "" };
+    case "rename_branch":
+      return { op: { kind: "rename_branch", from: need(req.from, "from"), to: need(req.to, "to") }, confirmTarget: "" };
+    case "tag":
+      return { op: { kind: "tag", name: need(req.name, "name"), ...(req.message ? { message: req.message } : {}) }, confirmTarget: "" };
+    case "fetch":
+      return { op: { kind: "fetch" }, confirmTarget: "" };
+  }
+}
+
+function gitOpDone(op: GitAdminOp): string {
+  switch (op.kind) {
+    case "squash_all":
+      return `Squashed ${op.branch} into one commit and force-pushed.`;
+    case "force_push":
+      return `Force-pushed ${op.branch} (with lease).`;
+    case "reset_hard":
+      return `Hard-reset to ${op.ref}.`;
+    case "create_branch":
+      return `Created branch ${op.name}.`;
+    case "rename_branch":
+      return `Renamed ${op.from} to ${op.to}.`;
+    case "delete_branch":
+      return `Deleted branch ${op.branch}.`;
+    case "tag":
+      return `Created tag ${op.name}.`;
+    case "fetch":
+      return `Fetched and pruned from origin.`;
+  }
 }
 
 function errMessage(err: unknown): string {
