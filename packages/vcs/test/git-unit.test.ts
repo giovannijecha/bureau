@@ -3,6 +3,7 @@ import { describe, it, expect } from "vitest";
 import { run, assertSafeRef, VcsError, type Runner, type ExecResult } from "../src/exec.js";
 import { push, openPr, mergePr, commitAll, getDiff, cloneRepo, freshBase } from "../src/git.js";
 import { createWorktree, removeWorktree } from "../src/worktree.js";
+import { squashAllAndForcePush } from "../src/git-admin.js";
 
 const ok = (stdout = ""): ExecResult => ({ stdout, stderr: "", code: 0 });
 
@@ -199,6 +200,53 @@ describe("freshBase", () => {
 
   it("rejects an unsafe base branch before running anything", async () => {
     await expect(freshBase("/repo", "--evil", makeRunner().run)).rejects.toThrow(/Unsafe base branch/);
+  });
+});
+
+describe("squashAllAndForcePush", () => {
+  const id = { name: "Bureau", email: "bureau@localhost" };
+  // Feed a tree for rev-parse, a commit for commit-tree, and the given HEAD for symbolic-ref.
+  const resolver = (head: string) => (_c: string, args: string[]): ExecResult => {
+    if (args.includes("rev-parse")) return ok("tree0\n");
+    if (args.includes("commit-tree")) return ok("commit0\n");
+    if (args.includes("symbolic-ref")) return ok(`${head}\n`);
+    return ok();
+  };
+
+  it("squashes the branch's tree into a parentless commit-tree and resets when it's HEAD (no temp branch)", async () => {
+    const { run: r, calls } = makeRunner(resolver("refs/heads/main"));
+    await squashAllAndForcePush("/repo", "main", "Squashed", id, r);
+    expect(calls.map((c) => c.args)).toEqual([
+      ["-C", "/repo", "rev-parse", "--verify", "--quiet", "main^{tree}"],
+      ["-C", "/repo", "-c", "user.name=Bureau", "-c", "user.email=bureau@localhost", "commit-tree", "tree0", "-m", "Squashed"],
+      ["-C", "/repo", "symbolic-ref", "--quiet", "HEAD"],
+      ["-C", "/repo", "reset", "--hard", "commit0"], // the branch IS the checked-out HEAD
+      ["-C", "/repo", "push", "--force-with-lease", "origin", "main"],
+    ]);
+    // Never the old orphan + temp-branch flow that could strand a ref and wedge later squashes.
+    expect(calls.some((c) => c.args.includes("bureau-squash-tmp"))).toBe(false);
+    expect(calls.some((c) => c.args.includes("--orphan"))).toBe(false);
+  });
+
+  it("squashes the TARGET branch's own tree and moves the ref with `branch -f` when it isn't HEAD", async () => {
+    const { run: r, calls } = makeRunner(resolver("refs/heads/main")); // clone parked on main, squashing feature
+    await squashAllAndForcePush("/repo", "feature", "Squashed", id, r);
+    expect(calls.map((c) => c.args)).toEqual([
+      ["-C", "/repo", "rev-parse", "--verify", "--quiet", "feature^{tree}"], // feature's tree, not HEAD's
+      ["-C", "/repo", "-c", "user.name=Bureau", "-c", "user.email=bureau@localhost", "commit-tree", "tree0", "-m", "Squashed"],
+      ["-C", "/repo", "symbolic-ref", "--quiet", "HEAD"],
+      ["-C", "/repo", "branch", "-f", "feature", "commit0"], // never resets the wrong (checked-out) tree
+      ["-C", "/repo", "push", "--force-with-lease", "origin", "feature"],
+    ]);
+  });
+
+  it("throws a clear error when the target branch does not resolve", async () => {
+    const r = makeRunner((_c, args) => (args.includes("rev-parse") ? { stdout: "", stderr: "", code: 1 } : ok())).run;
+    await expect(squashAllAndForcePush("/repo", "ghost", "m", id, r)).rejects.toThrow(/Squash target branch "ghost" was not found/);
+  });
+
+  it("refuses an unsafe branch before spawning git", async () => {
+    await expect(squashAllAndForcePush("/repo", "--force", "m", id, makeRunner().run)).rejects.toThrow(/Unsafe branch/);
   });
 });
 

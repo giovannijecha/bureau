@@ -6,6 +6,7 @@ import { join } from "node:path";
 import { defaultRunner, run } from "../src/exec.js";
 import { createWorktree, removeWorktree } from "../src/worktree.js";
 import { cloneRepo, commitAll, currentBranch, freshBase, syncToBase, getDiff, getWorkingDiff, getReviewDiff, recentCommits, remoteBranches, headBranch, pruneTaskBranches, listTree, treeLastCommits, listAllFiles, fileHistory, showCommit } from "../src/git.js";
+import { squashAllAndForcePush } from "../src/git-admin.js";
 
 // These tests drive the REAL git binary against throwaway repos under the OS
 // temp dir — deterministic and fully offline (no network, no GitHub).
@@ -385,5 +386,126 @@ describe("removeWorktree — dirty worktree", () => {
 
     await removeWorktree(handle, { force: true });
     expect(existsSync(wtPath)).toBe(false);
+  });
+});
+
+describe("squashAllAndForcePush — empty repo (the 'delete all files' case)", () => {
+  const id = { name: "Bureau", email: "bureau@localhost" };
+
+  it("squashes a repo with NO tracked files into a single empty commit and pushes it", async () => {
+    // Reproduces the CEO's screenshot: a repo emptied by a "delete all files" task, then
+    // "Squash all → one commit + push" — which used to die on "nothing to commit".
+    const origin = join(tmpRoot, "origin.git");
+    await gitIn(tmpRoot, ["init", "--bare", "-b", "main", "origin.git"]);
+    const clone = join(tmpRoot, "clone-squash-empty");
+    await cloneRepo(origin, clone);
+    await gitIn(clone, ["config", "user.email", "t@b.local"]);
+    await gitIn(clone, ["config", "user.name", "T"]);
+    // Seed a couple of commits, push, THEN delete every tracked file (empty the repo).
+    writeFileSync(join(clone, "a.txt"), "a\n");
+    writeFileSync(join(clone, "b.txt"), "b\n");
+    await gitIn(clone, ["add", "-A"]);
+    await gitIn(clone, ["commit", "-m", "seed"]);
+    await gitIn(clone, ["push", "-u", "origin", "main"]);
+    await gitIn(clone, ["rm", "-r", "."]);
+    await gitIn(clone, ["commit", "-m", "empty the repo"]);
+    await gitIn(clone, ["push", "origin", "main"]); // origin/main now matches → lease will pass
+
+    await squashAllAndForcePush(clone, "main", "Reset to a single empty commit", id, defaultRunner);
+
+    // Exactly one commit, holding an EMPTY tree (no tracked files) — proof --allow-empty worked.
+    const count = (await gitIn(clone, ["rev-list", "--count", "main"])).trim();
+    expect(count).toBe("1");
+    const tracked = (await gitIn(clone, ["ls-files"])).trim();
+    expect(tracked).toBe("");
+    const subject = (await gitIn(clone, ["log", "-1", "--format=%s", "main"])).trim();
+    expect(subject).toBe("Reset to a single empty commit");
+    // …and it was force-pushed: the bare origin's main is the same single commit.
+    const originCount = (await gitIn(origin, ["rev-list", "--count", "main"])).trim();
+    expect(originCount).toBe("1");
+  });
+
+  it("still squashes a NON-empty repo into one commit that keeps the current tree", async () => {
+    // The change must not regress the normal case (files present).
+    const origin = join(tmpRoot, "origin2.git");
+    await gitIn(tmpRoot, ["init", "--bare", "-b", "main", "origin2.git"]);
+    const clone = join(tmpRoot, "clone-squash-full");
+    await cloneRepo(origin, clone);
+    await gitIn(clone, ["config", "user.email", "t@b.local"]);
+    await gitIn(clone, ["config", "user.name", "T"]);
+    writeFileSync(join(clone, "keep.txt"), "keep me\n");
+    await gitIn(clone, ["add", "-A"]);
+    await gitIn(clone, ["commit", "-m", "v1"]);
+    writeFileSync(join(clone, "also.txt"), "also\n");
+    await gitIn(clone, ["add", "-A"]);
+    await gitIn(clone, ["commit", "-m", "v2"]);
+    await gitIn(clone, ["push", "-u", "origin", "main"]);
+
+    await squashAllAndForcePush(clone, "main", "Squashed history", id, defaultRunner);
+
+    const count = (await gitIn(clone, ["rev-list", "--count", "main"])).trim();
+    expect(count).toBe("1"); // history collapsed…
+    const tracked = (await gitIn(clone, ["ls-files"])).trim().split("\n").sort();
+    expect(tracked).toEqual(["also.txt", "keep.txt"]); // …but the current tree is preserved
+  });
+
+  it("squashes the TARGET branch's OWN tree, never the clone's checked-out (base) tree", async () => {
+    // The data-loss case: the canonical clone is parked on `main` (as syncToBase leaves it),
+    // but the CEO squashes a different branch. A checkout-based squash would publish main's
+    // tree onto `feature` and silently destroy feature's content. The plumbing squash must
+    // collapse FEATURE's own tree instead.
+    const origin = join(tmpRoot, "origin3.git");
+    await gitIn(tmpRoot, ["init", "--bare", "-b", "main", "origin3.git"]);
+    const clone = join(tmpRoot, "clone-squash-cross");
+    await cloneRepo(origin, clone);
+    await gitIn(clone, ["config", "user.email", "t@b.local"]);
+    await gitIn(clone, ["config", "user.name", "T"]);
+    writeFileSync(join(clone, "main.txt"), "main\n");
+    await gitIn(clone, ["add", "-A"]);
+    await gitIn(clone, ["commit", "-m", "main v1"]);
+    await gitIn(clone, ["push", "-u", "origin", "main"]);
+    await gitIn(clone, ["checkout", "-b", "feature"]);
+    writeFileSync(join(clone, "feat.txt"), "feat\n");
+    await gitIn(clone, ["add", "-A"]);
+    await gitIn(clone, ["commit", "-m", "feat a"]);
+    writeFileSync(join(clone, "feat2.txt"), "feat2\n");
+    await gitIn(clone, ["add", "-A"]);
+    await gitIn(clone, ["commit", "-m", "feat b"]);
+    await gitIn(clone, ["push", "-u", "origin", "feature"]);
+    await gitIn(clone, ["checkout", "main"]); // park HEAD on the base — the danger condition
+
+    await squashAllAndForcePush(clone, "feature", "Squash feature", id, defaultRunner);
+
+    const count = (await gitIn(clone, ["rev-list", "--count", "feature"])).trim();
+    expect(count).toBe("1"); // feature collapsed to one commit…
+    const tracked = (await gitIn(clone, ["ls-tree", "-r", "--name-only", "feature"])).trim().split("\n").sort();
+    expect(tracked).toEqual(["feat.txt", "feat2.txt", "main.txt"]); // …holding FEATURE's tree, not main's
+    expect(await currentBranch(clone)).toBe("main"); // the clone's HEAD/worktree is left alone
+    const originCount = (await gitIn(origin, ["rev-list", "--count", "feature"])).trim();
+    expect(originCount).toBe("1"); // and it was force-pushed
+  });
+
+  it("is idempotent — a second squash succeeds (no stranded temp branch wedges it)", async () => {
+    const origin = join(tmpRoot, "origin4.git");
+    await gitIn(tmpRoot, ["init", "--bare", "-b", "main", "origin4.git"]);
+    const clone = join(tmpRoot, "clone-squash-twice");
+    await cloneRepo(origin, clone);
+    await gitIn(clone, ["config", "user.email", "t@b.local"]);
+    await gitIn(clone, ["config", "user.name", "T"]);
+    writeFileSync(join(clone, "x.txt"), "x\n");
+    await gitIn(clone, ["add", "-A"]);
+    await gitIn(clone, ["commit", "-m", "v1"]);
+    writeFileSync(join(clone, "y.txt"), "y\n");
+    await gitIn(clone, ["add", "-A"]);
+    await gitIn(clone, ["commit", "-m", "v2"]);
+    await gitIn(clone, ["push", "-u", "origin", "main"]);
+
+    await squashAllAndForcePush(clone, "main", "first", id, defaultRunner);
+    await squashAllAndForcePush(clone, "main", "second", id, defaultRunner); // must not throw
+
+    const count = (await gitIn(clone, ["rev-list", "--count", "main"])).trim();
+    expect(count).toBe("1");
+    const subject = (await gitIn(clone, ["log", "-1", "--format=%s", "main"])).trim();
+    expect(subject).toBe("second");
   });
 });
