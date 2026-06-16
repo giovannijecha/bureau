@@ -2,7 +2,6 @@
 
 import { useCallback, useEffect, useRef, useState, type ChangeEvent } from "react";
 import Link from "next/link";
-import { useRouter } from "next/navigation";
 import {
   Sparkles,
   Send,
@@ -25,6 +24,7 @@ import { useProjects } from "../lib/useProjects";
 import { ProjectPicker } from "../components/ProjectPicker";
 import { ConversationsRail } from "../components/ConversationsRail";
 import { GitOpProposalCard } from "../components/GitOpProposalCard";
+import { RunCommand } from "../components/RunCommand";
 import { Markdown } from "../components/Markdown";
 import { FieldError } from "../components/FieldError";
 import { CharCount } from "../components/CharCount";
@@ -45,13 +45,18 @@ const ASSIGNEE: Record<string, string> = {
 export default function AssistantPage() {
   const { projects, active, activeId, setActiveId } = useProjects();
   const confirm = useConfirm();
-  const router = useRouter();
-  const runInTerminal = useCallback((cmd: string) => router.push(`/terminal?run=${encodeURIComponent(cmd)}`), [router]);
   const [input, setInput] = useState("");
   const [log, setLog] = useState<Message[]>([]);
   const [proposal, setProposal] = useState<TaskProposal | null>(null);
   const [gitOp, setGitOp] = useState<GitOpRequest | null>(null);
   const [gitBranches, setGitBranches] = useState<string[]>([]);
+  // Commands the CEO confirmed (clicked "Run" on, in Iris's reply) — run inline, output
+  // shown right here in the chat. Ephemeral per view (a fresh thread starts clean).
+  const [runs, setRuns] = useState<{ id: number; command: string }[]>([]);
+  const runSeq = useRef(0);
+  const runInChat = useCallback((command: string) => {
+    setRuns((r) => [...r, { id: ++runSeq.current, command }]);
+  }, []);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [conversations, setConversations] = useState<Conversation[]>([]);
@@ -74,6 +79,7 @@ export default function AssistantPage() {
     setConvId(id);
     setProposal(loadProposal(id)); // restore a pending proposal for this thread
     setGitOp(loadGitOp(id)); // …and a pending git-op proposal
+    setRuns([]); // command runs are per-view; don't carry them across threads
     setError(null);
     try {
       // Re-attach the local action confirmations ("Created …" / git-op results) — the
@@ -89,6 +95,7 @@ export default function AssistantPage() {
     setLog([]);
     setProposal(null);
     setGitOp(null);
+    setRuns([]);
     setError(null);
     inputRef.current?.focus();
   }, []);
@@ -119,7 +126,7 @@ export default function AssistantPage() {
   // Keep the newest message in view as the log grows or Iris is replying.
   useEffect(() => {
     bottomRef.current?.scrollIntoView({ behavior: "smooth", block: "end" });
-  }, [log, busy, proposal, gitOp]);
+  }, [log, busy, proposal, gitOp, runs]);
 
   // When Iris proposes a git-op, fetch the repo's branches once so the card can offer
   // a branch autocomplete (lazy — only on the first proposal, never on a plain chat).
@@ -248,7 +255,7 @@ export default function AssistantPage() {
     }
   }
 
-  const empty = log.length === 0 && !proposal && !gitOp;
+  const empty = log.length === 0 && !proposal && !gitOp && runs.length === 0;
 
   return (
     <div className="flex h-full">
@@ -276,7 +283,7 @@ export default function AssistantPage() {
           ) : (
             <div className="w-full space-y-3.5 px-6 py-6 lg:px-10">
               {log.map((m) => (
-                <ChatBubble key={m.id} message={m} onRun={runInTerminal} />
+                <ChatBubble key={m.id} message={m} onRun={runInChat} />
               ))}
               {busy && <TypingIndicator />}
               {proposal && (
@@ -309,6 +316,17 @@ export default function AssistantPage() {
                   }}
                 />
               )}
+              {runs.map((r) => (
+                <div key={r.id} className="flex justify-start">
+                  <div className="w-full max-w-[92%] sm:max-w-[85%]">
+                    <RunCommand
+                      command={r.command}
+                      projectId={activeId ?? undefined}
+                      onDismiss={() => setRuns((rs) => rs.filter((x) => x.id !== r.id))}
+                    />
+                  </div>
+                </div>
+              ))}
               {error && (
                 <div className="flex items-center gap-1.5 text-sm text-destructive">
                   <AlertCircle className="h-4 w-4" />
