@@ -666,6 +666,30 @@ describe("openPrForReview", () => {
   });
 });
 
+// ── mergeOpenPr — the deferred merge of an already-open PR (finish from Bureau) ──
+
+describe("mergeOpenPr", () => {
+  it("squash-merges a previously opened PR; the task then reads merged, not PR-open", async () => {
+    const draft = orch.createTask(PROPOSAL);
+    await orch.startTask(draft.id);
+    await orch.settle(draft.id);
+    await orch.openPrForReview(draft.id); // → completed + PR open, not merged
+    expect(prOpen(store.load(draft.id)!)).toBe(true);
+
+    const merged = await orch.mergeOpenPr(draft.id);
+
+    expect(vcs.calls.mergePr).toHaveLength(1); // the deferred merge runs (canPush held)
+    expect(isMerged(merged)).toBe(true);
+    expect(prOpen(merged)).toBe(false);
+  });
+
+  it("throws 409 when the task has no open PR to merge", async () => {
+    const draft = orch.createTask(PROPOSAL);
+    await expect(orch.mergeOpenPr(draft.id)).rejects.toMatchObject({ status: 409 });
+    expect(vcs.calls.mergePr).toHaveLength(0);
+  });
+});
+
 // ── decideGate — the review loop (approve / request_changes / reject) ─────────
 
 describe("decideGate", () => {

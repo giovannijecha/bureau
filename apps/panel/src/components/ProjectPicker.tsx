@@ -36,19 +36,21 @@ export function ProjectPicker({
   const label = active ? `${active.owner}/${active.name}` : "Select project";
 
   return (
-    <div ref={ref} className="relative">
+    <div ref={ref} className="relative min-w-0">
       <button
         onClick={() => setOpen((o) => !o)}
         title={label}
         className={cn(
-          "inline-flex items-center gap-1.5 font-medium transition-colors",
+          // flex + min-w-0 + max-w-full so the label truncates instead of overflowing a
+          // narrow container (e.g. the IrisDock header), rather than getting clipped.
+          "flex min-w-0 max-w-full items-center gap-1.5 font-medium transition-colors",
           compact
             ? "h-7 max-w-[220px] rounded-full bg-muted/60 px-2.5 text-xs text-muted-foreground hover:bg-muted hover:text-foreground"
             : "h-9 rounded-md border bg-background px-3 text-sm hover:bg-accent"
         )}
       >
         <FolderGit2 className={cn("shrink-0 text-primary", compact ? "h-3.5 w-3.5" : "h-4 w-4")} />
-        <span className="truncate">{label}</span>
+        <span className="min-w-0 flex-1 truncate text-left">{label}</span>
         <ChevronsUpDown className={cn("shrink-0 text-muted-foreground", compact ? "h-3 w-3" : "h-3.5 w-3.5")} />
       </button>
 

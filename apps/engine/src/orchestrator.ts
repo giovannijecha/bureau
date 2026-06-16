@@ -2,11 +2,11 @@
 // conversation (no diffs there); Iris proposes tasks; the CEO creates them, and
 // holds the decisive powers — START / STOP a task, and the final CONFIRM-MERGE.
 //
-// THE SECURITY WALL: push()/openPr()/mergePr() run from exactly one place
-// (landBranch — reached only via confirmMerge [merge] or openPrForReview [PR, no
-// merge]), inside an `if (canPush(task))` branch. canPush lives in @bureau/core and
-// is the sole gate. startTask only commits locally — it never pushes — so nothing
-// reaches GitHub until the CEO confirms (merge OR open-PR; both require canPush).
+// THE SECURITY WALL: push()/openPr()/mergePr() run ONLY behind an `if (canPush(task))`
+// gate, from two paths — landBranch (push + PR [+ merge], via confirmMerge or
+// openPrForReview) and mergeOpenPr (the deferred squash-merge of an already-open PR).
+// canPush lives in @bureau/core and is the sole gate. startTask only commits locally —
+// it never pushes — so nothing reaches GitHub until the CEO confirms.
 //
 // Each task belongs to a PROJECT (a GitHub repo). The orchestrator resolves the
 // task's project and a VCS port bound to it, so one engine serves many repos.
@@ -38,7 +38,7 @@ import { OrchestratorError } from "./errors.js";
 import { irisRespond } from "./iris.js";
 import { buildHub } from "./hub.js";
 import { journalPath, journalMarkdown, notePath } from "./memory.js";
-import { ASSIGNEE } from "./summary.js";
+import { ASSIGNEE, prOpen, prUrl } from "./summary.js";
 
 export { OrchestratorError };
 
@@ -1062,6 +1062,37 @@ export class Orchestrator {
    *  hold; it simply stops before mergePr and keeps the branch (no --delete). */
   async openPrForReview(taskId: string): Promise<Task> {
     return this.landBranch(taskId, false);
+  }
+
+  /** Merge the PR of a task that was earlier "Open PR (no merge)"'d — the deferred merge,
+   *  so the CEO can finish from Bureau instead of being stranded on GitHub. Squash-merges
+   *  the already-open PR + deletes the branch. canPush()-gated like every merge (the task
+   *  is completed with its gate approved). On failure records an honest merge_error. */
+  async mergeOpenPr(taskId: string): Promise<Task> {
+    let task = this.requireTask(taskId);
+    if (!prOpen(task)) {
+      throw new OrchestratorError(`Task ${taskId} has no open PR awaiting a merge.`, 409);
+    }
+    // ── THE SECURITY WALL ── (mergePr only ever runs behind canPush)
+    if (!canPush(task)) {
+      throw new OrchestratorError(`Task ${taskId} isn't authorized to merge.`, 409);
+    }
+    const vcs = this.d.vcs(this.resolveProject(task));
+    const branch = this.branchFor(task.id);
+    const url = prUrl(task) ?? "";
+    const lastStep = task.steps[task.steps.length - 1]!.id;
+    try {
+      await vcs.mergePr(branch);
+      // Record the MERGED PR (pr_url) so the task now reads "merged", not "PR open".
+      task = this.addArtifacts(task, [{ id: this.d.ids() as ArtifactId, kind: "pr_url", ref: url, producedByStep: lastStep, createdAt: this.d.clock() }]);
+      this.notify("merged", task.id, "Merged to main", `“${truncate(task.goal)}” is merged${url ? ` — ${url}` : ""}.`);
+    } catch (err) {
+      this.notify("merge_failed", task.id, "Merge didn't land", `“${truncate(task.goal)}” couldn't merge: ${errMessage(err)}${url ? ` (PR ${url})` : ""}`);
+      task = this.addArtifacts(task, [{ id: this.d.ids() as ArtifactId, kind: "merge_error", ref: errMessage(err), producedByStep: lastStep, createdAt: this.d.clock() }]);
+    }
+    this.emitTaskUpdated(task);
+    await this.journalTask(task);
+    return task;
   }
 
   /** THE single GitHub-reaching path. Approve the open pr_approval gate, complete the
