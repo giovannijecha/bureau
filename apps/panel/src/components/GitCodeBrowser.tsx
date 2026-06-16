@@ -7,12 +7,14 @@
 // or a commit message to open that commit's diff. All read-only.
 
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { createPortal } from "react-dom";
 import { Folder, FileText, ChevronRight, ChevronLeft, Loader2, GitBranch, BookOpen, FileCode2, Search, History, GitCommit } from "lucide-react";
 import type { GitFileEntry, EntryCommit, RepoCommit } from "@bureau/contracts";
 import { getGitTree, getGitShow, getTreeCommits, getFiles, getFileHistory } from "../lib/api";
 import { Dropdown } from "./Dropdown";
 import { Markdown } from "./Markdown";
 import { CommitDetailView } from "./CommitDetailView";
+import { useAnchoredPopover } from "../lib/useAnchoredPopover";
 import { cn, relativeTime } from "../lib/utils";
 
 const README_RE = /^readme(\.md|\.markdown|\.txt)?$/i;
@@ -177,6 +179,9 @@ export function GitCodeBrowser({
   }
 
   const matches = useMemo(() => matchFiles(allPaths, query), [allPaths, query]);
+  const finderAnchor = useRef<HTMLDivElement>(null);
+  const finderOpenNow = finderOpen && query.trim() !== "";
+  const finderPos = useAnchoredPopover(finderOpenNow, finderAnchor, { estWidth: 320 });
   const latestInDir = useMemo(() => {
     let best: EntryCommit | null = null;
     for (const c of commits.values()) if (!best || c.date > best.date) best = c;
@@ -214,28 +219,34 @@ export function GitCodeBrowser({
           buttonClassName="font-medium"
         />
 
-        {/* Go to file */}
-        <div className="relative">
-          <div className="flex items-center gap-2 rounded-md border bg-background px-2.5 py-1.5">
-            <Search className="h-3.5 w-3.5 shrink-0 text-muted-foreground" />
-            <input
-              value={query}
-              onChange={(e) => {
-                setQuery(e.target.value);
-                setFinderOpen(true);
-              }}
-              onFocus={() => {
-                setFinderOpen(true);
-                void loadFinder();
-              }}
-              onBlur={() => setTimeout(() => setFinderOpen(false), 150)}
-              onKeyDown={(e) => e.key === "Escape" && setFinderOpen(false)}
-              placeholder="Go to file"
-              className="w-40 bg-transparent text-sm outline-none placeholder:text-muted-foreground sm:w-56"
-            />
-          </div>
-          {finderOpen && query.trim() !== "" && (
-            <div className="absolute z-20 mt-1 max-h-72 w-[20rem] overflow-y-auto rounded-md border bg-popover p-1 shadow-lg">
+        {/* Go to file — results are PORTALED at fixed coords so they're never clipped by
+            the page's overflow-y-auto scroll container. */}
+        <div ref={finderAnchor} className="flex items-center gap-2 rounded-md border bg-background px-2.5 py-1.5">
+          <Search className="h-3.5 w-3.5 shrink-0 text-muted-foreground" />
+          <input
+            value={query}
+            onChange={(e) => {
+              setQuery(e.target.value);
+              setFinderOpen(true);
+            }}
+            onFocus={() => {
+              setFinderOpen(true);
+              void loadFinder();
+            }}
+            onBlur={() => setTimeout(() => setFinderOpen(false), 150)}
+            onKeyDown={(e) => e.key === "Escape" && setFinderOpen(false)}
+            placeholder="Go to file"
+            className="w-40 bg-transparent text-sm outline-none placeholder:text-muted-foreground sm:w-56"
+          />
+        </div>
+        {finderOpenNow &&
+          finderPos &&
+          typeof document !== "undefined" &&
+          createPortal(
+            <div
+              style={{ position: "fixed", top: finderPos.top, left: finderPos.left, maxHeight: finderPos.maxHeight }}
+              className="z-50 max-h-72 w-[20rem] overflow-y-auto rounded-md border bg-popover p-1 shadow-lg"
+            >
               {matches.length === 0 ? (
                 <p className="px-2 py-3 text-center text-xs text-muted-foreground">No matching files.</p>
               ) : (
@@ -255,9 +266,9 @@ export function GitCodeBrowser({
                   </button>
                 ))
               )}
-            </div>
+            </div>,
+            document.body
           )}
-        </div>
 
         <div className="flex min-w-0 flex-1 items-center gap-1 overflow-hidden text-sm">
           <button onClick={() => go("")} className="shrink-0 font-medium text-primary transition-colors hover:underline">

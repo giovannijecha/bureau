@@ -51,9 +51,12 @@ export function isMerged(task: Task): boolean {
 }
 
 /** True when the task's branch was pushed and a PR OPENED for review, but NOT merged —
- *  the branch + PR live on GitHub and the CEO merges (or closes) it there. */
+ *  the branch + PR live on GitHub. Deliberately TOLERATES a merge_error (a failed
+ *  deferred-merge attempt leaves the PR still open + mergeable), so the CEO keeps the
+ *  in-Bureau "Merge to main" retry instead of being stranded; only a real merge (pr_url)
+ *  ends the prOpen state. */
 export function prOpen(task: Task): boolean {
-  return task.status === "completed" && artifactRef(task, "pr_open") !== null && mergedPrUrl(task) === null && mergeError(task) === null;
+  return task.status === "completed" && artifactRef(task, "pr_open") !== null && mergedPrUrl(task) === null;
 }
 
 /** The most recently produced diff for a task, or null if none yet. */

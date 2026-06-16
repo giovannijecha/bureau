@@ -688,6 +688,19 @@ describe("mergeOpenPr", () => {
     await expect(orch.mergeOpenPr(draft.id)).rejects.toMatchObject({ status: 409 });
     expect(vcs.calls.mergePr).toHaveLength(0);
   });
+
+  it("is idempotent — a 2nd merge of an already-merged task is a no-op (no false error)", async () => {
+    const draft = orch.createTask(PROPOSAL);
+    await orch.startTask(draft.id);
+    await orch.settle(draft.id);
+    await orch.openPrForReview(draft.id);
+    await orch.mergeOpenPr(draft.id); // merges
+    const again = await orch.mergeOpenPr(draft.id); // already merged → returns as-is
+
+    expect(vcs.calls.mergePr).toHaveLength(1); // NOT merged twice
+    expect(isMerged(again)).toBe(true);
+    expect(again.artifacts.filter((a) => a.kind === "merge_error")).toHaveLength(0); // no false error
+  });
 });
 
 // ── decideGate — the review loop (approve / request_changes / reject) ─────────

@@ -7,9 +7,10 @@
 // NEVER clipped by an ancestor's `overflow-hidden`/`overflow-auto` (e.g. a card or a
 // scroll container) — the bug that made the Operations op-picker render half cut off.
 
-import { useEffect, useLayoutEffect, useRef, useState, type ReactNode } from "react";
+import { useEffect, useRef, useState, type ReactNode } from "react";
 import { createPortal } from "react-dom";
 import { ChevronDown, Check } from "lucide-react";
+import { useAnchoredPopover } from "../lib/useAnchoredPopover";
 import { cn } from "../lib/utils";
 
 export interface DropdownOption<T extends string> {
@@ -39,35 +40,12 @@ export function Dropdown<T extends string>({
   placeholder?: string;
 }) {
   const [open, setOpen] = useState(false);
-  const [pos, setPos] = useState<{ top: number; left: number; minWidth: number; maxHeight: number } | null>(null);
   const btnRef = useRef<HTMLButtonElement>(null);
   const popRef = useRef<HTMLDivElement>(null);
-
-  // Position the portaled popover at the button's live coordinates; fit its height to the
-  // space below so it never runs off-screen (it scrolls internally if the list is long).
-  const reposition = () => {
-    const b = btnRef.current?.getBoundingClientRect();
-    if (!b) return;
-    const gap = 6;
-    const maxHeight = Math.min(288, Math.max(120, window.innerHeight - b.bottom - gap - 8));
-    setPos({
-      top: b.bottom + gap,
-      left: align === "right" ? Math.max(8, b.right - 264) : b.left, // right-align ~max-w
-      minWidth: b.width,
-      maxHeight,
-    });
-  };
-
-  useLayoutEffect(() => {
-    if (open) reposition();
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [open]);
+  const pos = useAnchoredPopover(open, btnRef, { align });
 
   useEffect(() => {
     if (!open) return;
-    const update = () => reposition();
-    window.addEventListener("scroll", update, true); // capture → catches scroll in ANY ancestor
-    window.addEventListener("resize", update);
     function onDoc(e: MouseEvent) {
       const t = e.target as Node;
       if (btnRef.current?.contains(t) || popRef.current?.contains(t)) return; // popover is portaled
@@ -79,12 +57,9 @@ export function Dropdown<T extends string>({
     document.addEventListener("mousedown", onDoc);
     document.addEventListener("keydown", onKey);
     return () => {
-      window.removeEventListener("scroll", update, true);
-      window.removeEventListener("resize", update);
       document.removeEventListener("mousedown", onDoc);
       document.removeEventListener("keydown", onKey);
     };
-    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [open]);
 
   const current = options.find((o) => o.value === value);

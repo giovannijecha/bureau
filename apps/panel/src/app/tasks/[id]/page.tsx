@@ -295,12 +295,15 @@ export default function TaskDetailPage({ params }: { params: { id: string } }) {
           <div className="border-b px-4 py-3 text-sm font-semibold">Branch changes</div>
           <DiffView diff={task.diff} />
           {reviewable && <ReviewBar id={id} busy={busy} act={act} />}
+          {task.prOpen && <PrOpenBar id={id} prUrl={task.prUrl} mergeError={task.mergeError} busy={busy} act={act} />}
         </div>
       )}
 
       {/* Merge failed — the CEO confirmed but it couldn't land. Honest, with the
           PR link (if one was opened) so they can resolve it on GitHub. */}
-      {task.mergeError && (
+      {/* A genuinely failed merge (NOT a still-open PR — that case shows the retry in
+          PrOpenBar above). Honest "nothing landed" with the PR link. */}
+      {task.mergeError && !task.prOpen && (
         <div className="mt-4 flex items-start gap-2.5 rounded-xl border border-red-500/30 bg-red-500/5 px-4 py-3 text-sm">
           <XCircle className="mt-0.5 h-4 w-4 shrink-0 text-red-500" />
           <div className="space-y-1">
@@ -308,7 +311,7 @@ export default function TaskDetailPage({ params }: { params: { id: string } }) {
             <p className="text-xs text-red-400">{task.mergeError}</p>
             {task.prUrl && (
               <a href={task.prUrl} target="_blank" rel="noreferrer" className="inline-flex items-center gap-1 text-xs font-medium text-foreground underline underline-offset-2">
-                Resolve the open PR on GitHub <ExternalLink className="h-3 w-3" />
+                Open the PR on GitHub <ExternalLink className="h-3 w-3" />
               </a>
             )}
           </div>
@@ -325,36 +328,6 @@ export default function TaskDetailPage({ params }: { params: { id: string } }) {
         </div>
       )}
 
-      {/* PR opened for review on GitHub — NOT merged. The branch lives there; review it,
-          then merge to main right here (or on GitHub). */}
-      {task.prOpen && (
-        <div className="mt-4 rounded-xl border border-blue-500/30 bg-blue-500/5 px-4 py-3">
-          <div className="flex flex-wrap items-start gap-3">
-            <GitPullRequest className="mt-0.5 h-4 w-4 shrink-0 text-blue-400" />
-            <div className="min-w-0 flex-1 space-y-1 text-sm">
-              <p className="text-foreground">PR open for review — not merged yet. Review the diff below, then merge to main (here, or on GitHub).</p>
-              {task.prUrl && (
-                <a
-                  href={task.prUrl}
-                  target="_blank"
-                  rel="noreferrer"
-                  className="inline-flex items-center gap-1 break-all text-xs font-medium text-blue-400 underline underline-offset-2"
-                >
-                  {task.prUrl} <ExternalLink className="h-3 w-3 shrink-0" />
-                </a>
-              )}
-            </div>
-            <button
-              onClick={() => act(() => mergeOpenPr(id))}
-              disabled={busy}
-              className="inline-flex h-9 shrink-0 items-center gap-1.5 rounded-md bg-green-600 px-3.5 text-sm font-medium text-white transition-colors hover:bg-green-700 disabled:opacity-50"
-            >
-              {busy ? <Loader2 className="h-4 w-4 animate-spin" /> : <GitMerge className="h-4 w-4" />}
-              Merge to main
-            </button>
-          </div>
-        </div>
-      )}
     </div>
   );
 }
@@ -423,6 +396,50 @@ function WorkerOutput({
 /** The review decision bar — approve & merge, request changes (re-run with notes),
  *  or reject (abort). request_changes flips the task to executing → the running
  *  banner + live stream take over with no extra wiring. */
+/** Footer for a prOpen task (branch pushed + PR opened, not merged): the PR link + a
+ *  "Merge to main" action, co-located with the diff — and a retry when a merge failed. */
+function PrOpenBar({
+  id,
+  prUrl,
+  mergeError,
+  busy,
+  act,
+}: {
+  id: string;
+  prUrl: string | null;
+  mergeError: string | null;
+  busy: boolean;
+  act: (fn: () => Promise<TaskDetail>) => void;
+}) {
+  return (
+    <div className="flex flex-wrap items-start justify-between gap-3 border-t border-blue-500/20 bg-blue-500/5 px-4 py-3.5">
+      <div className="min-w-0 flex-1 space-y-1 text-sm">
+        <p className="flex items-center gap-1.5 text-foreground">
+          <GitPullRequest className="h-4 w-4 shrink-0 text-blue-400" /> PR open for review — not merged. Approve the diff above, then merge to main.
+        </p>
+        {prUrl && (
+          <a href={prUrl} target="_blank" rel="noreferrer" className="inline-flex items-center gap-1 break-all text-xs font-medium text-blue-400 underline underline-offset-2">
+            {prUrl} <ExternalLink className="h-3 w-3 shrink-0" />
+          </a>
+        )}
+        {mergeError && (
+          <p className="flex items-start gap-1.5 text-xs text-red-400">
+            <XCircle className="mt-px h-3.5 w-3.5 shrink-0" /> Last merge attempt failed — the PR is still open, you can retry. ({mergeError})
+          </p>
+        )}
+      </div>
+      <button
+        onClick={() => act(() => mergeOpenPr(id))}
+        disabled={busy}
+        className="inline-flex h-9 shrink-0 items-center gap-1.5 rounded-md bg-green-600 px-3.5 text-sm font-medium text-white transition-colors hover:bg-green-700 disabled:opacity-50"
+      >
+        {busy ? <Loader2 className="h-4 w-4 animate-spin" /> : <GitMerge className="h-4 w-4" />}
+        {mergeError ? "Retry merge" : "Merge to main"}
+      </button>
+    </div>
+  );
+}
+
 function ReviewBar({ id, busy, act }: { id: string; busy: boolean; act: (fn: () => Promise<TaskDetail>) => void }) {
   const confirm = useConfirm();
   const [requesting, setRequesting] = useState(false);
