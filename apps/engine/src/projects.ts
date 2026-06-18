@@ -36,8 +36,9 @@ export class ProjectRegistry {
   // a mutation propagates everywhere with zero rewiring — never construct a second registry.
   private projects: readonly ProjectConfig[];
 
+  // May be empty: a fresh install boots with zero projects and the panel shows its
+  // onboarding (add a repo from there). default()/resolve() then 409 until one exists.
   constructor(projects: readonly ProjectConfig[]) {
-    if (projects.length === 0) throw new Error("ProjectRegistry needs at least one project");
     const ids = new Set<string>();
     for (const p of projects) {
       if (ids.has(p.id)) throw new Error(`Duplicate project id: ${p.id}`);
@@ -50,9 +51,13 @@ export class ProjectRegistry {
     return [...this.projects];
   }
 
-  /** The default project (the first one) — used when no project is specified. */
+  /** The default project (the first one) — used when no project is specified. Throws a
+   *  typed 409 when no project exists yet (a fresh install) so callers surface a clean
+   *  "add a repository first" instead of crashing. */
   default(): ProjectConfig {
-    return this.projects[0]!;
+    const p = this.projects[0];
+    if (!p) throw new OrchestratorError("No project configured — add a repository first.", 409);
+    return p;
   }
 
   get(id: string): ProjectConfig {
@@ -80,11 +85,11 @@ export class ProjectRegistry {
     this.projects = [...this.projects, config];
   }
 
-  /** Remove a project at runtime. Never empties the registry (default()/resolve rely on ≥1). */
+  /** Remove a project at runtime. May empty the registry — Bureau then runs with zero
+   *  projects and the panel shows its onboarding again (default()/resolve() 409 meanwhile). */
   remove(id: string): void {
     const next = this.projects.filter((p) => p.id !== id);
     if (next.length === this.projects.length) throw new OrchestratorError(`Unknown project: ${id}`, 404);
-    if (next.length === 0) throw new OrchestratorError("Cannot remove the last project", 409);
     this.projects = next;
   }
 }

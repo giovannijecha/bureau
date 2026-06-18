@@ -23,6 +23,10 @@ next-env.d.ts
 *.db-shm
 *.db-wal
 
+# Bureau runtime data — local clones, worktrees, and the System Memory vault
+.bureau/
+bureau-vault/
+
 # pnpm
 .pnpm-store/
 

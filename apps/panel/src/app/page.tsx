@@ -17,11 +17,15 @@ import {
   FileText,
   Image as ImageIcon,
   Coins,
+  FolderGit2,
+  Plus,
 } from "lucide-react";
 import type { Message, TaskProposal, Conversation, Attachment, GitOpRequest, CostEstimate } from "@bureau/contracts";
-import { chat, createTask, estimateCost, getConfig, listConversations, deleteConversation, messagesFor, getGitInfo } from "../lib/api";
+import { chat, createTask, estimateCost, getConfig, listConversations, deleteConversation, messagesFor, getGitInfo, ENGINE_URL } from "../lib/api";
 import { useProjects } from "../lib/useProjects";
 import { useEngineEvents } from "../lib/useEngineEvents";
+import { useToast } from "../components/Toast";
+import { useSettingsModal } from "../components/SettingsModal";
 import { ProjectSwitcher } from "../components/ProjectSwitcher";
 import { ConversationsRail } from "../components/ConversationsRail";
 import { GitOpProposalCard } from "../components/GitOpProposalCard";
@@ -44,8 +48,10 @@ const ASSIGNEE: Record<string, string> = {
 };
 
 export default function AssistantPage() {
-  const { projects, active, activeId, setActiveId } = useProjects();
+  const { projects, active, activeId, setActiveId, loading: projectsLoading, error: projectsError, refresh: refreshProjects } = useProjects();
   const confirm = useConfirm();
+  const { success: toastSuccess, error: toastError } = useToast();
+  const { open: openSettings } = useSettingsModal();
   const [input, setInput] = useState("");
   const [log, setLog] = useState<Message[]>([]);
   const [proposal, setProposal] = useState<TaskProposal | null>(null);
@@ -261,19 +267,34 @@ export default function AssistantPage() {
     setError(null);
     try {
       const task = await createTask(proposal, activeId ?? undefined);
+      const title = proposal.title;
       setProposal(null);
       persistProposal(convId, null);
-      const note = createdNote(task.id, proposal.title);
+      const note = createdNote(task.id, title);
       setLog((l) => [...l, note]);
       appendNote(convId, note); // survive reload / conversation-switch
+      toastSuccess("Task created", `“${title}” — open it in Tasks to start it.`);
     } catch (e) {
       setError(errMsg(e));
+      toastError("Couldn’t create the task", errMsg(e));
     } finally {
       setBusy(false);
     }
   }
 
   const empty = log.length === 0 && !proposal && !gitOp && runs.length === 0;
+
+  // With no project to scope Iris to, show one of two distinct states (never the dead
+  // Assistant). Gated on `!projectsLoading` so neither flashes during the initial fetch.
+  if (!projectsLoading && projects.length === 0) {
+    // A fetch error means the engine is unreachable — say so (and how to recover) rather
+    // than wrongly telling a newcomer with a downed engine to "add a repository".
+    return projectsError ? (
+      <EngineOffline message={projectsError} onRetry={refreshProjects} />
+    ) : (
+      <NoProjectsOnboarding onAdd={() => openSettings("projects")} />
+    );
+  }
 
   return (
     <div className="flex h-full">
@@ -437,6 +458,52 @@ export default function AssistantPage() {
           </p>
         </div>
       </div>
+    </div>
+  );
+}
+
+function NoProjectsOnboarding({ onAdd }: { onAdd: () => void }) {
+  return (
+    <div className="flex h-full flex-col items-center justify-center gap-4 px-6 py-10 text-center">
+      <div className="flex h-14 w-14 items-center justify-center rounded-2xl bg-primary/10 text-primary">
+        <FolderGit2 className="h-7 w-7" />
+      </div>
+      <h2 className="text-xl font-semibold">Welcome to Bureau</h2>
+      <p className="max-w-md text-sm text-muted-foreground">
+        Add one of your GitHub repositories to get started. Iris will scope her work to it — turning what you ask
+        into reviewed pull requests you approve. You stay the CEO.
+      </p>
+      <button
+        onClick={onAdd}
+        className="inline-flex h-10 items-center gap-2 rounded-md bg-primary px-4 text-sm font-medium text-primary-foreground transition-colors hover:bg-primary/90"
+      >
+        <Plus className="h-4 w-4" /> Add your first repository
+      </button>
+      <p className="max-w-md text-xs text-muted-foreground/70">
+        Bureau runs entirely on your machine. Nothing reaches GitHub until you confirm a merge.
+      </p>
+    </div>
+  );
+}
+
+function EngineOffline({ message, onRetry }: { message: string; onRetry: () => void }) {
+  return (
+    <div className="flex h-full flex-col items-center justify-center gap-4 px-6 py-10 text-center">
+      <div className="flex h-14 w-14 items-center justify-center rounded-2xl bg-destructive/10 text-destructive">
+        <AlertCircle className="h-7 w-7" />
+      </div>
+      <h2 className="text-xl font-semibold">Can&apos;t reach the engine</h2>
+      <p className="max-w-md text-sm text-muted-foreground">
+        The panel couldn&apos;t connect to the Bureau engine at <code className="rounded bg-muted px-1 py-0.5 font-mono text-xs">{ENGINE_URL}</code>. Start it, then retry.
+      </p>
+      <pre className="max-w-full overflow-x-auto rounded-lg border bg-muted/60 px-3 py-2 text-left font-mono text-xs">pnpm build &amp;&amp; pnpm dev</pre>
+      <button
+        onClick={onRetry}
+        className="inline-flex h-10 items-center gap-2 rounded-md bg-primary px-4 text-sm font-medium text-primary-foreground transition-colors hover:bg-primary/90"
+      >
+        Retry
+      </button>
+      <p className="max-w-md text-xs text-muted-foreground/70">{message}</p>
     </div>
   );
 }
