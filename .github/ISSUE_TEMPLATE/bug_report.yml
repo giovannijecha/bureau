@@ -1,0 +1,59 @@
+name: Bug report
+description: Something in Bureau isn't working as expected
+labels: ["bug"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for taking the time to file a bug. **For security vulnerabilities, do not open an issue** — follow [SECURITY.md](../../SECURITY.md) instead.
+  - type: textarea
+    id: what-happened
+    attributes:
+      label: What happened?
+      description: A clear description of the bug, and what you expected instead.
+      placeholder: When I…, Bureau did…, but I expected…
+    validations:
+      required: true
+  - type: textarea
+    id: repro
+    attributes:
+      label: Steps to reproduce
+      description: The smallest sequence that triggers it.
+      placeholder: |
+        1. Start the engine with…
+        2. In the panel, …
+        3. See …
+    validations:
+      required: true
+  - type: textarea
+    id: logs
+    attributes:
+      label: Relevant logs
+      description: Engine output, panel console, or a stack trace. **Redact any secrets / tokens first.**
+      render: shell
+  - type: input
+    id: version
+    attributes:
+      label: Version / commit
+      description: Output of `git rev-parse --short HEAD`.
+    validations:
+      required: true
+  - type: dropdown
+    id: area
+    attributes:
+      label: Area
+      options:
+        - engine (daemon / HTTP / WebSocket)
+        - panel (Next.js UI)
+        - a capability worker (plan/edit/test/review/document)
+        - vcs / git / gh
+        - other / not sure
+    validations:
+      required: true
+  - type: input
+    id: os
+    attributes:
+      label: OS + Node version
+      placeholder: "Windows 11 / Node 20.11"
+    validations:
+      required: true

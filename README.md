@@ -1,7 +1,7 @@
 # Bureau
 
 ![status](https://img.shields.io/badge/status-active-brightgreen)
-![license](https://img.shields.io/badge/license-private-lightgrey)
+[![license](https://img.shields.io/badge/license-Apache--2.0-blue)](LICENSE)
 ![stack](https://img.shields.io/badge/stack-TypeScript-3178c6)
 ![package%20manager](https://img.shields.io/badge/pnpm-workspaces-f69220)
 ![storage](https://img.shields.io/badge/storage-SQLite%20%2B%20Drizzle-003b57)
@@ -147,8 +147,18 @@ Imports only ever point inward. `core` and `contracts` depend on no other `@bure
 
 **Workers are shell-free; the `test` worker is the one command-runner.** The agentic workers (`edit`, `document`, `review`) only read/edit files — they have **no shell**. Since no edit tool can delete or rename a file, the `edit` worker requests those in a small `.bureau-ops` manifest, which Bureau applies with Node `fs` (every path confined to the worktree, no shell, no injection surface). The one exception is the **`test`** worker, which runs your project's configured test suite (opt-in, argv-only, no shell). It is therefore **opt-in** (only the per-project `testCommand` you configure ever runs — never anything an LLM, the chat, or a diff could inject), spawned **argv-only with no shell** (metacharacters are inert), confined to the task's worktree, with a timeout + kill and a capped output. Its result is **advisory** — a pass or fail is shown to you at the gate (it never auto-merges, and a failure never blocks or hides the diff), so `canPush()` remains the sole gate. Bureau's own credentials (`ANTHROPIC_API_KEY`, `GH_TOKEN`, `GITHUB_TOKEN`) are stripped from the test process's environment; other env vars are inherited (your test suite runs with the same trust as you running it in your own terminal). Configure it per project: `"testCommand": ["npm","test"]` in `BUREAU_PROJECTS` (or `BUREAU_TEST_COMMAND` for the single-repo path). On Windows, point it at a non-shim binary (e.g. `["node","node_modules/.bin/vitest","run"]`), since `npm`/`pnpm` shims can't be spawned without a shell.
 
+**Transport:** the engine binds `127.0.0.1` only — it is never meant to be reachable off the machine. The `/ws` and `/terminal` WebSockets and the HTTP API share one same-machine `Origin` policy: a cross-site browser tab is rejected, a local client (the panel, or a CLI with no `Origin`) is allowed — closing both Cross-Site WebSocket Hijacking and CSRF against the loopback daemon. Full model and how to report a vulnerability: [`SECURITY.md`](SECURITY.md).
+
 ## Roadmap
 
 - **Phase 1–4 — Foundations + vertical slice ✅:** core types, state machine (`transition()` + `canPush()`), DB schema, provider adapters, VCS wrapper; chat → Task → isolated worktree change → diff review → real squash-merged PR on GitHub.
 - **Phase 5 — Team + polished panel (current) ✅:** `edit` + `document` workers with multi-step pipelines; ChatGPT-style conversations; live progress over WebSocket; the full panel (Assistant, **Hub**, Projects, Tasks with search/filter/sort, Git, **Terminal**, Agents, **Memory**, **Metrics**, **Notifications**, Settings) with light/dark themes (the former Overview is folded into the Hub). The **Hub** is a live work floor over the capability workers + a cross-task activity feed + a "waiting on you" review queue. **System Memory** is an Obsidian-style markdown vault: every finished task auto-writes a journal (goal, pipeline, outcome) and the CEO can pin notes Iris should remember. **Metrics** turns the token counts every provider already returns into per-worker / per-model / per-day spend with a USD estimate — so you can trust what the agents cost. **Notifications** is a durable inbox (with a header bell + unread count) that fires the moment a task is ready for your review, merges, or fails — so you never miss an approval when you look away. Tasks report an **honest merge state** — a confirmed merge that hits conflicts shows "merge failed" with the open-PR link, never a false "merged".
 - **Next:** parallel-task concurrency and mid-pipeline review gates (`plan_review` / `diff_review`) surfaced in the panel.
+
+## Contributing
+
+Contributions are welcome — code, docs, bug reports, and ideas. Start with [`CONTRIBUTING.md`](CONTRIBUTING.md) for the dev setup and the quality gate (`pnpm quality`), and please read the [Code of Conduct](CODE_OF_CONDUCT.md). The security invariants in [`SECURITY.md`](SECURITY.md) are non-negotiable — a change that weakens any of them won't be merged.
+
+## License
+
+[Apache License 2.0](LICENSE) © 2026 Giovanni Jecha.
