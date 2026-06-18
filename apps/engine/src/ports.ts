@@ -27,6 +27,10 @@ export interface VcsPort {
   syncClone(): Promise<void>;
   /** Create the task's isolated worktree + branch. */
   setupWorktree(branch: string, worktreePath: string): Promise<WorktreeRef>;
+  /** Hard-reset + clean an EXISTING worktree back to the fresh base, discarding any
+   *  uncommitted/partial crash work — so a RESUMED task re-runs from a pristine tree.
+   *  LOCAL-ONLY (reset/clean), never on a push path. Keeps .gitignored build dirs. */
+  resetWorktreeToBase(worktreePath: string): Promise<void>;
   /** The uncommitted diff (incl. new files) — what the human reviews on the first run. */
   workingDiff(worktreePath: string): Promise<string>;
   /** The committed branch diff vs `base` (e.g. "origin/main") — the full PR-shaped

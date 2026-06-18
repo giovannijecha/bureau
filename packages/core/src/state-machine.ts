@@ -26,7 +26,11 @@ export type TransitionEvent =
   | { type: "DECIDE_GATE"; gateId: GateId; decision: HumanDecision; notes?: string }
   | { type: "REOPEN_FOR_CHANGES"; gateId: GateId }
   | { type: "COMPLETE_TASK" }
-  | { type: "ABORT_TASK"; reason: string };
+  | { type: "ABORT_TASK"; reason: string }
+  // The engine restarted mid-flight: park the task as interrupted (worktree preserved) so
+  // the CEO can Resume or Discard. RESUME re-runs the WHOLE pipeline clean from base.
+  | { type: "INTERRUPT_TASK"; reason: string }
+  | { type: "RESUME_TASK" };
 
 // ---------------------------------------------------------------------------
 // Transition errors
@@ -191,29 +195,17 @@ export function transition(task: Task, event: TransitionEvent): Task {
           `Gate ${event.gateId} is not awaiting changes (status: ${gate.status}, decision: ${gate.decision ?? "none"})`
         );
       }
-      // Rebuild the gate + EVERY step as FRESH objects (omit decision/decidedAt/
-      // notes, startedAt/completedAt/summary/failureReason) so the whole pipeline
-      // re-runs with the CEO's feedback, and no stale decision can ever survive
-      // into a later canPush() check — under exactOptionalPropertyTypes, omitted ≠
-      // undefined. The whole pipeline (not just the gated step) re-runs: a change
-      // request is about the overall diff, and re-running only the last step would
-      // re-run the read-only review, not the edit that produced the change.
-      const resetGate: Gate = { id: gate.id, kind: gate.kind, status: "pending" };
-      const resetStep = (s: Step): Step => ({
-        id: s.id,
-        capability: s.capability,
-        description: s.description,
-        acceptanceCriteria: s.acceptanceCriteria,
-        status: "pending",
-        ...(s.gateAfter !== undefined ? { gateAfter: s.gateAfter } : {}),
-        artifactIds: s.artifactIds,
-      });
+      // Rebuild the gate + EVERY step as FRESH objects (see freshStep/freshGate) so the
+      // whole pipeline re-runs with the CEO's feedback, and no stale decision can ever
+      // survive into a later canPush() check. The whole pipeline (not just the gated step)
+      // re-runs: a change request is about the overall diff, and re-running only the last
+      // step would re-run the read-only review, not the edit that produced the change.
       return {
         ...task,
         status: "executing",
         updatedAt: now,
-        gates: task.gates.map((g) => (g.id === gate.id ? resetGate : g)),
-        steps: task.steps.map(resetStep),
+        gates: task.gates.map((g) => (g.id === gate.id ? freshGate(g) : g)),
+        steps: task.steps.map(freshStep),
         decisionLog: [...task.decisionLog, { type: "gate_reopened", at: now, gateId: gate.id }],
       };
     }
@@ -247,6 +239,41 @@ export function transition(task: Task, event: TransitionEvent): Task {
             : s
         ),
       };
+
+    case "INTERRUPT_TASK": {
+      // Boot-time recovery: a crash left this task mid-flight. Park it as interrupted
+      // (NOT terminal, NOT a canPush() state) and reset the one in-flight step back to a
+      // fresh pending so it never lingers as "running" on a dead pipeline. Gates untouched
+      // — RESUME rebuilds them. Legal only from a mid-flight state.
+      if (task.status !== "planning" && task.status !== "executing") {
+        throw new TransitionError(`Event INTERRUPT_TASK requires status "planning" or "executing", but task is "${task.status}"`);
+      }
+      return {
+        ...patch(task, now, { status: "interrupted" }, {
+          type: "task_interrupted",
+          at: now,
+          reason: event.reason,
+        } satisfies DecisionEntry),
+        steps: task.steps.map((s) => (s.status === "running" ? freshStep(s) : s)),
+      };
+    }
+
+    case "RESUME_TASK": {
+      // The CEO chose to resume. Re-run the WHOLE pipeline clean (the caller resets the
+      // worktree to base first): rebuild EVERY step + gate as fresh pending so no stale
+      // decision/summary survives (omitted ≠ undefined under exactOptionalPropertyTypes),
+      // then go back to executing. canPush() stays false until the gate re-opens + the
+      // human re-approves — resume can never inherit an old approval.
+      assertStatus(task, "interrupted", event.type);
+      return {
+        ...task,
+        status: "executing",
+        updatedAt: now,
+        steps: task.steps.map(freshStep),
+        gates: task.gates.map(freshGate),
+        decisionLog: [...task.decisionLog, { type: "task_resumed", at: now }],
+      };
+    }
 
     default: {
       const _exhaustive: never = event;
@@ -285,6 +312,27 @@ function requireStep(task: Task, stepId: StepId): Step {
   const step = task.steps.find((s) => s.id === stepId);
   if (!step) throw new TransitionError(`Step ${stepId} not found in task ${task.id}`);
   return step;
+}
+
+/** A step rebuilt as FRESH pending — drops startedAt/completedAt/summary/failureReason
+ *  (omitted, not undefined, so it's clean under exactOptionalPropertyTypes). Shared by
+ *  REOPEN_FOR_CHANGES (change request) and RESUME_TASK (post-restart re-run). */
+function freshStep(s: Step): Step {
+  return {
+    id: s.id,
+    capability: s.capability,
+    description: s.description,
+    acceptanceCriteria: s.acceptanceCriteria,
+    status: "pending",
+    ...(s.gateAfter !== undefined ? { gateAfter: s.gateAfter } : {}),
+    artifactIds: s.artifactIds,
+  };
+}
+
+/** A gate rebuilt as FRESH pending — drops decision/decidedAt/notes so no stale approval
+ *  can survive into a later canPush() check. */
+function freshGate(g: Gate): Gate {
+  return { id: g.id, kind: g.kind, status: "pending" };
 }
 
 function requireGate(task: Task, gateId: GateId): Gate {

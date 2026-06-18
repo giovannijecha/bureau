@@ -34,6 +34,23 @@ export async function createWorktree(
 }
 
 /**
+ * Hard-reset an EXISTING worktree to `base` (a validated ref, e.g. "origin/main") and
+ * remove untracked files — discarding any uncommitted/partial work a crash left behind, so
+ * a resumed task re-runs from a pristine tree. `clean -fd` (NOT `-fdx`) keeps .gitignored
+ * build dirs (node_modules/dist/.next), removing only untracked, non-ignored crash debris.
+ * LOCAL only (reset/clean) — never reaches a remote.
+ */
+export async function resetWorktreeToBase(
+  worktreePath: string,
+  base: string,
+  runner: Runner = defaultRunner
+): Promise<void> {
+  assertSafeRef(base, "reset base");
+  await run(runner, "git", ["-C", worktreePath, "reset", "--hard", base]);
+  await run(runner, "git", ["-C", worktreePath, "clean", "-fd"]);
+}
+
+/**
  * Remove a worktree (and prune its admin entry) when a task is done or aborted.
  * Pass `{ force: true }` for the abort/cleanup path — a rejected task's worktree
  * still has the capability's uncommitted edits, and git refuses to remove a

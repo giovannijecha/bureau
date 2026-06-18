@@ -2,7 +2,7 @@ import { describe, it, expect } from "vitest";
 
 import { run, assertSafeRef, assertSafeRepoUrl, assertSafeRepoId, parseGithubRepo, VcsError, type Runner, type ExecResult } from "../src/exec.js";
 import { push, openPr, mergePr, commitAll, getDiff, cloneRepo, freshBase } from "../src/git.js";
-import { createWorktree, removeWorktree } from "../src/worktree.js";
+import { createWorktree, removeWorktree, resetWorktreeToBase } from "../src/worktree.js";
 import { squashAllAndForcePush } from "../src/git-admin.js";
 
 const ok = (stdout = ""): ExecResult => ({ stdout, stderr: "", code: 0 });
@@ -234,6 +234,19 @@ describe("createWorktree (args)", () => {
 
   it("rejects an unsafe base ref", async () => {
     await expect(createWorktree("/repo", "ok", "/wt", makeRunner().run, "--evil")).rejects.toThrow(/Unsafe worktree base/);
+  });
+});
+
+describe("resetWorktreeToBase (args)", () => {
+  it("hard-resets to the base then cleans untracked (NOT -x), in the worktree", async () => {
+    const { run: r, calls } = makeRunner();
+    await resetWorktreeToBase("/wt", "origin/main", r);
+    expect(calls[0]!.args).toEqual(["-C", "/wt", "reset", "--hard", "origin/main"]);
+    expect(calls[1]!.args).toEqual(["-C", "/wt", "clean", "-fd"]); // keeps .gitignored build dirs
+  });
+
+  it("rejects an unsafe base ref (argument-injection guard)", async () => {
+    await expect(resetWorktreeToBase("/wt", "--evil", makeRunner().run)).rejects.toThrow(/Unsafe reset base/);
   });
 });
 

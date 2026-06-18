@@ -9,6 +9,7 @@ export const TaskStatusSchema = z.enum([
   "created",
   "planning",
   "executing",
+  "interrupted",
   "awaiting_human",
   "completed",
   "aborted",

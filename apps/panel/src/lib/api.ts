@@ -291,6 +291,14 @@ export async function startTask(id: string): Promise<TaskDetail> {
 export async function stopTask(id: string): Promise<TaskDetail> {
   return json(await postJson(`/api/tasks/${encodeURIComponent(id)}/stop`));
 }
+/** Resume an interrupted task — re-runs it clean from base (local, no push). */
+export async function resumeTask(id: string): Promise<TaskDetail> {
+  return json(await postJson(`/api/tasks/${encodeURIComponent(id)}/resume`));
+}
+/** Discard an interrupted task — abort it + tear down its worktree. */
+export async function discardTask(id: string): Promise<TaskDetail> {
+  return json(await postJson(`/api/tasks/${encodeURIComponent(id)}/discard`));
+}
 export async function mergeTask(id: string): Promise<TaskDetail> {
   return json(await postJson(`/api/tasks/${encodeURIComponent(id)}/merge`));
 }

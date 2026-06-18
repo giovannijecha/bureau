@@ -128,8 +128,10 @@ function decisionEntryToRow(taskId: TaskId, orderIdx: number, e: DecisionEntry):
     case "gate_decided":
       return { ...base, gateId: e.gateId, decision: e.decision, notes: e.notes ?? null };
     case "task_completed":
+    case "task_resumed":
       return base;
     case "task_aborted":
+    case "task_interrupted":
       return { ...base, reason: e.reason };
   }
 }
@@ -237,6 +239,10 @@ function rowToDecisionEntry(r: DecisionSelect): DecisionEntry {
       return { type: "task_completed", at: r.at };
     case "task_aborted":
       return { type: "task_aborted", at: r.at, reason: req(r.reason, "reason") };
+    case "task_interrupted":
+      return { type: "task_interrupted", at: r.at, reason: req(r.reason, "reason") };
+    case "task_resumed":
+      return { type: "task_resumed", at: r.at };
     default:
       // A row whose type is outside the known union — corrupt or un-migrated.
       throw new Error(`Unknown decision_log entry type: ${String(r.type)}`);
