@@ -1135,7 +1135,15 @@ export class Orchestrator {
     if (task.worktreePath !== undefined && existsSync(join(worktreePath, ".git"))) {
       await vcs.resetWorktreeToBase(worktreePath);
     } else {
-      await vcs.deleteBranch(branch).catch(() => {}); // best-effort: clear a stale task branch
+      // No usable worktree (crashed before/mid setup, or its .git link is gone). Clear any
+      // leftover dir + its stale worktree admin entry + branch, THEN create a clean one —
+      // otherwise `git worktree add` fails ("already exists" / "already registered") and
+      // resume is stuck. The dir is engine-derived under worktreesDir; guard it anyway.
+      if (resolve(worktreePath).startsWith(resolve(project.worktreesDir) + sep)) {
+        await rm(worktreePath, { recursive: true, force: true }).catch(() => {});
+      }
+      await vcs.pruneWorktrees().catch(() => {}); // drop a stale admin entry pointing at it
+      await vcs.deleteBranch(branch).catch(() => {}); // clear a stale bureau/task-* branch
       await vcs.setupWorktree(branch, worktreePath);
     }
     this.setWorktree(this.requireTask(taskId), worktreePath);

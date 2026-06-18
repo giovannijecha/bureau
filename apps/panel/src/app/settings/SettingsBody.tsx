@@ -573,7 +573,8 @@ function BudgetCard({ info, onChange }: { info: EngineInfo | null; onChange: (us
     <Card title="Budget" icon={Coins}>
       <p className="text-sm text-muted-foreground">
         A per-task spend cap. A running task stops before its next step once it crosses this — protection against a runaway
-        pipeline. The proposal card warns when an estimate would exceed it.
+        pipeline. The proposal card warns when an estimate would exceed it. Applies for this session; set{" "}
+        <code className="font-mono text-xs">BUREAU_TASK_BUDGET_USD</code> on the engine for a permanent default.
       </p>
       <div className="flex flex-wrap items-center gap-2">
         <div className="relative">

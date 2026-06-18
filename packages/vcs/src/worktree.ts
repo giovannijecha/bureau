@@ -34,6 +34,15 @@ export async function createWorktree(
 }
 
 /**
+ * Drop stale worktree admin entries (`.git/worktrees/*`) whose on-disk path no longer
+ * exists — so re-creating a worktree at a path a crash half-tore-down doesn't fail with
+ * "already registered". Best-effort, idempotent. Operates on the canonical clone.
+ */
+export async function pruneWorktrees(canonicalClonePath: string, runner: Runner = defaultRunner): Promise<void> {
+  await run(runner, "git", ["-C", canonicalClonePath, "worktree", "prune"]);
+}
+
+/**
  * Hard-reset an EXISTING worktree to `base` (a validated ref, e.g. "origin/main") and
  * remove untracked files — discarding any uncommitted/partial work a crash left behind, so
  * a resumed task re-runs from a pristine tree. `clean -fd` (NOT `-fdx`) keeps .gitignored

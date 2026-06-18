@@ -7,6 +7,7 @@ import {
   cloneRepo,
   createWorktree,
   resetWorktreeToBase,
+  pruneWorktrees,
   freshBase,
   syncToBase,
   getWorkingDiff,
@@ -104,6 +105,10 @@ export class RealVcs implements VcsPort {
     // base branch (where the worktree originally branched from). Discards partial work.
     const base = (await freshBase(this.cfg.canonicalPath, this.cfg.baseBranch, this.runner)) ?? this.cfg.baseBranch;
     await resetWorktreeToBase(worktreePath, base, this.runner);
+  }
+
+  async pruneWorktrees(): Promise<void> {
+    await pruneWorktrees(this.cfg.canonicalPath, this.runner);
   }
 
   workingDiff(worktreePath: string): Promise<string> {
