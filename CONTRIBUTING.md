@@ -17,7 +17,7 @@ If your change touches any of these, say so explicitly in your PR description.
 
 ## Development setup
 
-**Prerequisites:** Node.js 18+, pnpm 9 (`corepack enable && corepack prepare pnpm@9 --activate`), `git`, and the GitHub CLI (`gh`) authenticated against your account.
+**Prerequisites:** Node.js 20.6+, pnpm 9 (`corepack enable && corepack prepare pnpm@9 --activate`), `git`, and the GitHub CLI (`gh`) authenticated against your account.
 
 ```bash
 git clone https://github.com/giovannijecha/bureau.git

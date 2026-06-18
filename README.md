@@ -17,9 +17,9 @@ Bureau is a local-first AI agent team that turns plain-language requests into re
 
 ### Prerequisites
 
-- **Node.js** 18+
+- **Node.js** 20.6+ (the engine auto-loads a local `.env` via `process.loadEnvFile`)
 - **pnpm** 9 (`corepack enable && corepack prepare pnpm@9 --activate`)
-- **git** and the **GitHub CLI** (`gh`) authenticated against your account
+- **git** and the **GitHub CLI** (`gh`) authenticated against your account (`gh auth login` once)
 
 ### Install
 
@@ -50,21 +50,27 @@ apps/       engine (Node daemon), panel (Next.js, localhost only)
 
 Start with `packages/core/src/task.ts` and `packages/core/src/state-machine.ts` — pure, unit-testable, no dependencies.
 
-### Run the engine
+### Run
 
-The engine is configured entirely via env. Multi-repo:
+```bash
+pnpm build      # compile the engine + packages once
+pnpm dev        # starts BOTH the engine (:4319) and the panel (:3000)
+```
+
+Open **http://localhost:3000** and **add your first repository from the panel** — Bureau clones it and you're ready. No configuration is required to start: the engine boots with zero projects, the panel onboards you to add one, and the choice persists in a local SQLite DB.
+
+**Provider:** set `ANTHROPIC_API_KEY` to call the API directly; otherwise the engine delegates to the local `claude` CLI.
+
+**Configuring via env (optional).** Prefer to seed repos or run headless? Copy `apps/engine/.env.example` to `apps/engine/.env` (the engine auto-loads it), or export the vars before launching:
 
 ```bash
 BUREAU_PROJECTS='[{"owner":"you","name":"your-repo","url":"https://github.com/you/your-repo.git","baseBranch":"main"}]' \
-BUREAU_REPOS_ROOT="$HOME/.bureau/repos" \   # each project clones to <root>/<id>/repo, worktrees under <root>/<id>/worktrees
 BUREAU_GH_PATH="$(command -v gh)" \           # gh must be authenticated (run `gh auth setup-git` once)
 BUREAU_AUTHOR_NAME="Bureau" BUREAU_AUTHOR_EMAIL="you@example.com" \
-node apps/engine/dist/server.js               # listens on :4319 (HTTP + ws:/ws)
+pnpm dev
 ```
 
-Provider: set `ANTHROPIC_API_KEY` to use the API directly, otherwise the engine delegates to the local `claude` CLI. Optional: `PORT` (4319), `BUREAU_DB` (`./bureau.db`), `BUREAU_VAULT` (`./bureau-vault` — the System Memory markdown vault), `BUREAU_GIT_PATH`. A single repo can also be configured with the legacy `BUREAU_REPO_OWNER` / `BUREAU_REPO_NAME` / `BUREAU_REPO_URL` / `BUREAU_CANONICAL` / `BUREAU_WORKTREES` vars.
-
-Then run the panel (`apps/panel`) with `pnpm dev` and open it on localhost.
+Seeded repos are written to the DB on first launch, after which env is optional (the DB is authoritative — add/remove repos from the panel). Other optional vars: `PORT` (4319), `BUREAU_REPOS_ROOT` (`./.bureau/repos` — where clones + worktrees live), `BUREAU_DB` (`./bureau.db`), `BUREAU_VAULT` (`./bureau-vault` — the System Memory markdown vault), `BUREAU_GIT_PATH`, `BUREAU_TASK_BUDGET_USD` (a per-task cost cap). A single repo can also be configured with the legacy `BUREAU_REPO_OWNER` / `BUREAU_REPO_NAME` / `BUREAU_REPO_URL` (`+ BUREAU_BASE_BRANCH`) vars.
 
 ## How it works
 
@@ -93,12 +99,13 @@ Stateless operatives that Iris delegates Task steps to. Each is replaceable — 
 | Worker | Persona | Role | Status |
 |---|---|---|---|
 | `plan` | Planner | Read-only — lay out a concrete implementation plan the edit follows | ✅ Live |
+| `research` | Researcher | Read-only — investigate the codebase into a grounded brief the work builds on | ✅ Live |
 | `edit` | Editor | Apply a code change directly in an isolated worktree | ✅ Live |
 | `document` | Scribe | Update docs / README / changelog for the change | ✅ Live |
 | `review` | Reviewer | Read-only — inspect the diff and flag issues before human review | ✅ Live |
 | `test` | Tester | Run the project's configured test suite in the worktree (opt-in, advisory) | ✅ Live |
 
-`edit`, `document`, and `review` are **agentic** — the model works the worktree files directly (confined to that directory; no shell). `edit`/`document` mutate; `review` is strictly read-only (read tools, no auto-accept) and its assessment is shown to you at the gate. Iris composes them into a multi-step pipeline (e.g. edit → document → review) that produces one reviewed diff. Workers are registered in the `CapabilityRegistry`; `createTask` refuses any capability that isn't registered, so an unbuilt worker can never silently no-op.
+`research`, `edit`, `document`, and `review` are **agentic** — the model works the worktree files directly (confined to that directory; no shell). `edit`/`document` mutate; `research`/`review` are strictly read-only (read tools, no auto-accept) — `review`'s assessment is shown to you at the gate. Iris composes them into a multi-step pipeline (e.g. edit → document → review) that produces one reviewed diff. Workers are registered in the `CapabilityRegistry`; `createTask` refuses any capability that isn't registered, so an unbuilt worker can never silently no-op.
 
 ## Architecture
 

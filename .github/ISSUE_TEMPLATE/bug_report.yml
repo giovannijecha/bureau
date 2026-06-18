@@ -45,7 +45,7 @@ body:
       options:
         - engine (daemon / HTTP / WebSocket)
         - panel (Next.js UI)
-        - a capability worker (plan/edit/test/review/document)
+        - a capability worker (plan/research/edit/test/review/document)
         - vcs / git / gh
         - other / not sure
     validations:
