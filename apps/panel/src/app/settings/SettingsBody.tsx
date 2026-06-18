@@ -15,7 +15,7 @@ import {
   Sun,
   Moon,
   Info,
-  Github,
+  ExternalLink,
   KeyRound,
   Copy,
   Check,
@@ -386,14 +386,14 @@ function ModelProviderCard({ info }: { info: EngineInfo | null }) {
 
 function GithubCard({ account }: { account: GithubAccount | null }) {
   return (
-    <Card title="GitHub" icon={Github}>
+    <Card title="GitHub" icon={ExternalLink}>
       {account === null ? (
         <span className="text-sm text-muted-foreground">checking…</span>
       ) : account.connected ? (
         <>
           <Row label="Account">
             <span className="inline-flex items-center gap-1.5 text-sm font-medium">
-              <Github className="h-3.5 w-3.5" /> {account.login}
+              <ExternalLink className="h-3.5 w-3.5" /> {account.login}
             </span>
           </Row>
           {account.name && (
@@ -643,7 +643,7 @@ function SystemCard({ info, online }: { info: EngineInfo | null; online: boolean
             rel="noreferrer"
             className="inline-flex items-center gap-1.5 text-sm text-primary transition-colors hover:underline"
           >
-            <Github className="h-3.5 w-3.5" /> giovannijecha/bureau
+            <ExternalLink className="h-3.5 w-3.5" /> giovannijecha/bureau
           </a>
         </Row>
       </Card>

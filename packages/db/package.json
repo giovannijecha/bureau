@@ -21,16 +21,16 @@
     "db:generate": "drizzle-kit generate"
   },
   "dependencies": {
-    "better-sqlite3": "^12.10.0",
+    "better-sqlite3": "^12.11.0",
     "drizzle-orm": "^0.45.2",
     "@bureau/core": "workspace:*"
   },
   "devDependencies": {
     "@types/better-sqlite3": "^7.6.0",
     "@types/node": "^24.0.0",
-    "@vitest/coverage-v8": "^2.1.0",
+    "@vitest/coverage-v8": "^3.2.0",
     "drizzle-kit": "^0.31.10",
     "typescript": "*",
-    "vitest": "^2.1.0"
+    "vitest": "^3.2.0"
   }
 }

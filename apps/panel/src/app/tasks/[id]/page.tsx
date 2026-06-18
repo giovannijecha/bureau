@@ -1,6 +1,6 @@
 "use client";
 
-import { useCallback, useEffect, useRef, useState } from "react";
+import { use, useCallback, useEffect, useRef, useState } from "react";
 import Link from "next/link";
 import { useRouter } from "next/navigation";
 import {
@@ -46,8 +46,8 @@ const STATUS_COLOR: Record<string, string> = {
 
 const RUNNING = new Set(["planning", "executing"]);
 
-export default function TaskDetailPage({ params }: { params: { id: string } }) {
-  const { id } = params;
+export default function TaskDetailPage({ params }: { params: Promise<{ id: string }> }) {
+  const { id } = use(params); // Next 16: route params are async, unwrapped with React.use
   const router = useRouter();
   const confirm = useConfirm();
   const [task, setTask] = useState<TaskDetail | null>(null);

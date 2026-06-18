@@ -18,8 +18,8 @@
     "clean": "tsc --build --clean"
   },
   "devDependencies": {
-    "typescript": "^5.5.0",
-    "dependency-cruiser": "^16.0.0"
+    "typescript": "^5.9.0",
+    "dependency-cruiser": "^17.0.0"
   },
   "workspaces": [
     "packages/*",

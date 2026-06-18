@@ -22,14 +22,14 @@
     "@bureau/mind": "workspace:*",
     "@bureau/capabilities": "workspace:*",
     "@bureau/contracts": "workspace:*",
-    "@anthropic-ai/sdk": "^0.104.1",
+    "@anthropic-ai/sdk": "^0.104.2",
     "ws": "^8.18.0"
   },
   "devDependencies": {
     "@types/node": "^24.0.0",
     "@types/ws": "^8.5.0",
-    "@vitest/coverage-v8": "^2.1.0",
+    "@vitest/coverage-v8": "^3.2.0",
     "typescript": "*",
-    "vitest": "^2.1.0"
+    "vitest": "^3.2.0"
   }
 }
