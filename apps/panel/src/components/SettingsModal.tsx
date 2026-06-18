@@ -1,8 +1,8 @@
 "use client";
 
 // Settings as a centered MODAL (Claude-style) instead of a full-page navigation — opened
-// from the sidebar, it keeps you in context. The same <SettingsBody/> still backs the
-// real /settings route (deep-link / fallback), so there's one source of truth for the UI.
+// from the sidebar, it keeps you in context. <SettingsBody/> is the one source of truth for
+// the UI; the /settings URL is just an alias that opens this modal (see app/settings/page).
 
 import { createContext, useCallback, useContext, useEffect, useRef, useState, type ReactNode } from "react";
 import { createPortal } from "react-dom";

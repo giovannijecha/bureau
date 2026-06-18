@@ -1,13 +1,18 @@
-import { SettingsBody } from "./SettingsBody";
+"use client";
 
-// The full-page route (deep-link / fallback). The sidebar normally opens Settings as a
-// centered modal (see SettingsModal); this keeps /settings working as a real, linkable page.
-export default function SettingsPage() {
-  return (
-    <div className="h-full overflow-y-auto p-4 sm:p-6">
-      <div className="mx-auto max-w-5xl">
-        <SettingsBody />
-      </div>
-    </div>
-  );
+import { useEffect } from "react";
+import { useRouter } from "next/navigation";
+import { useSettingsModal } from "../../components/SettingsModal";
+
+// Settings is a modal now — there is no standalone Settings page. This alias keeps the
+// /settings URL working (old links / bookmarks): it opens the modal and replaces the URL
+// with home, so you never land on an orphaned full-page copy of Settings.
+export default function SettingsRoute() {
+  const router = useRouter();
+  const { open } = useSettingsModal();
+  useEffect(() => {
+    open();
+    router.replace("/");
+  }, [open, router]);
+  return null;
 }
