@@ -1,17 +1,25 @@
-# Bureau
+<div align="center">
 
-![status](https://img.shields.io/badge/status-active-brightgreen)
-[![license](https://img.shields.io/badge/license-Apache--2.0-blue)](LICENSE)
-![stack](https://img.shields.io/badge/stack-TypeScript-3178c6)
-![package%20manager](https://img.shields.io/badge/pnpm-workspaces-f69220)
-![storage](https://img.shields.io/badge/storage-SQLite%20%2B%20Drizzle-003b57)
-![panel](https://img.shields.io/badge/panel-Next.js-000000)
+<img src=".github/assets/logo.svg" alt="Bureau" width="560" />
 
-Local-first AI agent team that works on your GitHub repositories. You are the CEO and talk exclusively with **Iris** (the orchestrator). Iris materialises a persistent **Task** and delegates to stateless **capability** workers (plan/edit/test/review/document). State is the truth; agents are replaceable operatives.
+### Local-first AI agent team that ships **reviewed pull requests** to your own GitHub repos.
 
-## About
+[![CI](https://github.com/giovannijecha/bureau/actions/workflows/ci.yml/badge.svg)](https://github.com/giovannijecha/bureau/actions/workflows/ci.yml)
+[![License: Apache-2.0](https://img.shields.io/badge/license-Apache--2.0-blue.svg)](LICENSE)
+![TypeScript](https://img.shields.io/badge/TypeScript-3178c6?logo=typescript&logoColor=white)
+![Next.js](https://img.shields.io/badge/Next.js-000000?logo=next.js&logoColor=white)
+![SQLite + Drizzle](https://img.shields.io/badge/SQLite%20%2B%20Drizzle-003b57?logo=sqlite&logoColor=white)
+![pnpm](https://img.shields.io/badge/pnpm-workspaces-f69220?logo=pnpm&logoColor=white)
 
-Bureau is a local-first AI agent team that turns plain-language requests into reviewed pull requests on your own GitHub repositories — you stay the CEO while stateless workers do the work behind durable, human-gated Tasks.
+[**Quick Start**](#quick-start) · [How it works](#how-it-works) · [Capability workers](#capability-workers) · [Architecture](#architecture) · [Security](#security) · [Contributing](#contributing)
+
+</div>
+
+---
+
+You are the **CEO**: you talk only to **Iris**, the orchestrator. She turns a plain-language request into a durable **Task** and delegates it to stateless **capability** workers (plan · research · edit · test · review · document) that run in an isolated git worktree. Nothing reaches GitHub until you confirm a merge. State is the truth; agents are replaceable operatives — and the whole thing runs on your machine.
+
+> **Why it's safe by construction:** one push gate (`canPush()`), shell-free workers, a loopback-only engine with an Origin-locked transport, and no secrets at rest. See [Security](#security).
 
 ## Quick Start
 

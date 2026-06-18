@@ -1,0 +1,7 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 720 180" width="720" height="180" role="img" aria-label="Bureau">
+  <rect x="1" y="1" width="718" height="178" rx="22" fill="#101012" stroke="#27272a" stroke-width="1.5" />
+  <rect x="44" y="54" width="72" height="72" rx="18" fill="#fafafa" />
+  <text x="80" y="91" font-family="Segoe UI, Helvetica Neue, Arial, sans-serif" font-size="44" font-weight="700" fill="#09090b" text-anchor="middle" dominant-baseline="central">B</text>
+  <text x="140" y="84" font-family="Segoe UI, Helvetica Neue, Arial, sans-serif" font-size="46" font-weight="700" fill="#fafafa" dominant-baseline="central">Bureau</text>
+  <text x="142" y="122" font-family="Segoe UI, Helvetica Neue, Arial, sans-serif" font-size="19" font-weight="400" fill="#a1a1aa" dominant-baseline="central">Local-first AI agent team for your GitHub repos</text>
+</svg>
