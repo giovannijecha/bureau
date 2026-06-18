@@ -42,6 +42,10 @@ secret_refs.json
 # Claude Code — local-only settings (shared config goes in settings.json)
 .claude/settings.local.json
 
+# Maintainer-only build/agent instructions — kept on disk for local Claude Code
+# sessions, but not part of the public repo.
+CLAUDE.md
+
 # Misc
 tmp/
 .cache/
