@@ -17,9 +17,15 @@
 
 ---
 
-You are the **CEO**: you talk only to **Iris**, the orchestrator. She turns a plain-language request into a durable **Task** and delegates it to stateless **capability** workers (plan · research · edit · test · review · document) that run in an isolated git worktree. Nothing reaches GitHub until you confirm a merge. State is the truth; agents are replaceable operatives — and the whole thing runs on your machine.
+**You don't prompt an agent — you run a firm.** You talk only to **Iris**, the orchestrator. She turns a plain-language request into a durable **Task** and hands it to stateless **capability workers** — plan · research · edit · test · review · document — that do the work in an isolated git worktree. You hold exactly three powers: **Start**, **Stop**, and the final **Confirm-merge**. Nothing reaches GitHub until you approve it, and the whole thing runs on your machine. *State is the truth; agents are replaceable operatives.*
 
-> **Why it's safe by construction:** one push gate (`canPush()`), shell-free workers, a loopback-only engine with an Origin-locked transport, and no secrets at rest. See [Security](#security).
+<div align="center">
+  <img src=".github/assets/screenshots/assistant.png" alt="The Bureau panel — chatting with Iris, who reports on the repo and stages an inline command" width="860" />
+  <br />
+  <sub>The panel: you chat, Iris proposes tasks and inline commands — you decide.</sub>
+</div>
+
+> **Safe by construction:** one push gate (`canPush()`), shell-free workers, a loopback-only engine behind an Origin-locked transport, and no secrets at rest. → [Security](#security)
 
 ## Quick Start
 
@@ -144,7 +150,7 @@ Imports only ever point inward. `core` and `contracts` depend on no other `@bure
 ## Roadmap
 
 - **Phase 1–4 — Foundations + vertical slice ✅:** core types, state machine (`transition()` + `canPush()`), DB schema, provider adapters, VCS wrapper; chat → Task → isolated worktree change → diff review → real squash-merged PR on GitHub.
-- **Phase 5 — Team + polished panel (current) ✅:** `edit` + `document` workers with multi-step pipelines; ChatGPT-style conversations; live progress over WebSocket; the full panel (Assistant, **Hub**, Projects, Tasks with search/filter/sort, Git, **Terminal**, Agents, **Memory**, **Metrics**, **Notifications**, Settings) with light/dark themes (the former Overview is folded into the Hub). The **Hub** is a live work floor over the capability workers + a cross-task activity feed + a "waiting on you" review queue. **System Memory** is an Obsidian-style markdown vault: every finished task auto-writes a journal (goal, pipeline, outcome) and the CEO can pin notes Iris should remember. **Metrics** turns the token counts every provider already returns into per-worker / per-model / per-day spend with a USD estimate — so you can trust what the agents cost. **Notifications** is a durable inbox (with a header bell + unread count) that fires the moment a task is ready for your review, merges, or fails — so you never miss an approval when you look away. Tasks report an **honest merge state** — a confirmed merge that hits conflicts shows "merge failed" with the open-PR link, never a false "merged".
+- **Phase 5 — The team + a real cockpit (current) ✅:** the full worker set with multi-step pipelines, streaming chat, and live task progress over WebSocket. The panel covers it end to end — **Assistant**, **Hub** (a live work floor + a "waiting on you" review queue), Projects, Tasks, **Git** (an embedded GitHub browser), **Terminal**, **Memory** (an Obsidian-style vault Iris reads and writes), **Metrics** (real per-worker / -model / -day spend), and **Notifications** — in light or dark. Merge state is honest: a conflicted confirm shows "merge failed" with the PR link, never a false "merged".
 - **Next:** parallel-task concurrency and mid-pipeline review gates (`plan_review` / `diff_review`) surfaced in the panel.
 
 ## Contributing
