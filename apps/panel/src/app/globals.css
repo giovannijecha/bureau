@@ -154,9 +154,24 @@
 .animate-dialog-in {
   animation: bureau-dialog-in 0.18s cubic-bezier(0.16, 1, 0.3, 1);
 }
+/* Toast entrance — slides in from the right edge. */
+@keyframes bureau-toast-in {
+  from {
+    opacity: 0;
+    transform: translateX(12px) scale(0.98);
+  }
+  to {
+    opacity: 1;
+    transform: translateX(0) scale(1);
+  }
+}
+.animate-toast-in {
+  animation: bureau-toast-in 0.18s cubic-bezier(0.16, 1, 0.3, 1);
+}
 @media (prefers-reduced-motion: reduce) {
   .animate-overlay-in,
-  .animate-dialog-in {
+  .animate-dialog-in,
+  .animate-toast-in {
     animation: none;
   }
 }
