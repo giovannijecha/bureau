@@ -84,9 +84,9 @@ Seeded repos are written to the DB on first launch, after which env is optional 
 
 You never drive the workers directly — you chat with Iris, and she turns the conversation into durable state that the engine executes in the background. Your decisive powers are exactly three: **Start**, **Stop**, and the final **Confirm-merge**.
 
-```
-chat ──▶ proposal ──▶ Task ──▶ Start ──▶ worktree ──▶ diff ──▶ confirm-merge ──▶ squash-merged
-```
+<div align="center">
+  <img src=".github/assets/pipeline.svg" alt="Chat → Task → worktree → Diff → Confirm-merge → merged PR" width="900" />
+</div>
 
 1. **chat** — you converse with Iris about the active **Project** (one of your repos). The chat is pure conversation — no diffs here.
 2. **proposal** — when there's something concrete, Iris proposes a Task: a pipeline of steps. You can **Create** it, **Refine** the proposal, or keep chatting.
@@ -127,32 +127,9 @@ Stateless operatives that Iris delegates Task steps to. Each is replaceable — 
 
 Imports only ever point inward. `core` and `contracts` depend on no other `@bureau/*` package at runtime; `engine` may import everything; `panel` may import only `contracts`.
 
-```
-                 ┌──────────────────────────────┐
-                 │            engine             │  imports all packages
-                 └──────────────────────────────┘
-                    ▲     ▲     ▲      ▲      ▲
-        ┌───────────┘     │     │      │      └───────────┐
-        │                 │     │      │                  │
-   ┌─────────┐      ┌──────────┐│ ┌────────┐         ┌────────┐
-   │   db    │      │ providers ││ │  vcs   │         │  mind  │
-   │ (core)  │      │(core,     ││ │ (core) │         │ (core) │
-   └─────────┘      │ contracts)││ └────────┘         └────────┘
-        │           └──────────┘│      │                  │
-        │            ▲     ▲     │      │                  │
-        │            │     │  ┌──────────────┐             │
-        │            │     │  │ capabilities │             │
-        │            │     │  │(core,        │             │
-        │            │     │  │ providers,   │             │
-        │            │     │  │ contracts)   │             │
-        │            │     │  └──────────────┘             │
-        ▼            ▼     ▼          ▼                    ▼
-   ┌──────────────────────────────────────────────────────────┐
-   │   core   (no @bureau/* imports)   contracts  (no imports) │
-   └──────────────────────────────────────────────────────────┘
-
-   panel ──▶ contracts only   (lint gate: dependency-cruiser)
-```
+<div align="center">
+  <img src=".github/assets/architecture.svg" alt="engine imports every package; core and contracts import nothing; panel imports only contracts" width="840" />
+</div>
 
 ## Security
 

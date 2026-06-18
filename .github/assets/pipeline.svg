@@ -1,0 +1,52 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1040 240" width="1040" height="240" font-family="Segoe UI, Helvetica Neue, Arial, sans-serif" role="img" aria-label="From a message to a merged pull request">
+  <defs>
+    <marker id="ah" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+      <path d="M0 0L10 5L0 10z" fill="#52525b" />
+    </marker>
+    <marker id="ahA" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+      <path d="M0 0L10 5L0 10z" fill="#a78bfa" />
+    </marker>
+  </defs>
+
+  <rect x="1" y="1" width="1038" height="238" rx="22" fill="#0d0d0f" stroke="#27272a" stroke-width="1.5" />
+  <text x="36" y="40" font-size="17" font-weight="600" fill="#fafafa">From a message to a merged pull request</text>
+
+  <!-- human-gate pills (your decisions), centered over the Start and Confirm arrows -->
+  <g>
+    <rect x="382" y="58" width="68" height="26" rx="13" fill="#1e1b34" stroke="#a78bfa" stroke-width="1.2" />
+    <text x="416" y="75" font-size="13" font-weight="600" fill="#c4b5fd" text-anchor="middle">▶ Start</text>
+    <rect x="772" y="58" width="124" height="26" rx="13" fill="#1e1b34" stroke="#a78bfa" stroke-width="1.2" />
+    <text x="834" y="75" font-size="13" font-weight="600" fill="#c4b5fd" text-anchor="middle">✓ Confirm-merge</text>
+  </g>
+
+  <!-- nodes -->
+  <g>
+    <rect x="36" y="104" width="140" height="86" rx="14" fill="#18181b" stroke="#2e2e35" />
+    <text x="106" y="142" font-size="16" font-weight="600" fill="#fafafa" text-anchor="middle">Chat</text>
+    <text x="106" y="164" font-size="12" fill="#a1a1aa" text-anchor="middle">talk to Iris</text>
+
+    <rect x="243" y="104" width="140" height="86" rx="14" fill="#18181b" stroke="#2e2e35" />
+    <text x="313" y="142" font-size="16" font-weight="600" fill="#fafafa" text-anchor="middle">Task</text>
+    <text x="313" y="164" font-size="12" fill="#a1a1aa" text-anchor="middle">a pipeline of steps</text>
+
+    <rect x="450" y="104" width="140" height="86" rx="14" fill="#18181b" stroke="#2e2e35" />
+    <text x="520" y="142" font-size="16" font-weight="600" fill="#fafafa" text-anchor="middle">Worktree</text>
+    <text x="520" y="164" font-size="12" fill="#a1a1aa" text-anchor="middle">edit · review, isolated</text>
+
+    <rect x="657" y="104" width="140" height="86" rx="14" fill="#18181b" stroke="#2e2e35" />
+    <text x="727" y="142" font-size="16" font-weight="600" fill="#fafafa" text-anchor="middle">Diff</text>
+    <text x="727" y="164" font-size="12" fill="#a1a1aa" text-anchor="middle">you review locally</text>
+
+    <rect x="864" y="104" width="140" height="86" rx="14" fill="#18181b" stroke="#34d399" stroke-opacity="0.5" />
+    <text x="934" y="142" font-size="16" font-weight="600" fill="#fafafa" text-anchor="middle">Merged PR</text>
+    <text x="934" y="164" font-size="12" fill="#a1a1aa" text-anchor="middle">squash-merged</text>
+  </g>
+
+  <!-- arrows -->
+  <line x1="178" y1="147" x2="241" y2="147" stroke="#52525b" stroke-width="1.6" marker-end="url(#ah)" />
+  <line x1="385" y1="147" x2="448" y2="147" stroke="#a78bfa" stroke-width="1.8" marker-end="url(#ahA)" />
+  <line x1="592" y1="147" x2="655" y2="147" stroke="#52525b" stroke-width="1.6" marker-end="url(#ah)" />
+  <line x1="799" y1="147" x2="862" y2="147" stroke="#a78bfa" stroke-width="1.8" marker-end="url(#ahA)" />
+
+  <text x="36" y="222" font-size="13" fill="#71717a">Iris proposes — you decide. Nothing reaches GitHub until you Confirm-merge; canPush() is the only gate.</text>
+</svg>
