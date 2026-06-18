@@ -22,7 +22,7 @@
     "@bureau/mind": "workspace:*",
     "@bureau/capabilities": "workspace:*",
     "@bureau/contracts": "workspace:*",
-    "@anthropic-ai/sdk": "^0.104.1",
+    "@anthropic-ai/sdk": "^0.104.2",
     "ws": "^8.18.0"
   },
   "devDependencies": {

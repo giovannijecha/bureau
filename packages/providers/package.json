@@ -20,7 +20,7 @@
     "test:coverage": "vitest run --coverage"
   },
   "dependencies": {
-    "@anthropic-ai/sdk": "^0.104.1",
+    "@anthropic-ai/sdk": "^0.104.2",
     "@bureau/core": "workspace:*",
     "@bureau/contracts": "workspace:*"
   },
