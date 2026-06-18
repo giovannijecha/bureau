@@ -203,6 +203,7 @@ async function main(): Promise<void> {
     usage,
     notifications,
     models: modelPolicyFromEnv(),
+    budgetUsd: Number(process.env.BUREAU_TASK_BUDGET_USD) || 0,
     ids: () => randomUUID(),
     clock: () => new Date().toISOString(),
   });

@@ -83,6 +83,11 @@ export async function setModels(models: Record<string, string>): Promise<{ model
   return json(await postJson("/api/config/models", { models }));
 }
 
+/** Set the per-task USD budget cap (Settings; 0 = no cap). Returns the value in effect. */
+export async function setBudget(budgetUsd: number): Promise<{ budgetUsd: number }> {
+  return json(await postJson("/api/config/budget", { budgetUsd }));
+}
+
 /** The repo's pull requests (read-only, via gh). */
 export async function getPrs(projectId?: string): Promise<PullRequest[]> {
   const suffix = projectId ? `?projectId=${encodeURIComponent(projectId)}` : "";

@@ -426,6 +426,39 @@ describe("projects", () => {
   });
 });
 
+// ── budget guard ─────────────────────────────────────────────────────────────
+
+describe("budget guard", () => {
+  it("aborts a running task once its spend crosses the cap, before committing/gating", async () => {
+    // The fake edit step costs $0.01 (1000 in*$5 + 200 out*$25 per 1M). Cap below that.
+    orch.setBudget(0.005);
+    const draft = orch.createTask(PROPOSAL, "widget");
+    await orch.startTask(draft.id);
+    await orch.settle(draft.id);
+    const task = store.load(draft.id)!;
+    expect(task.status).toBe("aborted");
+    expect(task.decisionLog.some((e) => e.type === "task_aborted" && /budget cap/i.test(e.reason))).toBe(true);
+    // It stopped BEFORE the commit/gate — no PR was ever opened.
+    expect(vcs.calls.commitAll).toHaveLength(0);
+    expect(vcs.calls.openPr).toHaveLength(0);
+  });
+
+  it("does not abort when the spend stays under the cap (or when there's no cap)", async () => {
+    orch.setBudget(1); // $1 cap, well above the $0.01 edit
+    const draft = orch.createTask(PROPOSAL, "widget");
+    await orch.startTask(draft.id);
+    await orch.settle(draft.id);
+    const task = store.load(draft.id)!;
+    expect(task.status).not.toBe("aborted"); // parks at the review gate as usual
+  });
+
+  it("engineInfo reports the cap; setBudget clamps a negative to 0", () => {
+    expect(orch.setBudget(2.5)).toBe(2.5);
+    expect(orch.engineInfo().budgetUsd).toBe(2.5);
+    expect(orch.setBudget(-5)).toBe(0);
+  });
+});
+
 // ── chat ─────────────────────────────────────────────────────────────────────
 
 describe("chat", () => {
