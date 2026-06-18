@@ -72,7 +72,9 @@ export type DecisionEntry =
   | { readonly type: "gate_reopened"; readonly at: string; readonly gateId: GateId }
   | { readonly type: "gate_decided"; readonly at: string; readonly gateId: GateId; readonly decision: HumanDecision; readonly notes?: string }
   | { readonly type: "task_completed"; readonly at: string }
-  | { readonly type: "task_aborted"; readonly at: string; readonly reason: string };
+  | { readonly type: "task_aborted"; readonly at: string; readonly reason: string }
+  | { readonly type: "task_interrupted"; readonly at: string; readonly reason: string }
+  | { readonly type: "task_resumed"; readonly at: string };
 
 export type DecisionLog = readonly DecisionEntry[];
 
@@ -106,6 +108,9 @@ export type TaskStatus =
   | "created"
   | "planning"
   | "executing"
+  // The engine restarted while this task was mid-flight. Its worktree is preserved; the
+  // CEO chooses Resume (re-run clean from base) or Discard. NOT a canPush() state.
+  | "interrupted"
   | "awaiting_human"
   | "completed"
   | "aborted";

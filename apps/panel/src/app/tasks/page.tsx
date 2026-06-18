@@ -2,9 +2,9 @@
 
 import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode, type MouseEvent } from "react";
 import { useRouter } from "next/navigation";
-import { ListTodo, Search, ChevronUp, ChevronDown, Play, Square, Eye, GitMerge, Trash2, Loader2, AlertCircle } from "lucide-react";
+import { ListTodo, Search, ChevronUp, ChevronDown, Play, Square, Eye, GitMerge, Trash2, RotateCcw, Loader2, AlertCircle } from "lucide-react";
 import type { TaskSummary } from "@bureau/contracts";
-import { listTasks, startTask, stopTask, mergeOpenPr, deleteTask } from "../../lib/api";
+import { listTasks, startTask, stopTask, resumeTask, discardTask, mergeOpenPr, deleteTask } from "../../lib/api";
 import { useEngineEvents } from "../../lib/useEngineEvents";
 import { useEngineOnline } from "../../lib/useEngineOnline";
 import { useConfirm } from "../../components/ConfirmDialog";
@@ -15,6 +15,7 @@ const STATUS_COLOR: Record<string, string> = {
   completed: "border-green-500/40 text-green-500",
   executing: "border-blue-500/40 text-blue-400",
   planning: "border-blue-500/40 text-blue-400",
+  interrupted: "border-orange-500/40 text-orange-500",
   created: "border-border text-muted-foreground",
   aborted: "border-red-500/40 text-red-500",
 };
@@ -285,6 +286,22 @@ function TaskActions({ task, onChanged }: { task: TaskSummary; onChanged: () => 
     );
   } else if (task.status === "awaiting_human") {
     primary = <ActionBtn icon={Eye} label="Review" tone="amber" onClick={(e) => { swallow(e); router.push(`/tasks/${task.id}`); }} />;
+  } else if (task.status === "interrupted") {
+    primary = (
+      <>
+        <ActionBtn icon={RotateCcw} label="Resume" tone="primary" busy={busy} onClick={(e) => { swallow(e); void run(() => resumeTask(task.id)); }} />
+        <ActionBtn
+          icon={Trash2}
+          label="Discard"
+          tone="danger"
+          busy={busy}
+          onClick={(e) => {
+            swallow(e);
+            void run(() => discardTask(task.id), { title: "Discard this task?", description: "Aborts it and removes its worktree — the interrupted work is lost. Resume re-runs it clean instead.", confirmLabel: "Discard", variant: "destructive" });
+          }}
+        />
+      </>
+    );
   } else if (task.prOpen) {
     primary = (
       <ActionBtn

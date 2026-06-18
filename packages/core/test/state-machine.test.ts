@@ -77,6 +77,7 @@ const ALL_STATUSES: readonly TaskStatus[] = [
   "created",
   "planning",
   "executing",
+  "interrupted",
   "awaiting_human",
   "completed",
   "aborted",
@@ -575,6 +576,54 @@ describe("transition() — immutability & invariants", () => {
     expect(next.updatedAt).not.toBe(STALE);
     expect(Number.isNaN(Date.parse(next.updatedAt))).toBe(false);
     expect(Date.parse(next.updatedAt)).toBeGreaterThan(Date.parse(STALE));
+  });
+});
+
+// ===========================================================================
+// INTERRUPT_TASK / RESUME_TASK — post-restart recovery
+// ===========================================================================
+
+describe("transition() — INTERRUPT_TASK", () => {
+  it.each(["planning", "executing"] as const)("is legal from %s → interrupted, logging the reason", (status) => {
+    const next = transition(makeTask({ status }), { type: "INTERRUPT_TASK", reason: "engine restarted" });
+    expect(next.status).toBe("interrupted");
+    expect(next.decisionLog.at(-1)).toMatchObject({ type: "task_interrupted", reason: "engine restarted" });
+  });
+
+  it("resets the in-flight running step → fresh pending, but leaves gates untouched", () => {
+    const running = makeStep({ id: sid("s1"), status: "running", startedAt: STALE, summary: "half done" });
+    const done = makeStep({ id: sid("s0"), status: "completed", completedAt: STALE });
+    const gate = makeGate({ id: gid("g1"), status: "pending" });
+    const next = transition(makeTask({ status: "executing", steps: [done, running], gates: [gate] }), { type: "INTERRUPT_TASK", reason: "restart" });
+    expect(next.steps.find((s) => s.id === sid("s1"))?.status).toBe("pending");
+    expect(next.steps.find((s) => s.id === sid("s1"))?.startedAt).toBeUndefined();
+    expect(next.steps.find((s) => s.id === sid("s1"))?.summary).toBeUndefined();
+    expect(next.steps.find((s) => s.id === sid("s0"))?.status).toBe("completed"); // completed step kept as-is
+    expect(next.gates).toEqual([gate]); // gates untouched — RESUME rebuilds them
+  });
+
+  it.each(ALL_STATUSES.filter((s) => s !== "planning" && s !== "executing"))("is illegal from status %s", (status) => {
+    expectIllegal(makeTask({ status }), { type: "INTERRUPT_TASK", reason: "x" });
+  });
+});
+
+describe("transition() — RESUME_TASK", () => {
+  it("rebuilds EVERY step + gate as fresh pending and returns to executing", () => {
+    const steps = [
+      makeStep({ id: sid("s0"), status: "completed", completedAt: STALE, summary: "did it" }),
+      makeStep({ id: sid("s1"), status: "pending" }),
+    ];
+    const gate = makeGate({ id: gid("g1"), status: "approved", decision: "approved", decidedAt: STALE });
+    const next = transition(makeTask({ status: "interrupted", steps, gates: [gate] }), { type: "RESUME_TASK" });
+    expect(next.status).toBe("executing");
+    expect(next.steps.every((s) => s.status === "pending")).toBe(true);
+    expect(next.steps.every((s) => s.summary === undefined && s.completedAt === undefined)).toBe(true);
+    expect(next.gates.every((g) => g.status === "pending" && g.decision === undefined)).toBe(true); // no stale approval
+    expect(next.decisionLog.at(-1)).toMatchObject({ type: "task_resumed" });
+  });
+
+  it.each(ALL_STATUSES.filter((s) => s !== "interrupted"))("is illegal from status %s", (status) => {
+    expectIllegal(makeTask({ status }), { type: "RESUME_TASK" });
   });
 });
 

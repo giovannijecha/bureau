@@ -22,12 +22,13 @@ import {
   Pencil,
   Send,
   Trash2,
+  RotateCcw,
   Clock,
   Plus,
   Check,
 } from "lucide-react";
 import type { TaskDetail, PipelineStep, TimelineEntry } from "@bureau/contracts";
-import { getTask, startTask, stopTask, mergeTask, openPrForReview, mergeOpenPr, decideGate, deleteTask } from "../../../lib/api";
+import { getTask, startTask, stopTask, resumeTask, discardTask, mergeTask, openPrForReview, mergeOpenPr, decideGate, deleteTask } from "../../../lib/api";
 import { useEngineEvents } from "../../../lib/useEngineEvents";
 import { useConfirm } from "../../../components/ConfirmDialog";
 import { DiffView } from "../../../components/DiffView";
@@ -38,6 +39,7 @@ const STATUS_COLOR: Record<string, string> = {
   completed: "border-green-500/40 text-green-500",
   executing: "border-blue-500/40 text-blue-400",
   planning: "border-blue-500/40 text-blue-400",
+  interrupted: "border-orange-500/40 text-orange-500",
   created: "border-border text-muted-foreground",
   aborted: "border-red-500/40 text-red-500",
 };
@@ -131,6 +133,18 @@ export default function TaskDetailPage({ params }: { params: { id: string } }) {
     }
   }
 
+  async function discard() {
+    if (busy) return;
+    const ok = await confirm({
+      title: "Discard this task?",
+      description: "Aborts it and removes its worktree — the interrupted work is lost. Resume re-runs it clean from base instead.",
+      confirmLabel: "Discard",
+      variant: "destructive",
+    });
+    if (!ok) return;
+    await act(() => discardTask(id));
+  }
+
   if (!task) {
     return (
       <div className="h-full overflow-y-auto p-6">
@@ -185,6 +199,26 @@ export default function TaskDetailPage({ params }: { params: { id: string } }) {
               <Square className="h-4 w-4" />
               Stop
             </button>
+          )}
+          {task.status === "interrupted" && (
+            <>
+              <button
+                onClick={() => act(() => resumeTask(id))}
+                disabled={busy}
+                className="inline-flex h-9 items-center gap-1.5 rounded-md bg-primary px-3.5 text-sm font-medium text-primary-foreground transition-colors hover:bg-primary/90 disabled:opacity-50"
+              >
+                {busy ? <Loader2 className="h-4 w-4 animate-spin" /> : <RotateCcw className="h-4 w-4" />}
+                Resume
+              </button>
+              <button
+                onClick={() => void discard()}
+                disabled={busy}
+                className="inline-flex h-9 items-center gap-1.5 rounded-md border bg-background px-3.5 text-sm font-medium transition-colors hover:bg-accent disabled:opacity-50"
+              >
+                <Trash2 className="h-4 w-4" />
+                Discard
+              </button>
+            </>
           )}
           <button
             onClick={() => void remove()}
@@ -251,6 +285,17 @@ export default function TaskDetailPage({ params }: { params: { id: string } }) {
           <XCircle className="mt-0.5 h-4 w-4 shrink-0 text-red-500" />
           <p className="text-sm text-foreground">
             This task stopped before finishing.{task.statusNote ? <> {task.statusNote}</> : null}
+          </p>
+        </div>
+      )}
+
+      {/* Interrupted banner — the engine restarted mid-run; the CEO chooses Resume or Discard. */}
+      {task.status === "interrupted" && (
+        <div className="mb-5 flex items-start gap-2.5 rounded-xl border border-orange-500/30 bg-orange-500/5 p-4">
+          <RotateCcw className="mt-0.5 h-4 w-4 shrink-0 text-orange-500" />
+          <p className="text-sm text-foreground">
+            The engine restarted while this task was running, so it was paused — its work was kept. <strong>Resume</strong> re-runs
+            the whole pipeline cleanly from base (no half-finished edits); <strong>Discard</strong> drops it.
           </p>
         </div>
       )}

@@ -30,6 +30,7 @@ import { DESTRUCTIVE_GIT_OPS } from "@bureau/contracts";
 import type { ProjectRepo } from "@bureau/db";
 import { join, resolve, sep } from "node:path";
 import { tmpdir } from "node:os";
+import { existsSync } from "node:fs";
 import { mkdir, writeFile, rm } from "node:fs/promises";
 
 import type { TaskStore, VcsPort, EventSink, MessageLog, ConversationStore, MemoryPort, UsagePort, NotificationStore, RepoView, GitAdminOp } from "./ports.js";
@@ -722,30 +723,28 @@ export class Orchestrator {
     await Promise.allSettled([...this.running.values()]);
   }
 
-  /** On boot, clean up tasks a crash/forced-exit left mid-flight. After a restart
-   *  `this.running` is empty, so no pipeline will ever resume a persisted
-   *  planning/executing task — it would show a permanent spinner with an orphaned
-   *  worktree. Abort each one and tear its worktree down so the panel is honest. */
+  /** On boot, recover tasks a crash/forced-exit left mid-flight. After a restart
+   *  `this.running` is empty, so no pipeline is driving them. Mark each INTERRUPTED
+   *  (not aborted) and KEEP its worktree on disk, so the CEO can Resume (re-run clean
+   *  from base) or Discard from the panel — instead of silently losing in-flight work.
+   *  Resuming is never automatic (a re-run spends tokens — the CEO's call). */
   async reconcile(): Promise<number> {
-    let cleaned = 0;
+    let interrupted = 0;
     for (const task of this.d.store.list()) {
       if (task.status !== "planning" && task.status !== "executing") continue;
       try {
-        const aborted = this.drive(task, {
-          type: "ABORT_TASK",
+        const marked = this.drive(task, {
+          type: "INTERRUPT_TASK",
           reason: "The engine restarted while this task was running.",
         });
-        this.emitTaskUpdated(aborted);
-        if (aborted.worktreePath !== undefined) {
-          const vcs = this.vcsForTask(aborted);
-          if (vcs) await vcs.removeWorktree({ path: aborted.worktreePath, branch: this.branchFor(task.id) }, true).catch(() => {});
-        }
-        cleaned++;
+        this.emitTaskUpdated(marked);
+        // Deliberately DO NOT remove the worktree — resume reuses it (reset to base).
+        interrupted++;
       } catch {
         /* best-effort per task */
       }
     }
-    return cleaned;
+    return interrupted;
   }
 
   /** Materialize a proposal into a DRAFT task (created, not started) in a project. */
@@ -834,7 +833,6 @@ export class Orchestrator {
 
   private async runPipeline(taskId: string): Promise<void> {
     const branch = this.branchFor(taskId);
-    let currentStepId: StepId | undefined;
     try {
       const project = this.resolveProject(this.requireTask(taskId));
       const vcs = this.d.vcs(project);
@@ -857,6 +855,21 @@ export class Orchestrator {
       task = this.drive(task, { type: "PLANNING_DONE" });
       this.emitTaskUpdated(task);
 
+      await this.executeFromExecuting(taskId, project, vcs, worktreePath);
+    } catch (err) {
+      await this.failPipeline(taskId, undefined, err);
+    }
+  }
+
+  /** The execute phase — run every pending step, enforce the budget cap, then commit +
+   *  open the review gate (mutating task) or complete directly (read-only). Owns its own
+   *  failPipeline so a thrown step is marked failed. Re-entered VERBATIM by resumeTask
+   *  after a worktree reset, so a resumed run is identical to a fresh first run. It only
+   *  ever drives the LOCAL pipeline up to OPEN_GATE — it NEVER pushes. */
+  private async executeFromExecuting(taskId: string, project: ProjectConfig, vcs: VcsPort, worktreePath: string): Promise<void> {
+    let currentStepId: StepId | undefined;
+    try {
+      let task = this.requireTask(taskId);
       // Running tally of this task's model spend, for the budget guard (0 cap = off).
       let spentUsd = 0;
       for (const planned of task.steps) {
@@ -1096,6 +1109,54 @@ export class Orchestrator {
       }
     }
     return task;
+  }
+
+  /** Resume an INTERRUPTED task (after an engine restart): reset its worktree to a
+   *  pristine base — discarding any partial/crash work — rebuild the pipeline fresh, and
+   *  re-run it in the background exactly like a first run, parking at the same review
+   *  gate. It NEVER pushes (re-enters only the local execute loop). Re-running spends
+   *  tokens, so it's the CEO's explicit choice — never automatic on boot. */
+  async resumeTask(taskId: string): Promise<Task> {
+    let task = this.requireTask(taskId);
+    if (task.status !== "interrupted") {
+      throw new OrchestratorError(`Task ${taskId} is not resumable (status ${task.status}).`, 409);
+    }
+    if (this.running.has(taskId)) {
+      throw new OrchestratorError(`Task ${taskId} is already running.`, 409);
+    }
+    const project = this.resolveProject(task);
+    const vcs = this.d.vcs(project);
+    const branch = this.branchFor(taskId);
+    const worktreePath = task.worktreePath ?? join(project.worktreesDir, taskId);
+    await vcs.ensureClone();
+    // If the worktree survived the crash, RESET it to base (drop any partial/crash bytes —
+    // incl. a half-applied edit). If it never got created (crash during planning), make it
+    // fresh, clearing any stale bureau/task-* branch first (namespace-constrained, safe).
+    if (task.worktreePath !== undefined && existsSync(join(worktreePath, ".git"))) {
+      await vcs.resetWorktreeToBase(worktreePath);
+    } else {
+      await vcs.deleteBranch(branch).catch(() => {}); // best-effort: clear a stale task branch
+      await vcs.setupWorktree(branch, worktreePath);
+    }
+    this.setWorktree(this.requireTask(taskId), worktreePath);
+    // RESUME_TASK rebuilds every step + gate as fresh pending and returns to executing —
+    // so the re-run is identical to a first run and can never inherit a stale approval.
+    task = this.drive(this.requireTask(taskId), { type: "RESUME_TASK" });
+    this.emitTaskUpdated(task);
+    const promise = this.executeFromExecuting(taskId, project, vcs, worktreePath);
+    this.running.set(taskId, promise);
+    void promise.finally(() => this.running.delete(taskId));
+    return this.requireTask(taskId);
+  }
+
+  /** Discard an interrupted task — abort it and tear down its worktree (the path the
+   *  CEO takes instead of Resume). Delegates to stopTask (idempotent abort + cleanup). */
+  async discardTask(taskId: string): Promise<Task> {
+    const task = this.requireTask(taskId);
+    if (task.status !== "interrupted") {
+      throw new OrchestratorError(`Task ${taskId} is not interrupted (status ${task.status}).`, 409);
+    }
+    return this.stopTask(taskId);
   }
 
   /** Permanently remove a task. If it's still live, stop it first (aborts + tears

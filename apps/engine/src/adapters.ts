@@ -6,6 +6,7 @@ import { join } from "node:path";
 import {
   cloneRepo,
   createWorktree,
+  resetWorktreeToBase,
   freshBase,
   syncToBase,
   getWorkingDiff,
@@ -95,6 +96,14 @@ export class RealVcs implements VcsPort {
     const base = await freshBase(this.cfg.canonicalPath, this.cfg.baseBranch, this.runner);
     const handle = await createWorktree(this.cfg.canonicalPath, branch, worktreePath, this.runner, base);
     return { path: handle.path, branch: handle.branch };
+  }
+
+  async resetWorktreeToBase(worktreePath: string): Promise<void> {
+    // Reset to the SAME fresh base a clean run would branch from, so a resumed task
+    // reproduces an identical starting tree. Offline (freshBase undefined) → the local
+    // base branch (where the worktree originally branched from). Discards partial work.
+    const base = (await freshBase(this.cfg.canonicalPath, this.cfg.baseBranch, this.runner)) ?? this.cfg.baseBranch;
+    await resetWorktreeToBase(worktreePath, base, this.runner);
   }
 
   workingDiff(worktreePath: string): Promise<string> {

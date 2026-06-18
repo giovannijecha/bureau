@@ -10,6 +10,8 @@
 //   GET  /api/tasks/:id/diff      { diff }
 //   POST /api/tasks/:id/start     run the pipeline (local commit, no push)
 //   POST /api/tasks/:id/stop      abort + clean up
+//   POST /api/tasks/:id/resume    re-run an interrupted task clean from base (no push)
+//   POST /api/tasks/:id/discard   abort + tear down an interrupted task's worktree
 //   POST /api/tasks/:id/merge     the final confirm: push → PR → squash-merge
 //   POST /api/tasks/:id/open-pr   push → open a PR for review on GitHub, NO merge
 
@@ -371,8 +373,8 @@ async function handle(deps: HttpDeps, req: IncomingMessage, res: ServerResponse)
     return;
   }
 
-  // POST /api/tasks/:id/(start|stop|merge|open-pr|merge-pr)
-  const actionMatch = /^\/api\/tasks\/([^/]+)\/(start|stop|merge|open-pr|merge-pr)$/.exec(path);
+  // POST /api/tasks/:id/(start|stop|resume|discard|merge|open-pr|merge-pr)
+  const actionMatch = /^\/api\/tasks\/([^/]+)\/(start|stop|resume|discard|merge|open-pr|merge-pr)$/.exec(path);
   if (method === "POST" && actionMatch) {
     const id = decodeURIComponent(actionMatch[1]!);
     const action = actionMatch[2];
@@ -381,11 +383,15 @@ async function handle(deps: HttpDeps, req: IncomingMessage, res: ServerResponse)
         ? await deps.orchestrator.startTask(id)
         : action === "stop"
           ? await deps.orchestrator.stopTask(id)
-          : action === "open-pr"
-            ? await deps.orchestrator.openPrForReview(id)
-            : action === "merge-pr"
-              ? await deps.orchestrator.mergeOpenPr(id)
-              : await deps.orchestrator.confirmMerge(id);
+          : action === "resume"
+            ? await deps.orchestrator.resumeTask(id)
+            : action === "discard"
+              ? await deps.orchestrator.discardTask(id)
+              : action === "open-pr"
+                ? await deps.orchestrator.openPrForReview(id)
+                : action === "merge-pr"
+                  ? await deps.orchestrator.mergeOpenPr(id)
+                  : await deps.orchestrator.confirmMerge(id);
     sendJson(res, 200, toTaskDetail(task));
     return;
   }

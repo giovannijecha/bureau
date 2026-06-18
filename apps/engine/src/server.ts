@@ -258,7 +258,7 @@ async function main(): Promise<void> {
   // Clean up any task a previous crash/forced-exit left mid-flight BEFORE serving,
   // so the panel never sees a zombie task with an orphaned worktree.
   const reclaimed = await orchestrator.reconcile();
-  if (reclaimed > 0) console.log(`[engine] reconcile: aborted ${reclaimed} interrupted task(s) from a previous run.`);
+  if (reclaimed > 0) console.log(`[engine] reconcile: marked ${reclaimed} task(s) interrupted — awaiting CEO resume/discard.`);
 
   // Bind to loopback ONLY — never 0.0.0.0. The engine drives a shell (the terminal) and
   // must not be reachable from other machines on the network; "localhost only" is now

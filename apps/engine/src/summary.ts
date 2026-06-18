@@ -154,6 +154,10 @@ export function describe(task: Task, entry: DecisionEntry): { kind: string; labe
       return { kind: entry.type, label: "Merged to main" };
     case "task_aborted":
       return { kind: entry.type, label: `Aborted — ${entry.reason}` };
+    case "task_interrupted":
+      return { kind: entry.type, label: "Interrupted by a restart — resume or discard" };
+    case "task_resumed":
+      return { kind: entry.type, label: "Resumed" };
   }
 }
 

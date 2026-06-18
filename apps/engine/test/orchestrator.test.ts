@@ -7,6 +7,9 @@ import type { CapabilityInput } from "@bureau/capabilities";
 import type { Provider } from "@bureau/providers";
 import type { WsEvent, Message, TaskProposal, Conversation } from "@bureau/contracts";
 
+import { mkdtempSync, mkdirSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { createDb, runMigrations, ProjectRepo } from "@bureau/db";
 import { Orchestrator, buildRepoContext } from "../src/orchestrator.js";
 import { ProjectRegistry, type ProjectConfig } from "../src/projects.js";
@@ -37,6 +40,7 @@ function fakeVcs() {
     pruneKeep: [] as string[],
     deletedBranch: null as string | null,
     setupWorktree: [] as { branch: string; path: string }[],
+    resetWorktreeToBase: [] as string[],
     commitAll: [] as { path: string; message: string }[],
     push: [] as { path: string; branch: string }[],
     openPr: [] as { branch: string }[],
@@ -56,6 +60,9 @@ function fakeVcs() {
     async setupWorktree(branch, path) {
       calls.setupWorktree.push({ branch, path });
       return { path, branch };
+    },
+    async resetWorktreeToBase(path) {
+      calls.resetWorktreeToBase.push(path);
     },
     async workingDiff() {
       calls.workingDiff++;
@@ -456,6 +463,50 @@ describe("budget guard", () => {
     expect(orch.setBudget(2.5)).toBe(2.5);
     expect(orch.engineInfo().budgetUsd).toBe(2.5);
     expect(orch.setBudget(-5)).toBe(0);
+  });
+});
+
+// ── resume / recovery (interrupted tasks) ────────────────────────────────────
+
+describe("resume & recovery", () => {
+  it("resumeTask re-runs an interrupted task to the review gate — and NEVER pushes", async () => {
+    const draft = orch.createTask(PROPOSAL, "widget");
+    store.save({ ...store.load(draft.id)!, status: "interrupted" });
+    await orch.resumeTask(draft.id);
+    await orch.settle(draft.id);
+    const after = store.load(draft.id)!;
+    expect(after.status).toBe("awaiting_human"); // re-ran cleanly to the gate
+    expect(vcs.calls.push).toHaveLength(0);
+    expect(vcs.calls.openPr).toHaveLength(0);
+    expect(vcs.calls.mergePr).toHaveLength(0);
+  });
+
+  it("resumeTask resets an EXISTING worktree to base instead of recreating it", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "bureau-wt-"));
+    mkdirSync(join(dir, ".git"));
+    try {
+      const draft = orch.createTask(PROPOSAL, "widget");
+      store.save({ ...store.load(draft.id)!, status: "interrupted", worktreePath: dir });
+      await orch.resumeTask(draft.id);
+      await orch.settle(draft.id);
+      expect(vcs.calls.resetWorktreeToBase).toContain(dir);
+      expect(vcs.calls.setupWorktree).toHaveLength(0); // reused, not recreated
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("resumeTask rejects a task that isn't interrupted (409)", async () => {
+    const draft = orch.createTask(PROPOSAL, "widget");
+    await expect(orch.resumeTask(draft.id)).rejects.toThrow(expect.objectContaining({ status: 409 }));
+  });
+
+  it("discardTask aborts an interrupted task and tears down its worktree", async () => {
+    const draft = orch.createTask(PROPOSAL, "widget");
+    store.save({ ...store.load(draft.id)!, status: "interrupted", worktreePath: "/tmp/wt" });
+    const after = await orch.discardTask(draft.id);
+    expect(after.status).toBe("aborted");
+    expect(vcs.calls.removeWorktree.length).toBeGreaterThan(0);
   });
 });
 
@@ -1166,16 +1217,23 @@ describe("capability integrity", () => {
 });
 
 describe("reconcile (crash recovery)", () => {
-  it("aborts + cleans up tasks left mid-flight by a crash", async () => {
+  it("marks tasks left mid-flight by a crash as interrupted, KEEPING their worktree for resume", async () => {
     const draft = orch.createTask(PROPOSAL);
-    // Simulate a hard crash: persist it executing with a worktree but no live pipeline.
-    store.save({ ...store.load(draft.id)!, status: "executing", worktreePath: "/wt/zombie" });
+    // Simulate a hard crash: persist it executing (a step running) with a worktree, no live pipeline.
+    const t = store.load(draft.id)!;
+    store.save({
+      ...t,
+      status: "executing",
+      worktreePath: "/wt/zombie",
+      steps: t.steps.map((s, i) => (i === 0 ? { ...s, status: "running" as const } : s)),
+    });
 
     const cleaned = await orch.reconcile();
 
     expect(cleaned).toBe(1);
-    expect(store.load(draft.id)!.status).toBe("aborted");
-    expect(vcs.calls.removeWorktree.some((c) => c.force)).toBe(true);
+    expect(store.load(draft.id)!.status).toBe("interrupted");
+    expect(store.load(draft.id)!.steps[0]!.status).toBe("pending"); // the in-flight step is reset
+    expect(vcs.calls.removeWorktree).toHaveLength(0); // worktree preserved (not torn down)
   });
 
   it("leaves terminal/draft tasks untouched", async () => {
