@@ -1,11 +1,16 @@
 version: 2
 updates:
   # npm/pnpm dependencies across the workspace (the root lockfile covers all packages).
+  # Only safe (minor/patch + security) bumps — major upgrades (React 19, Next 16, Zod 4,
+  # vitest 4, …) are breaking and done as deliberate, dedicated work, never an auto-PR.
   - package-ecosystem: npm
     directory: "/"
     schedule:
       interval: weekly
     open-pull-requests-limit: 5
+    ignore:
+      - dependency-name: "*"
+        update-types: ["version-update:semver-major"]
     groups:
       dev-dependencies:
         dependency-type: development
@@ -13,12 +18,15 @@ updates:
         dependency-type: production
 
   # Keep the GitHub Actions used by CI current (security patches land here too).
-  # Grouped into a single PR so action bumps don't spawn one branch each.
+  # Grouped into a single PR; majors ignored so a v4->v6 jump never lands unreviewed.
   - package-ecosystem: github-actions
     directory: "/"
     schedule:
       interval: weekly
     open-pull-requests-limit: 5
+    ignore:
+      - dependency-name: "*"
+        update-types: ["version-update:semver-major"]
     groups:
       github-actions:
         patterns: ["*"]
