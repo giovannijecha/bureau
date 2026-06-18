@@ -20,7 +20,7 @@ import {
 import type { Message, TaskProposal, Conversation, Attachment, GitOpRequest } from "@bureau/contracts";
 import { chat, createTask, listConversations, deleteConversation, messagesFor, getGitInfo } from "../lib/api";
 import { useProjects } from "../lib/useProjects";
-import { ProjectPicker } from "../components/ProjectPicker";
+import { ProjectSwitcher } from "../components/ProjectSwitcher";
 import { ConversationsRail } from "../components/ConversationsRail";
 import { GitOpProposalCard } from "../components/GitOpProposalCard";
 import { RunCommand, type RunResult } from "../components/RunCommand";
@@ -398,7 +398,7 @@ export default function AssistantPage() {
                 {/* The global header switcher owns project scope on md+; keep a fallback
                     here only on narrow screens where that switcher is hidden. */}
                 <div className="md:hidden">
-                  <ProjectPicker compact projects={projects} active={active} onChange={setActiveId} />
+                  <ProjectSwitcher compact projects={projects} active={active} onChange={setActiveId} />
                 </div>
               </div>
               <div className="flex items-center gap-2.5">

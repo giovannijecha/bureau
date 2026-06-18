@@ -4,6 +4,7 @@ import "./globals.css";
 import { Sidebar } from "../components/Sidebar";
 import { Header } from "../components/Header";
 import { ConfirmProvider } from "../components/ConfirmDialog";
+import { SettingsModalProvider } from "../components/SettingsModal";
 import { SidebarProvider } from "../lib/sidebar";
 import { ProjectsProvider } from "../lib/projects-context";
 
@@ -37,13 +38,15 @@ export default function RootLayout({ children }: { children: ReactNode }) {
         <ConfirmProvider>
           <ProjectsProvider>
             <SidebarProvider>
-              <div className="flex h-screen overflow-hidden">
-                <Sidebar />
-                <div className="flex min-w-0 flex-1 flex-col overflow-hidden">
-                  <Header />
-                  <main className="flex flex-1 flex-col overflow-hidden bg-muted/30">{children}</main>
+              <SettingsModalProvider>
+                <div className="flex h-screen overflow-hidden">
+                  <Sidebar />
+                  <div className="flex min-w-0 flex-1 flex-col overflow-hidden">
+                    <Header />
+                    <main className="flex flex-1 flex-col overflow-hidden bg-muted/30">{children}</main>
+                  </div>
                 </div>
-              </div>
+              </SettingsModalProvider>
             </SidebarProvider>
           </ProjectsProvider>
         </ConfirmProvider>

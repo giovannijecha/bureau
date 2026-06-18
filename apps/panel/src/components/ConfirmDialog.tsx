@@ -12,6 +12,7 @@ import {
 import { createPortal } from "react-dom";
 import { usePathname } from "next/navigation";
 import { AlertTriangle, HelpCircle } from "lucide-react";
+import { pushModalLayer, popModalLayer, isTopModalLayer } from "../lib/modal-stack";
 import { cn } from "../lib/utils";
 
 export type ConfirmVariant = "destructive" | "default";
@@ -97,15 +98,19 @@ function ConfirmModal({ pending, onClose }: { pending: ConfirmOptions; onClose: 
     // came from so we can restore it when the dialog closes.
     const previouslyFocused = document.activeElement as HTMLElement | null;
     confirmRef.current?.focus();
+    // This confirm may be stacked ABOVE another modal (e.g. the Settings modal). Register
+    // a layer so a single Escape closes only the top-most one, not every layer at once.
+    const layer = pushModalLayer();
 
     const onKey = (e: KeyboardEvent) => {
       if (e.key === "Escape") {
+        if (!isTopModalLayer(layer)) return;
         e.preventDefault();
         onClose(false);
         return;
       }
-      // Trap Tab focus inside the dialog (WAI-ARIA alertdialog). Only one modal
-      // is ever open, so a window-level handler is unambiguous.
+      // Trap Tab focus inside the dialog (WAI-ARIA alertdialog). The Tab handler is scoped
+      // to THIS dialog's focusables, so it's correct even when stacked over another modal.
       if (e.key === "Tab") {
         const focusable = dialogRef.current?.querySelectorAll<HTMLElement>(
           'button, [href], input, textarea, select, [tabindex]:not([tabindex="-1"])'
@@ -137,6 +142,7 @@ function ConfirmModal({ pending, onClose }: { pending: ConfirmOptions; onClose: 
     overlay?.addEventListener("touchmove", stopScroll, { passive: false });
 
     return () => {
+      popModalLayer(layer);
       window.removeEventListener("keydown", onKey);
       overlay?.removeEventListener("wheel", stopScroll);
       overlay?.removeEventListener("touchmove", stopScroll);

@@ -21,7 +21,7 @@ import { useSidebar } from "../lib/sidebar";
 import { useProjects } from "../lib/useProjects";
 import { ThemeToggle } from "./ThemeToggle";
 import { NotificationBell } from "./NotificationBell";
-import { ProjectPicker } from "./ProjectPicker";
+import { ProjectSwitcher } from "./ProjectSwitcher";
 import { cn } from "../lib/utils";
 
 // One consistent top bar for every section, driven by the route — so the header
@@ -87,7 +87,7 @@ export function Header() {
           <>
             <div className="mx-1 hidden h-6 w-px shrink-0 bg-border md:block" />
             <div className="hidden min-w-0 max-w-[200px] md:block lg:max-w-[260px]">
-              <ProjectPicker projects={projects} active={active} onChange={switchProject} />
+              <ProjectSwitcher projects={projects} active={active} onChange={switchProject} />
             </div>
           </>
         )}

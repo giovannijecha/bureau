@@ -11,6 +11,7 @@ import { useEffect, useRef, useState, type ReactNode } from "react";
 import { createPortal } from "react-dom";
 import { ChevronDown, Check } from "lucide-react";
 import { useAnchoredPopover } from "../lib/useAnchoredPopover";
+import { pushModalLayer, popModalLayer, isTopModalLayer } from "../lib/modal-stack";
 import { cn } from "../lib/utils";
 
 export interface DropdownOption<T extends string> {
@@ -46,17 +47,24 @@ export function Dropdown<T extends string>({
 
   useEffect(() => {
     if (!open) return;
+    // Register a modal layer while open so an Escape that dismisses THIS dropdown doesn't
+    // also collapse a modal it's rendered inside (e.g. the Settings modal's model picker).
+    const layer = pushModalLayer();
     function onDoc(e: MouseEvent) {
       const t = e.target as Node;
       if (btnRef.current?.contains(t) || popRef.current?.contains(t)) return; // popover is portaled
       setOpen(false);
     }
     function onKey(e: KeyboardEvent) {
-      if (e.key === "Escape") setOpen(false);
+      if (e.key === "Escape" && isTopModalLayer(layer)) {
+        e.stopPropagation();
+        setOpen(false);
+      }
     }
     document.addEventListener("mousedown", onDoc);
     document.addEventListener("keydown", onKey);
     return () => {
+      popModalLayer(layer);
       document.removeEventListener("mousedown", onDoc);
       document.removeEventListener("keydown", onKey);
     };
