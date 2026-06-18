@@ -13,8 +13,12 @@ updates:
         dependency-type: production
 
   # Keep the GitHub Actions used by CI current (security patches land here too).
+  # Grouped into a single PR so action bumps don't spawn one branch each.
   - package-ecosystem: github-actions
     directory: "/"
     schedule:
       interval: weekly
     open-pull-requests-limit: 5
+    groups:
+      github-actions:
+        patterns: ["*"]
