@@ -19,6 +19,7 @@ import {
 } from "lucide-react";
 import { cn } from "../lib/utils";
 import { useSidebar } from "../lib/sidebar";
+import { useSettingsModal } from "./SettingsModal";
 
 interface NavItem {
   title: string;
@@ -74,6 +75,29 @@ function NavLink({
   );
 }
 
+/** Settings opens as a centered modal (not a route) — highlighted while the modal is open. */
+function SettingsNavButton({ collapsed, onNavigate }: { collapsed: boolean; onNavigate?: (() => void) | undefined }) {
+  const { open, isOpen } = useSettingsModal();
+  return (
+    <button
+      onClick={() => {
+        open();
+        onNavigate?.();
+      }}
+      title={collapsed ? "Settings" : undefined}
+      aria-label="Settings"
+      className={cn(
+        "flex w-full items-center rounded-lg text-[15px] font-medium transition-colors",
+        collapsed ? "justify-center px-0 py-2.5" : "gap-3.5 px-3 py-2.5",
+        isOpen ? "bg-primary text-primary-foreground" : "text-muted-foreground hover:bg-muted hover:text-foreground"
+      )}
+    >
+      <Settings className="h-[22px] w-[22px] shrink-0" />
+      {!collapsed && <span className="truncate">Settings</span>}
+    </button>
+  );
+}
+
 /** The shared inner content (logo + nav), used by both the desktop rail and the
  *  mobile drawer. `collapsed` only ever applies to the desktop rail. */
 function SidebarBody({
@@ -119,12 +143,7 @@ function SidebarBody({
       </nav>
 
       <div className="space-y-1 border-t px-2 py-3">
-        <NavLink
-          item={{ title: "Settings", href: "/settings", icon: Settings }}
-          active={isActive("/settings")}
-          collapsed={collapsed}
-          onNavigate={onNavigate}
-        />
+        <SettingsNavButton collapsed={collapsed} onNavigate={onNavigate} />
       </div>
     </>
   );
