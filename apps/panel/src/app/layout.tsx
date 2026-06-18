@@ -7,6 +7,7 @@ import { ConfirmProvider } from "../components/ConfirmDialog";
 import { SettingsModalProvider } from "../components/SettingsModal";
 import { SidebarProvider } from "../lib/sidebar";
 import { ProjectsProvider } from "../lib/projects-context";
+import { ToastProvider } from "../components/Toast";
 
 const inter = Inter({ subsets: ["latin"], variable: "--font-inter" });
 
@@ -36,7 +37,8 @@ export default function RootLayout({ children }: { children: ReactNode }) {
       </head>
       <body className="font-sans antialiased">
         <ConfirmProvider>
-          <ProjectsProvider>
+          <ToastProvider>
+            <ProjectsProvider>
             <SidebarProvider>
               <SettingsModalProvider>
                 <div className="flex h-screen overflow-hidden">
@@ -48,7 +50,8 @@ export default function RootLayout({ children }: { children: ReactNode }) {
                 </div>
               </SettingsModalProvider>
             </SidebarProvider>
-          </ProjectsProvider>
+            </ProjectsProvider>
+          </ToastProvider>
         </ConfirmProvider>
       </body>
     </html>

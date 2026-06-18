@@ -1,5 +1,6 @@
 import type { ReactNode } from "react";
 import { Play } from "lucide-react";
+import { CopyButton } from "./CopyButton";
 
 /** Code-fence languages that denote a runnable shell command (gets a "Run" button).
  *  An UNTAGGED fence ("") is excluded — Iris is told to tag runnable commands ```bash,
@@ -73,15 +74,18 @@ export function Markdown({ source, onRun }: { source: string; onRun?: ((code: st
           <pre className="overflow-x-auto rounded-lg border bg-muted/60 px-3 py-2.5 font-mono text-[0.85em] leading-relaxed">
             <code>{codeStr}</code>
           </pre>
-          {runnable && (
-            <button
-              onClick={() => onRun!(codeStr)}
-              className="absolute right-2 top-2 inline-flex items-center gap-1 rounded-md border bg-background/90 px-2 py-1 text-[11px] font-medium text-muted-foreground opacity-0 backdrop-blur transition-opacity hover:text-foreground focus:opacity-100 group-hover/code:opacity-100"
-              title="Run this command and show the output here"
-            >
-              <Play className="h-3 w-3" /> Run
-            </button>
-          )}
+          <div className="absolute right-2 top-2 flex items-center gap-1 opacity-0 transition-opacity focus-within:opacity-100 group-hover/code:opacity-100">
+            <CopyButton text={codeStr} />
+            {runnable && (
+              <button
+                onClick={() => onRun!(codeStr)}
+                className="inline-flex items-center gap-1 rounded-md border bg-background/90 px-2 py-1 text-[11px] font-medium text-muted-foreground backdrop-blur transition-colors hover:text-foreground"
+                title="Run this command and show the output here"
+              >
+                <Play className="h-3 w-3" /> Run
+              </button>
+            )}
+          </div>
         </div>
       );
       i = j; // skip past the closing fence (or to EOF)
