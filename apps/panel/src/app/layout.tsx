@@ -14,8 +14,18 @@ export const metadata = {
   description: "Local-first AI agent team for your GitHub repos",
 };
 
-// Apply the saved theme before first paint (no flash). Defaults to dark.
-const THEME_SCRIPT = `(function(){try{var t=localStorage.getItem('bureau.theme');document.documentElement.classList.toggle('dark', t ? t==='dark' : true);}catch(e){}})();`;
+// Apply the saved appearance before first paint (no flash) — mirrors applyAppearance()
+// in lib/appearance.ts (keep the accent map in sync). Defaults to dark.
+const THEME_SCRIPT = `(function(){try{
+var d=document.documentElement,ls=localStorage;
+var m=ls.getItem('bureau.theme');
+var sys=window.matchMedia&&window.matchMedia('(prefers-color-scheme: dark)').matches;
+var dark=m==='light'?false:m==='system'?sys:true;
+d.classList.toggle('dark',dark);
+if(ls.getItem('bureau.motion')==='reduce')d.classList.add('reduce-motion');
+var ac=ls.getItem('bureau.accent');if(ac&&ac!=='default')d.setAttribute('data-accent',ac);
+var sc=ls.getItem('bureau.scale');if(sc==='compact')d.style.fontSize='14px';else if(sc==='large')d.style.fontSize='18px';
+}catch(e){}})();`;
 
 export default function RootLayout({ children }: { children: ReactNode }) {
   return (
