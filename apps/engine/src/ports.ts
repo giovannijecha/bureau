@@ -31,6 +31,9 @@ export interface VcsPort {
    *  uncommitted/partial crash work — so a RESUMED task re-runs from a pristine tree.
    *  LOCAL-ONLY (reset/clean), never on a push path. Keeps .gitignored build dirs. */
   resetWorktreeToBase(worktreePath: string): Promise<void>;
+  /** Drop stale worktree admin entries so re-creating a worktree at a half-torn-down
+   *  path doesn't fail "already registered". Best-effort; local-only. */
+  pruneWorktrees(): Promise<void>;
   /** The uncommitted diff (incl. new files) — what the human reviews on the first run. */
   workingDiff(worktreePath: string): Promise<string>;
   /** The committed branch diff vs `base` (e.g. "origin/main") — the full PR-shaped

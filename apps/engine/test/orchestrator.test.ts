@@ -41,6 +41,7 @@ function fakeVcs() {
     deletedBranch: null as string | null,
     setupWorktree: [] as { branch: string; path: string }[],
     resetWorktreeToBase: [] as string[],
+    pruneWorktrees: 0,
     commitAll: [] as { path: string; message: string }[],
     push: [] as { path: string; branch: string }[],
     openPr: [] as { branch: string }[],
@@ -63,6 +64,9 @@ function fakeVcs() {
     },
     async resetWorktreeToBase(path) {
       calls.resetWorktreeToBase.push(path);
+    },
+    async pruneWorktrees() {
+      calls.pruneWorktrees++;
     },
     async workingDiff() {
       calls.workingDiff++;
@@ -476,6 +480,8 @@ describe("resume & recovery", () => {
     await orch.settle(draft.id);
     const after = store.load(draft.id)!;
     expect(after.status).toBe("awaiting_human"); // re-ran cleanly to the gate
+    expect(vcs.calls.pruneWorktrees).toBeGreaterThan(0); // recreate path prunes stale entries first
+    expect(vcs.calls.setupWorktree.length).toBeGreaterThan(0);
     expect(vcs.calls.push).toHaveLength(0);
     expect(vcs.calls.openPr).toHaveLength(0);
     expect(vcs.calls.mergePr).toHaveLength(0);
