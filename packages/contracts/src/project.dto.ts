@@ -12,3 +12,15 @@ export const ProjectDto = z.object({
 });
 
 export type Project = z.infer<typeof ProjectDto>;
+
+// Add a project from the panel. The CEO supplies a clone URL only — owner/name are
+// derived server-side from the validated URL (single-sourced identity), and NO token
+// or credential is ever accepted (Bureau persists no secrets). testCommand is the
+// already-tokenized argv for the `test` worker (e.g. ["npm","test"]).
+export const CreateProjectRequestDto = z.object({
+  url: z.string().min(1).max(512),
+  baseBranch: z.string().max(255).optional(),
+  testCommand: z.array(z.string().min(1)).nonempty().optional(),
+});
+
+export type CreateProjectRequest = z.infer<typeof CreateProjectRequestDto>;

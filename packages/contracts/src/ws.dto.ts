@@ -12,6 +12,8 @@ export const WsEventSchema = z.discriminatedUnion("type", [
   // agent" stream on the task detail + Hub.
   z.object({ type: z.literal("step_progress"), taskId: z.string(), stepId: z.string(), capability: z.string(), chunk: z.string() }),
   z.object({ type: z.literal("notification"), notificationId: z.string(), kind: z.string(), subject: z.string() }),
+  // The project list changed (a repo was added or removed) — the panel refetches.
+  z.object({ type: z.literal("projects_changed") }),
 ]);
 
 export type WsEvent = z.infer<typeof WsEventSchema>;

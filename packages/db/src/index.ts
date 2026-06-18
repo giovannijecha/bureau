@@ -9,3 +9,4 @@ export * from "./message-repo.js";
 export * from "./conversation-repo.js";
 export * from "./usage-repo.js";
 export * from "./notification-repo.js";
+export * from "./project-repo.js";

@@ -57,6 +57,13 @@
       "when": 1781441696760,
       "tag": "0007_nervous_spitfire",
       "breakpoints": true
+    },
+    {
+      "idx": 8,
+      "version": "6",
+      "when": 1781776319487,
+      "tag": "0008_whole_vertigo",
+      "breakpoints": true
     }
   ]
 }
