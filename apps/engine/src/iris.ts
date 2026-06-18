@@ -72,7 +72,10 @@ export async function irisRespond(
   attachmentImages?: readonly { name: string; path: string }[],
   /** Which model to run the chat turn on (engine-resolved 'iris' scope); falls back to
    *  the provider default when unset. */
-  modelOverride?: string
+  modelOverride?: string,
+  /** Called with a compact summary each time Iris invokes a tool during the turn (e.g.
+   *  "Read src/auth.ts") — lets the engine stream live "what Iris is doing" activity. */
+  onActivity?: (summary: string) => void
 ): Promise<IrisTurn> {
   // Images can't be inlined as text — tell Iris where they are so she Reads (views) them.
   const imgNote =
@@ -95,9 +98,17 @@ You are currently working on the repository ${project.owner}/${project.name} (de
   // Let the CLI read the attachments' directory (outside the repo) so Read can view them.
   const addDirs =
     attachmentImages && attachmentImages.length > 0 ? [...new Set(attachmentImages.map((a) => dirname(a.path)))] : undefined;
-  const opts = { maxTokens: 4000, ...(cwd !== undefined ? { cwd } : {}), ...(addDirs ? { addDirs } : {}), ...(modelOverride !== undefined ? { model: modelOverride } : {}) };
+  const opts = {
+    maxTokens: 4000,
+    ...(cwd !== undefined ? { cwd } : {}),
+    ...(addDirs ? { addDirs } : {}),
+    ...(modelOverride !== undefined ? { model: modelOverride } : {}),
+    ...(onActivity ? { onToolUse: onActivity } : {}),
+  };
 
-  const first = await provider.send(messages, opts);
+  // Stream the turn so the agent's live tool calls (Read/Glob/…) surface via onToolUse
+  // as Iris works; the streamed text is unused (we parse the final JSON from `content`).
+  const first = await provider.stream(messages, () => {}, opts);
   let raw = first.content;
   let inputTokens = first.inputTokens;
   let outputTokens = first.outputTokens;

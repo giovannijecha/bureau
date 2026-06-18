@@ -184,7 +184,7 @@ export class ClaudeCliProvider implements Provider {
         while ((nl = buffer.indexOf("\n")) >= 0) {
           const line = buffer.slice(0, nl);
           buffer = buffer.slice(nl + 1);
-          emitStreamChunk(line, onChunk);
+          emitStreamChunk(line, onChunk, options?.onToolUse);
         }
       };
       const { stdout, stderr, code } = await this.run(this.cli, args, prompt, options?.cwd, this.timeoutMs, onStdout);
@@ -233,9 +233,15 @@ export function renderCliPrompt(messages: Message[]): { system: string | undefin
 /**
  * Emit a human progress chunk from ONE stream-json line (assistant text + a compact
  * line per tool call). Best-effort — empty, partial, or unknown lines are ignored,
- * never thrown, so a single odd frame can't break a live edit.
+ * never thrown, so a single odd frame can't break a live edit. When `onToolUse` is
+ * given, each tool call is ALSO surfaced as a structured summary (for live "what the
+ * agent is doing" activity, distinct from the text stream).
  */
-export function emitStreamChunk(line: string, onChunk: (chunk: string) => void): void {
+export function emitStreamChunk(
+  line: string,
+  onChunk: (chunk: string) => void,
+  onToolUse?: (summary: string) => void
+): void {
   const trimmed = line.trim();
   if (trimmed === "") return;
   let ev: unknown;
@@ -250,7 +256,9 @@ export function emitStreamChunk(line: string, onChunk: (chunk: string) => void):
     if (block.type === "text" && typeof block.text === "string" && block.text.trim() !== "") {
       onChunk(block.text);
     } else if (block.type === "tool_use" && typeof block.name === "string") {
-      onChunk(`\n→ ${describeTool(block.name, block.input)}\n`);
+      const summary = describeTool(block.name, block.input);
+      onChunk(`\n→ ${summary}\n`);
+      onToolUse?.(summary);
     }
   }
 }

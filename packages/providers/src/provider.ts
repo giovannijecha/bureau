@@ -40,6 +40,10 @@ export interface SendOptions {
   /** Extra directories the CLI may READ from (--add-dir), beyond cwd — used to let
    *  Iris view chat image attachments saved outside the repo. Completion providers ignore it. */
   readonly addDirs?: readonly string[];
+  /** Called once per tool the agent invokes during a streamed run, with a compact
+   *  human summary (e.g. "Read src/auth.ts"). Lets the engine surface live "what Iris is
+   *  doing" activity. Only fires on agentic streaming (the CLI provider); ignored otherwise. */
+  readonly onToolUse?: (summary: string) => void;
 }
 
 export interface Provider {

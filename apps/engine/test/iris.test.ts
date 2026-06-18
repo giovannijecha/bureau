@@ -115,6 +115,25 @@ describe("irisRespond", () => {
     expect(sendCount()).toBe(2);
   });
 
+  it("surfaces each tool Iris invokes via onActivity (streamed live), keeping the parsed reply", async () => {
+    const provider: Provider = {
+      name: "fake",
+      authStrategy: { kind: "api-key", isAvailable: () => true },
+      async send() {
+        return { content: JSON.stringify({ reply: "ok" }), inputTokens: 0, outputTokens: 0 };
+      },
+      async stream(_m, _onChunk, opts) {
+        opts?.onToolUse?.("Read src/auth.ts");
+        opts?.onToolUse?.('Grep "login"');
+        return { content: JSON.stringify({ reply: "done" }), inputTokens: 0, outputTokens: 0 };
+      },
+    };
+    const seen: string[] = [];
+    const t = await irisRespond(provider, user("look at auth"), PROJECT, undefined, undefined, undefined, undefined, (s) => seen.push(s));
+    expect(t.reply).toBe("done");
+    expect(seen).toEqual(["Read src/auth.ts", 'Grep "login"']);
+  });
+
   it("injects the repo git context into the system prompt so Iris knows the branches", async () => {
     let systemSeen = "";
     const provider: Provider = {
@@ -124,8 +143,9 @@ describe("irisRespond", () => {
         systemSeen = messages.find((m) => m.role === "system")?.content ?? "";
         return { content: JSON.stringify({ reply: "ok" }), inputTokens: 0, outputTokens: 0 };
       },
-      async stream() {
-        return { content: "", inputTokens: 0, outputTokens: 0 };
+      async stream(messages) {
+        systemSeen = messages.find((m) => m.role === "system")?.content ?? ""; // stream() is the primary path now
+        return { content: JSON.stringify({ reply: "ok" }), inputTokens: 0, outputTokens: 0 };
       },
     };
     await irisRespond(provider, user("which branches exist?"), PROJECT, undefined, "Repository git state: Branches: main, feature-x");
@@ -142,8 +162,9 @@ describe("irisRespond", () => {
         systemSeen = messages.find((m) => m.role === "system")?.content ?? "";
         return { content: JSON.stringify({ reply: "ok" }), inputTokens: 0, outputTokens: 0 };
       },
-      async stream() {
-        return { content: "", inputTokens: 0, outputTokens: 0 };
+      async stream(messages) {
+        systemSeen = messages.find((m) => m.role === "system")?.content ?? "";
+        return { content: JSON.stringify({ reply: "ok" }), inputTokens: 0, outputTokens: 0 };
       },
     };
     await irisRespond(provider, user("hi"), { ...PROJECT, hasTests: true });

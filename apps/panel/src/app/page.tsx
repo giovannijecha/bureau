@@ -20,6 +20,7 @@ import {
 import type { Message, TaskProposal, Conversation, Attachment, GitOpRequest } from "@bureau/contracts";
 import { chat, createTask, listConversations, deleteConversation, messagesFor, getGitInfo } from "../lib/api";
 import { useProjects } from "../lib/useProjects";
+import { useEngineEvents } from "../lib/useEngineEvents";
 import { ProjectSwitcher } from "../components/ProjectSwitcher";
 import { ConversationsRail } from "../components/ConversationsRail";
 import { GitOpProposalCard } from "../components/GitOpProposalCard";
@@ -58,6 +59,9 @@ export default function AssistantPage() {
     setRuns((r) => [...r, { id: ++runSeq.current, command }]);
   }, []);
   const [busy, setBusy] = useState(false);
+  // The latest live "what Iris is doing" line (a tool she just invoked), shown while a
+  // reply is pending. Streamed over the WS as the chat HTTP request is in flight.
+  const [activity, setActivity] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [conversations, setConversations] = useState<Conversation[]>([]);
   const [convId, setConvId] = useState<string | null>(null);
@@ -66,6 +70,12 @@ export default function AssistantPage() {
   const inputRef = useRef<HTMLTextAreaElement>(null);
   const bottomRef = useRef<HTMLDivElement>(null);
   const fileRef = useRef<HTMLInputElement>(null);
+
+  // Live "what Iris is doing" — the engine streams a line per tool she invokes during the
+  // turn. Only rendered while a reply is pending; reset on each send and on completion.
+  useEngineEvents((e) => {
+    if (e.type === "iris_activity") setActivity(e.summary);
+  });
 
   const refreshConversations = useCallback(async () => {
     try {
@@ -151,6 +161,7 @@ export default function AssistantPage() {
     }
     if (!content && attachments.length === 0) return;
     setBusy(true);
+    setActivity(null); // fresh turn — drop any prior activity line
     setError(null);
     setComposerErr(null);
     setProposal(null);
@@ -176,6 +187,7 @@ export default function AssistantPage() {
       setError(errMsg(e));
     } finally {
       setBusy(false);
+      setActivity(null);
     }
   }
 
@@ -284,7 +296,7 @@ export default function AssistantPage() {
               {log.map((m) => (
                 <ChatBubble key={m.id} message={m} onRun={runInChat} />
               ))}
-              {busy && <TypingIndicator />}
+              {busy && <TypingIndicator activity={activity} />}
               {proposal && (
                 <ProposalCard
                   proposal={proposal}
@@ -462,13 +474,23 @@ function ChatBubble({ message, onRun }: { message: Message; onRun?: (cmd: string
   );
 }
 
-function TypingIndicator() {
+function TypingIndicator({ activity }: { activity: string | null }) {
   return (
     <div className="flex justify-start">
-      <div className="flex items-center gap-1.5 rounded-2xl border bg-card px-4 py-3">
-        <span className="h-1.5 w-1.5 animate-bounce rounded-full bg-muted-foreground/70 [animation-delay:-0.3s]" />
-        <span className="h-1.5 w-1.5 animate-bounce rounded-full bg-muted-foreground/70 [animation-delay:-0.15s]" />
-        <span className="h-1.5 w-1.5 animate-bounce rounded-full bg-muted-foreground/70" />
+      <div className="flex items-center gap-2 rounded-2xl border bg-card px-4 py-3 text-muted-foreground">
+        {activity ? (
+          // A tool Iris just ran (Read/Grep/…) — live "what she's doing" while composing.
+          <>
+            <Loader2 className="h-3.5 w-3.5 shrink-0 animate-spin text-primary" />
+            <span className="max-w-[18rem] truncate font-mono text-xs sm:max-w-md">{activity}</span>
+          </>
+        ) : (
+          <span className="flex items-center gap-1.5">
+            <span className="h-1.5 w-1.5 animate-bounce rounded-full bg-muted-foreground/70 [animation-delay:-0.3s]" />
+            <span className="h-1.5 w-1.5 animate-bounce rounded-full bg-muted-foreground/70 [animation-delay:-0.15s]" />
+            <span className="h-1.5 w-1.5 animate-bounce rounded-full bg-muted-foreground/70" />
+          </span>
+        )}
       </div>
     </div>
   );

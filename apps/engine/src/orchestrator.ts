@@ -496,7 +496,9 @@ export class Orchestrator {
         .join("\n\n") || undefined;
     let turn;
     try {
-      turn = await irisRespond(this.d.provider, history, irisProject, cwd, context, images, resolveModel(this.modelPolicy, "iris"));
+      turn = await irisRespond(this.d.provider, history, irisProject, cwd, context, images, resolveModel(this.modelPolicy, "iris"), (summary) =>
+        this.d.events.emit({ type: "iris_activity", summary })
+      );
     } finally {
       // The agent has Read the images during the turn — drop the temp dir so image
       // attachments don't accumulate on disk over the daemon's life.
@@ -552,7 +554,9 @@ export class Orchestrator {
 
     let turn;
     try {
-      turn = await irisRespond(this.d.provider, msgs, irisProject, cwd, context, images, resolveModel(this.modelPolicy, "iris"));
+      turn = await irisRespond(this.d.provider, msgs, irisProject, cwd, context, images, resolveModel(this.modelPolicy, "iris"), (summary) =>
+        this.d.events.emit({ type: "iris_activity", summary })
+      );
     } finally {
       if (imagesDir) await rm(imagesDir, { recursive: true, force: true }).catch(() => {});
     }
