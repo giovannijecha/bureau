@@ -5,7 +5,7 @@
 // at the app root exposes useToast(); the stack renders bottom-right via a portal so it
 // floats over any page or modal. Auto-dismisses; errors linger a little longer.
 
-import { createContext, useCallback, useContext, useRef, useState, type ReactNode } from "react";
+import { createContext, useCallback, useContext, useEffect, useRef, useState, type ReactNode } from "react";
 import { createPortal } from "react-dom";
 import { CheckCircle2, XCircle, Info, X } from "lucide-react";
 import { cn } from "../lib/utils";
@@ -85,10 +85,13 @@ const ACCENT: Record<Variant, string> = {
 };
 
 function Toaster({ toasts, onDismiss }: { toasts: ToastItem[]; onDismiss: (id: number) => void }) {
-  // Render the aria-live region ALWAYS (only the children are conditional) so a screen
-  // reader is already observing it when the first toast arrives — otherwise the very first
-  // announcement can be dropped. Only the SSR no-DOM case bails.
-  if (typeof document === "undefined") return null;
+  // Portal only AFTER mount: on the server (and the first client render that hydrates it)
+  // we render nothing, so the markup matches and there's no hydration mismatch. Once
+  // mounted, the aria-live region is rendered ALWAYS (only its children are conditional)
+  // so a screen reader is already observing it when the first toast arrives.
+  const [mounted, setMounted] = useState(false);
+  useEffect(() => setMounted(true), []);
+  if (!mounted) return null;
   return createPortal(
     <div
       className="pointer-events-none fixed bottom-4 right-4 z-[200] flex w-[calc(100vw-2rem)] max-w-sm flex-col gap-2"
