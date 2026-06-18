@@ -20,9 +20,9 @@
 **You don't prompt an agent — you run a firm.** You talk only to **Iris**, the orchestrator. She turns a plain-language request into a durable **Task** and hands it to stateless **capability workers** — plan · research · edit · test · review · document — that do the work in an isolated git worktree. You hold exactly three powers: **Start**, **Stop**, and the final **Confirm-merge**. Nothing reaches GitHub until you approve it, and the whole thing runs on your machine. *State is the truth; agents are replaceable operatives.*
 
 <div align="center">
-  <img src=".github/assets/screenshots/assistant.png" alt="The Bureau panel — chatting with Iris, who reports on the repo and stages an inline command" width="860" />
+  <img src=".github/assets/screenshots/hub.png" alt="The Bureau Hub — command center with the worker floor, task stats, and an activity feed" width="900" />
   <br />
-  <sub>The panel: you chat, Iris proposes tasks and inline commands — you decide.</sub>
+  <sub>The <strong>Hub</strong> — your command center: the worker floor, what's merged, and what's waiting on you.</sub>
 </div>
 
 > **Safe by construction:** one push gate (`canPush()`), shell-free workers, a loopback-only engine behind an Origin-locked transport, and no secrets at rest. → [Security](#security)
@@ -89,6 +89,12 @@ Seeded repos are written to the DB on first launch, after which env is optional 
 ## How it works
 
 You never drive the workers directly — you chat with Iris, and she turns the conversation into durable state that the engine executes in the background. Your decisive powers are exactly three: **Start**, **Stop**, and the final **Confirm-merge**.
+
+<div align="center">
+  <img src=".github/assets/screenshots/assistant.png" alt="The Bureau Assistant — chatting with Iris, who answers and stages a read-only command to run" width="820" />
+  <br />
+  <sub>Talking to Iris in the Assistant — she answers, proposes tasks, and stages commands you run with one click.</sub>
+</div>
 
 <div align="center">
   <img src=".github/assets/pipeline.svg" alt="Chat → Task → worktree → Diff → Confirm-merge → merged PR" width="900" />
