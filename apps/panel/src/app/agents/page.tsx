@@ -1,23 +1,12 @@
 "use client";
 
 import { useCallback, useEffect, useRef, useState } from "react";
-import { Sparkles, Compass, Telescope, Pencil, FlaskConical, Eye, FileText, type LucideIcon } from "lucide-react";
+import { Sparkles } from "lucide-react";
 import type { WorkerStatus } from "@bureau/contracts";
 import { getHub } from "../../lib/api";
 import { useEngineEvents } from "../../lib/useEngineEvents";
+import { workerMeta } from "../../lib/workers";
 import { cn } from "../../lib/utils";
-
-// Persona blurbs + icons are presentation; whether a worker is actually built
-// (implemented) and whether it's running right now come live from the engine —
-// so this roster can never drift from reality.
-const PERSONA: Record<string, { icon: LucideIcon; desc: string }> = {
-  plan: { icon: Compass, desc: "Breaks a request into ordered steps and acceptance criteria." },
-  research: { icon: Telescope, desc: "Investigates the codebase and the web/docs, returning a grounded findings brief." },
-  edit: { icon: Pencil, desc: "Applies the change in an isolated git worktree, then surfaces the diff." },
-  test: { icon: FlaskConical, desc: "Runs the repository's test suite against the change." },
-  review: { icon: Eye, desc: "Inspects the diff and flags issues before it reaches you." },
-  document: { icon: FileText, desc: "Updates docs, the README, or a changelog for the change." },
-};
 
 export default function AgentsPage() {
   const [workers, setWorkers] = useState<WorkerStatus[] | null>(null);
@@ -89,8 +78,8 @@ export default function AgentsPage() {
 }
 
 function WorkerCard({ w }: { w: WorkerStatus }) {
-  const persona = PERSONA[w.capability] ?? { icon: Pencil, desc: "" };
-  const Icon = persona.icon;
+  const meta = workerMeta(w.capability);
+  const Icon = meta.icon;
   return (
     <div className={cn("rounded-xl border bg-card p-4 transition-colors", w.live && "border-blue-500/40")}>
       <div className="flex items-start gap-3">
@@ -111,7 +100,7 @@ function WorkerCard({ w }: { w: WorkerStatus }) {
               {w.implemented ? "Live" : "Soon"}
             </span>
           </div>
-          <p className="mt-1.5 text-sm text-muted-foreground">{persona.desc}</p>
+          <p className="mt-1.5 text-sm text-muted-foreground">{meta.desc}</p>
           <div className="mt-2 flex flex-wrap items-center gap-x-3 gap-y-1 text-xs">
             <span className="text-muted-foreground">
               <span className="font-semibold text-foreground/80">{w.totalStepCount}</span> step{w.totalStepCount === 1 ? "" : "s"} run

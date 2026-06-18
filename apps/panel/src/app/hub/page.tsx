@@ -8,52 +8,24 @@ import {
   CircleDot,
   GitMerge,
   Sparkles,
-  Plus,
-  Play,
-  CheckCircle2,
-  XCircle,
-  Check,
-  ClipboardList,
-  Pencil,
-  FlaskConical,
-  ScanEye,
-  FileText,
   ListTodo,
   FolderGit2,
   ArrowRight,
+  CheckCircle2,
   type LucideIcon,
 } from "lucide-react";
-import type { Hub, WorkerStatus, Activity } from "@bureau/contracts";
+import type { Hub, WorkerStatus, TaskSummary } from "@bureau/contracts";
 import { getHub, listTasks } from "../../lib/api";
 import { useProjects } from "../../lib/useProjects";
 import { useEngineEvents } from "../../lib/useEngineEvents";
+import { ActivityFeed } from "../../components/ActivityFeed";
+import { workerMeta } from "../../lib/workers";
 import { cn } from "../../lib/utils";
-
-const WORKER_ICON: Record<string, LucideIcon> = {
-  plan: ClipboardList,
-  edit: Pencil,
-  test: FlaskConical,
-  review: ScanEye,
-  document: FileText,
-};
-
-// Each activity kind gets an icon + tint so the feed reads at a glance.
-const ACTIVITY: Record<string, { icon: LucideIcon; tint: string }> = {
-  task_created: { icon: Plus, tint: "text-muted-foreground" },
-  step_started: { icon: Play, tint: "text-blue-400" },
-  step_completed: { icon: CheckCircle2, tint: "text-green-500" },
-  step_failed: { icon: XCircle, tint: "text-red-500" },
-  gate_opened: { icon: CircleDot, tint: "text-amber-500" },
-  gate_reopened: { icon: Pencil, tint: "text-amber-500" },
-  gate_decided: { icon: Check, tint: "text-green-500" },
-  task_completed: { icon: GitMerge, tint: "text-green-500" },
-  task_aborted: { icon: XCircle, tint: "text-red-500" },
-};
 
 export default function HubPage() {
   const { active } = useProjects();
   const [hub, setHub] = useState<Hub | null>(null);
-  const [total, setTotal] = useState<number | null>(null);
+  const [tasks, setTasks] = useState<TaskSummary[]>([]); // for the total + the activity feed's outcome badges
   // Latest live output line per capability, from step_progress events.
   const [liveChunk, setLiveChunk] = useState<Record<string, string>>({});
   const alive = useRef(true);
@@ -66,15 +38,15 @@ export default function HubPage() {
 
   const load = useCallback(async () => {
     try {
-      const [h, tasks] = await Promise.all([getHub(), listTasks()]);
+      const [h, t] = await Promise.all([getHub(), listTasks()]);
       if (alive.current) {
         setHub(h);
-        setTotal(tasks.length);
+        setTasks(t);
       }
     } catch {
       if (alive.current) {
         setHub({ workers: [], activity: [], awaitingReview: [], stats: { activeTasks: 0, awaitingReview: 0, merged: 0 } });
-        setTotal(0);
+        setTasks([]);
       }
     }
   }, []);
@@ -108,161 +80,154 @@ export default function HubPage() {
 
   if (!hub) return <div className="h-full overflow-y-auto p-6"><p className="text-sm text-muted-foreground">Loading…</p></div>;
 
+  const liveLines = hub.workers.filter((w) => w.live && liveChunk[w.capability]).map((w) => ({ w, line: liveChunk[w.capability]! }));
+
   return (
     <div className="h-full overflow-y-auto p-6">
-      {/* Waiting on you — the decision surface, first and actionable. */}
-      {hub.awaitingReview.length > 0 && (
-        <div className="mb-5 overflow-hidden rounded-xl border border-amber-500/40 bg-amber-500/5">
-          <div className="flex items-center gap-2 border-b border-amber-500/20 px-4 py-3 text-sm font-semibold">
-            <CircleDot className="h-4 w-4 text-amber-500" /> Waiting on you
-            <span className="ml-1 rounded-full bg-amber-500/15 px-1.5 py-0.5 text-xs text-amber-600 dark:text-amber-400">{hub.awaitingReview.length}</span>
+      <div className="mx-auto max-w-6xl space-y-5">
+        {/* Waiting on you — the decision surface, first and always present (calm when clear). */}
+        {hub.awaitingReview.length > 0 ? (
+          <div className="overflow-hidden rounded-xl border border-amber-500/40 bg-amber-500/5">
+            <div className="flex items-center gap-2 border-b border-amber-500/20 px-4 py-3 text-sm font-semibold">
+              <CircleDot className="h-4 w-4 text-amber-500" /> Waiting on you
+              <span className="ml-1 rounded-full bg-amber-500/15 px-1.5 py-0.5 text-xs text-amber-600 dark:text-amber-400">{hub.awaitingReview.length}</span>
+            </div>
+            <div className="divide-y divide-amber-500/10">
+              {hub.awaitingReview.map((t) => (
+                <Link key={t.id} href={`/tasks/${t.id}`} className="flex items-center gap-3 px-4 py-3 transition-colors hover:bg-amber-500/5">
+                  <span className="min-w-0 flex-1 truncate text-sm font-medium">{t.goal}</span>
+                  <span className="hidden text-xs text-muted-foreground sm:inline">{t.repoOwner}/{t.repoName}</span>
+                  <span className="inline-flex items-center gap-1 rounded-md bg-amber-500/15 px-2 py-1 text-xs font-medium text-amber-700 dark:text-amber-300">
+                    Review &amp; merge <ArrowRight className="h-3 w-3" />
+                  </span>
+                </Link>
+              ))}
+            </div>
           </div>
-          <div className="divide-y divide-amber-500/10">
-            {hub.awaitingReview.map((t) => (
-              <Link key={t.id} href={`/tasks/${t.id}`} className="flex items-center gap-3 px-4 py-3 transition-colors hover:bg-amber-500/5">
-                <span className="min-w-0 flex-1 truncate text-sm font-medium">{t.goal}</span>
-                <span className="hidden text-xs text-muted-foreground sm:inline">{t.repoOwner}/{t.repoName}</span>
-                <span className="inline-flex items-center gap-1 rounded-md bg-amber-500/15 px-2 py-1 text-xs font-medium text-amber-700 dark:text-amber-300">
-                  Review &amp; merge <ArrowRight className="h-3 w-3" />
-                </span>
-              </Link>
+        ) : (
+          <div className="flex items-center gap-2 rounded-xl border bg-card px-4 py-3 text-sm text-muted-foreground">
+            <CheckCircle2 className="h-4 w-4 text-green-500" /> You&apos;re all caught up — nothing waiting on your review.
+          </div>
+        )}
+
+        {/* Pulse — live & actionable first. */}
+        <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-4">
+          <Stat
+            icon={hub.stats.activeTasks > 0 ? Loader2 : ActivityIcon}
+            label="Active now"
+            value={hub.stats.activeTasks}
+            tint="text-blue-400"
+            ring="bg-blue-500/10"
+            spin={hub.stats.activeTasks > 0}
+          />
+          <Stat icon={CircleDot} label="Awaiting review" value={hub.stats.awaitingReview} tint="text-amber-500" ring="bg-amber-500/10" />
+          <Stat icon={GitMerge} label="Merged" value={hub.stats.merged} tint="text-green-500" ring="bg-green-500/10" />
+          <Stat icon={ListTodo} label="Total tasks" value={tasks.length} tint="text-foreground" ring="bg-muted" />
+        </div>
+
+        {/* The floor — a compact roster; live workers are emphasized and show their output. */}
+        <div>
+          <h2 className="mb-2.5 flex items-center gap-2 text-sm font-semibold">
+            <Sparkles className="h-4 w-4 text-primary" /> The floor
+            {liveLines.length === 0 && <span className="text-xs font-normal text-muted-foreground">· all idle</span>}
+          </h2>
+          <div className="flex flex-wrap gap-2">
+            {hub.workers.map((w) => (
+              <WorkerChip key={w.capability} w={w} />
             ))}
           </div>
-        </div>
-      )}
-
-      {/* Pulse */}
-      <div className="mb-5 grid gap-3 sm:grid-cols-2 lg:grid-cols-4">
-        <Stat icon={ListTodo} label="Total tasks" value={total ?? 0} tint="text-foreground" ring="bg-muted" />
-        <Stat
-          icon={hub.stats.activeTasks > 0 ? Loader2 : ActivityIcon}
-          label="Active now"
-          value={hub.stats.activeTasks}
-          tint="text-blue-400"
-          ring="bg-blue-500/10"
-          spin={hub.stats.activeTasks > 0}
-        />
-        <Stat icon={CircleDot} label="Awaiting review" value={hub.stats.awaitingReview} tint="text-amber-500" ring="bg-amber-500/10" />
-        <Stat icon={GitMerge} label="Merged" value={hub.stats.merged} tint="text-green-500" ring="bg-green-500/10" />
-      </div>
-
-      {/* Worker floor */}
-      <div className="mb-5">
-        <h2 className="mb-2.5 flex items-center gap-2 text-sm font-semibold">
-          <Sparkles className="h-4 w-4 text-primary" /> The floor
-        </h2>
-        <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-5">
-          {hub.workers.map((w) => (
-            <WorkerCard key={w.capability} w={w} live={liveChunk[w.capability]} />
-          ))}
-        </div>
-      </div>
-
-      <div className="grid gap-5 lg:grid-cols-3">
-        {/* Activity feed */}
-        <div className="lg:col-span-2">
-          <div className="overflow-hidden rounded-xl border bg-card">
-            <div className="flex items-center gap-2 border-b px-4 py-3 text-sm font-semibold">
-              <ActivityIcon className="h-4 w-4 text-primary" /> Activity
+          {liveLines.length > 0 && (
+            <div className="mt-2.5 space-y-1 overflow-hidden rounded-lg border bg-card px-3 py-2">
+              {liveLines.map(({ w, line }) => (
+                <p key={w.capability} className="truncate font-mono text-[11px] text-muted-foreground" title={line}>
+                  <span className="font-medium text-blue-400">{w.assignee}</span> · {line}
+                </p>
+              ))}
             </div>
-            {hub.activity.length === 0 ? (
-              <div className="flex flex-col items-center gap-2 px-4 py-12 text-center text-sm text-muted-foreground">
-                <ActivityIcon className="h-6 w-6 opacity-40" />
-                Nothing yet — start a task from the Assistant and watch the floor light up.
-              </div>
-            ) : (
-              <div className="max-h-[560px] divide-y overflow-y-auto">
-                {hub.activity.map((a) => (
-                  <ActivityRow key={a.id} a={a} />
-                ))}
-              </div>
-            )}
-          </div>
+          )}
         </div>
 
-        {/* Active project + quick start */}
-        <div className="space-y-3">
-          <div className="rounded-xl border bg-card p-4">
-            <div className="mb-2 text-xs font-medium uppercase tracking-wide text-muted-foreground">Active project</div>
-            {active ? (
-              <div className="flex items-center gap-2.5">
-                <div className="flex h-9 w-9 items-center justify-center rounded-lg bg-primary/10 text-primary">
-                  <FolderGit2 className="h-5 w-5" />
-                </div>
-                <div className="min-w-0">
-                  <div className="truncate text-sm font-semibold">
-                    {active.owner}/{active.name}
+        <div className="grid gap-5 lg:grid-cols-3">
+          {/* Activity feed */}
+          <div className="lg:col-span-2">
+            <div className="overflow-hidden rounded-xl border bg-card">
+              <div className="flex items-center gap-2 border-b px-4 py-3 text-sm font-semibold">
+                <ActivityIcon className="h-4 w-4 text-primary" /> Activity
+              </div>
+              <div className="max-h-[560px] overflow-y-auto">
+                <ActivityFeed
+                  activity={hub.activity}
+                  tasks={tasks}
+                  max={10}
+                  emptyText="Nothing yet — start a task from the Assistant and watch the floor light up."
+                />
+              </div>
+            </div>
+          </div>
+
+          {/* Active project + quick start */}
+          <div className="space-y-3">
+            <div className="rounded-xl border bg-card p-4">
+              <div className="mb-2 text-xs font-medium uppercase tracking-wide text-muted-foreground">Active project</div>
+              {active ? (
+                <Link href={`/projects/${active.id}`} className="group flex items-center gap-2.5">
+                  <div className="flex h-9 w-9 shrink-0 items-center justify-center rounded-lg bg-primary/10 text-primary">
+                    <FolderGit2 className="h-5 w-5" />
                   </div>
-                  <div className="text-xs text-muted-foreground">{active.baseBranch}</div>
-                </div>
-              </div>
-            ) : (
-              <Link href="/projects" className="text-sm text-primary hover:underline">
-                Choose a project →
-              </Link>
-            )}
-          </div>
-          <Link
-            href="/"
-            className="flex items-center gap-2.5 rounded-xl border border-primary/30 bg-primary/5 p-4 transition-colors hover:bg-primary/10"
-          >
-            <Sparkles className="h-5 w-5 text-primary" />
-            <div>
-              <div className="text-sm font-semibold">Talk to Iris</div>
-              <div className="text-xs text-muted-foreground">Describe what you need and start a task.</div>
+                  <div className="min-w-0 flex-1">
+                    <div className="truncate text-sm font-semibold transition-colors group-hover:text-primary">
+                      {active.owner}/{active.name}
+                    </div>
+                    <div className="text-xs text-muted-foreground">{active.baseBranch}</div>
+                  </div>
+                  <ArrowRight className="h-4 w-4 shrink-0 text-muted-foreground transition-colors group-hover:text-primary" />
+                </Link>
+              ) : (
+                <Link href="/projects" className="text-sm text-primary hover:underline">
+                  Configure a project →
+                </Link>
+              )}
             </div>
-          </Link>
+            <Link
+              href="/"
+              className="flex items-center gap-2.5 rounded-xl border border-primary/30 bg-primary/5 p-4 transition-colors hover:bg-primary/10"
+            >
+              <Sparkles className="h-5 w-5 text-primary" />
+              <div>
+                <div className="text-sm font-semibold">Talk to Iris</div>
+                <div className="text-xs text-muted-foreground">Describe what you need and start a task.</div>
+              </div>
+            </Link>
+          </div>
         </div>
       </div>
     </div>
   );
 }
 
-function WorkerCard({ w, live }: { w: WorkerStatus; live: string | undefined }) {
-  const Icon = WORKER_ICON[w.capability] ?? Pencil;
+function WorkerChip({ w }: { w: WorkerStatus }) {
+  const Icon = workerMeta(w.capability).icon;
   return (
-    <div className={cn("rounded-xl border bg-card p-4 transition-colors", w.live ? "border-blue-500/40" : "hover:border-foreground/15")}>
-      <div className="flex items-center gap-3">
-        <div className={cn("relative flex h-10 w-10 shrink-0 items-center justify-center rounded-lg", w.live ? "bg-blue-500/10 text-blue-400" : "bg-muted text-muted-foreground")}>
-          <Icon className="h-5 w-5" />
-          {w.live && <span className="absolute -right-0.5 -top-0.5 h-2.5 w-2.5 animate-pulse rounded-full bg-blue-400 ring-2 ring-card" />}
-        </div>
-        <div className="min-w-0">
-          <div className="truncate text-sm font-semibold">{w.assignee}</div>
-          <div className="truncate text-xs text-muted-foreground capitalize">{w.capability}</div>
-        </div>
+    <div
+      title={w.implemented ? `${w.totalStepCount} step${w.totalStepCount === 1 ? "" : "s"} run` : "not implemented yet"}
+      className={cn(
+        "flex items-center gap-2 rounded-lg border px-2.5 py-1.5 transition-colors",
+        w.live ? "border-blue-500/40 bg-blue-500/5" : "bg-card hover:border-foreground/15"
+      )}
+    >
+      <div className="relative shrink-0">
+        <Icon className={cn("h-4 w-4", w.live ? "text-blue-400" : "text-muted-foreground")} />
+        {w.live && <span className="absolute -right-1 -top-1 h-2 w-2 animate-pulse rounded-full bg-blue-400 ring-2 ring-card" />}
       </div>
-      <div className="mt-3 flex items-center justify-between text-xs">
-        {w.implemented ? (
-          <span className="inline-flex items-center gap-1 rounded-full border border-green-500/40 px-1.5 py-px font-medium text-green-500">live</span>
-        ) : (
-          <span className="inline-flex items-center gap-1 rounded-full border border-border px-1.5 py-px text-muted-foreground">soon</span>
-        )}
-        <span className={cn("text-muted-foreground", w.live && "font-medium text-blue-400")}>
-          {w.live ? `${w.runningStepCount} running` : "idle"}
-        </span>
-      </div>
-      {w.live && live && (
-        <p className="mt-2 truncate border-t pt-2 font-mono text-[11px] text-muted-foreground" title={live}>
-          {live}
-        </p>
+      <span className="text-sm font-medium">{w.assignee}</span>
+      {w.live ? (
+        <span className="text-xs font-medium text-blue-400">{w.runningStepCount} running</span>
+      ) : w.implemented ? (
+        <span className="text-xs text-muted-foreground">idle</span>
+      ) : (
+        <span className="rounded-full border border-border px-1.5 text-[10px] text-muted-foreground">soon</span>
       )}
     </div>
-  );
-}
-
-function ActivityRow({ a }: { a: Activity }) {
-  const meta = ACTIVITY[a.kind] ?? { icon: ActivityIcon, tint: "text-muted-foreground" };
-  const Icon = meta.icon;
-  return (
-    <Link href={`/tasks/${a.taskId}`} className="flex items-start gap-3 px-4 py-2.5 transition-colors hover:bg-muted/50">
-      <Icon className={cn("mt-0.5 h-4 w-4 shrink-0", meta.tint)} />
-      <div className="min-w-0 flex-1">
-        <div className="truncate text-sm">{a.label}</div>
-        <div className="truncate text-xs text-muted-foreground">{a.taskGoal}</div>
-      </div>
-      <time className="shrink-0 text-xs text-muted-foreground">{relTime(a.at)}</time>
-    </Link>
   );
 }
 
@@ -300,17 +265,4 @@ function Stat({
 function lastLine(chunk: string): string {
   const lines = chunk.split("\n").map((l) => l.trim()).filter(Boolean);
   return lines[lines.length - 1] ?? "";
-}
-
-/** Compact relative time ("3m", "2h", "5d") from an ISO timestamp. */
-function relTime(iso: string): string {
-  const then = new Date(iso).getTime();
-  if (Number.isNaN(then)) return "";
-  const s = Math.max(0, Math.round((Date.now() - then) / 1000));
-  if (s < 60) return `${s}s`;
-  const m = Math.round(s / 60);
-  if (m < 60) return `${m}m`;
-  const h = Math.round(m / 60);
-  if (h < 24) return `${h}h`;
-  return `${Math.round(h / 24)}d`;
 }

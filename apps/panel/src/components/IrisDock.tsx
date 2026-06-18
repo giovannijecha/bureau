@@ -23,10 +23,9 @@ import {
   FileText,
   Image as ImageIcon,
 } from "lucide-react";
-import type { Message, TaskProposal, Project, Attachment } from "@bureau/contracts";
+import type { Message, TaskProposal, Attachment } from "@bureau/contracts";
 import { chatEphemeral, createTask } from "../lib/api";
 import { Markdown } from "./Markdown";
-import { ProjectPicker } from "./ProjectPicker";
 import { cn } from "../lib/utils";
 
 const ASSIGNEE: Record<string, string> = { plan: "Planner", research: "Researcher", edit: "Editor", test: "Tester", review: "Reviewer", document: "Scribe" };
@@ -39,20 +38,19 @@ function localMsg(role: "user" | "system", content: string, taskId?: string): Me
 export function IrisDock({
   projectId,
   onRunCommand,
-  projects,
-  active,
-  onSelectProject,
   emptyHint,
+  suggestion,
 }: {
   projectId: string | null | undefined;
   /** Terminal pages pass this so a proposed command pre-fills the input. Optional —
    *  omit it (e.g. the Memory dock) and Iris just chats (no "Run in terminal" button). */
   onRunCommand?: ((cmd: string) => void) | undefined;
-  projects: Project[];
-  active: Project | null;
-  onSelectProject: (id: string) => void;
   /** Intro line shown when the chat is empty (defaults to the terminal phrasing). */
   emptyHint?: string | undefined;
+  /** A one-tap prompt the host surfaces above the composer (e.g. the Memory page passes
+   *  the open note). Clicking it pre-fills `prompt` and, if `attach` is given, sends that
+   *  text along ONCE so Iris can see content she doesn't already hold in context. */
+  suggestion?: { label: string; prompt: string; attach?: { name: string; content: string } } | undefined;
 }) {
   const [input, setInput] = useState("");
   const [log, setLog] = useState<Message[]>([]);
@@ -64,6 +62,16 @@ export function IrisDock({
   const bottomRef = useRef<HTMLDivElement>(null);
   const inputRef = useRef<HTMLTextAreaElement>(null);
   const fileRef = useRef<HTMLInputElement>(null);
+  // A note (etc.) the host attached via `suggestion` — sent silently on the NEXT send only,
+  // then cleared (it's in the chat history afterwards, no need to resend each turn).
+  const pendingAttach = useRef<Attachment | null>(null);
+
+  function applySuggestion() {
+    if (!suggestion) return;
+    setInput(suggestion.prompt);
+    pendingAttach.current = suggestion.attach ? { name: suggestion.attach.name, kind: "text", content: suggestion.attach.content } : null;
+    inputRef.current?.focus();
+  }
 
   // Switching the active project starts a fresh, empty session (Iris is scoped per repo).
   useEffect(() => {
@@ -72,6 +80,7 @@ export function IrisDock({
     setError(null);
     setAttachments([]);
     setComposerErr(null);
+    pendingAttach.current = null;
   }, [projectId]);
 
   useEffect(() => {
@@ -80,13 +89,16 @@ export function IrisDock({
 
   async function onSend() {
     const content = input.trim();
-    if ((!content && attachments.length === 0) || busy) return;
+    const ctx = pendingAttach.current; // host-attached context (e.g. the open note), if armed
+    if ((!content && attachments.length === 0 && !ctx) || busy) return;
+    pendingAttach.current = null;
     // Carry the prior turns inline — the engine persists nothing for this dock.
     const history = log
       .filter((m) => m.role === "user" || m.role === "iris")
       .map((m) => ({ role: m.role as "user" | "iris", content: m.content }));
-    const atts = attachments;
-    const shown = content + (atts.length ? `${content ? "\n" : ""}📎 ${atts.map((a) => a.name).join(", ")}` : "");
+    const userAtts = attachments;
+    const sendAtts = ctx ? [...userAtts, ctx] : userAtts; // ctx rides along but isn't shown as a chip
+    const shown = content + (userAtts.length ? `${content ? "\n" : ""}📎 ${userAtts.map((a) => a.name).join(", ")}` : "");
     setBusy(true);
     setError(null);
     setComposerErr(null);
@@ -95,7 +107,7 @@ export function IrisDock({
     setInput("");
     setAttachments([]);
     try {
-      const res = await chatEphemeral(content, projectId ?? undefined, history, atts.length ? atts : undefined);
+      const res = await chatEphemeral(content, projectId ?? undefined, history, sendAtts.length ? sendAtts : undefined);
       setLog((l) => [...l, res.reply]);
       setProposal(res.proposal ?? null);
     } catch (e) {
@@ -173,9 +185,6 @@ export function IrisDock({
         <Sparkles className="h-4 w-4 text-primary" />
         <span className="text-sm font-semibold">Iris</span>
         <span className="rounded-full border px-1.5 py-px text-[9px] font-medium uppercase tracking-wide text-muted-foreground">temporary</span>
-        <div className="ml-auto min-w-0">
-          <ProjectPicker projects={projects} active={active} onChange={onSelectProject} />
-        </div>
       </div>
 
       <div className="min-h-0 flex-1 space-y-2.5 overflow-y-auto px-3 py-3">
@@ -200,6 +209,17 @@ export function IrisDock({
       </div>
 
       <div className="shrink-0 border-t p-2.5">
+        {/* A one-tap "ask about <the thing you're looking at>" — pre-fills + attaches it. */}
+        {suggestion && !input && !busy && (
+          <button
+            onClick={applySuggestion}
+            title={`Ask Iris about “${suggestion.label}”`}
+            className="mb-2 flex max-w-full items-center gap-1.5 rounded-lg border border-primary/30 bg-primary/5 px-2.5 py-1.5 text-xs font-medium text-primary transition-colors hover:bg-primary/10"
+          >
+            <Sparkles className="h-3.5 w-3.5 shrink-0" />
+            <span className="min-w-0 truncate">Ask about “{suggestion.label}”</span>
+          </button>
+        )}
         <div className="rounded-xl border bg-background transition-colors focus-within:border-primary/50">
           <textarea
             ref={inputRef}

@@ -1,8 +1,7 @@
 "use client";
 
 import { useCallback, useEffect, useMemo, useRef, useState, type ChangeEvent } from "react";
-import { useRouter } from "next/navigation";
-import { BrainCircuit, Search, Plus, FileText, BookText, Loader2, X, Save, Pencil, Trash2, Sparkles, Upload, Eye, Code2, AlertCircle } from "lucide-react";
+import { BrainCircuit, Search, Plus, FileText, BookText, Loader2, X, Save, Pencil, Trash2, Upload, Eye, Code2, AlertCircle } from "lucide-react";
 import type { NoteSummary, Note } from "@bureau/contracts";
 import { listNotes, getNote, saveNote, deleteNote } from "../../lib/api";
 import { useEngineEvents } from "../../lib/useEngineEvents";
@@ -17,9 +16,8 @@ type Compose = { title: string; body: string; path: string | null };
 type Pane = { mode: "view"; note: Note } | { mode: "compose"; initial: Compose } | { mode: "empty" };
 
 export default function MemoryPage() {
-  const router = useRouter();
   const confirm = useConfirm();
-  const { projects, active, activeId, setActiveId } = useProjects();
+  const { activeId } = useProjects();
   const [notes, setNotes] = useState<NoteSummary[] | null>(null);
   const [q, setQ] = useState("");
   const [pane, setPane] = useState<Pane>({ mode: "empty" });
@@ -93,10 +91,6 @@ export default function MemoryPage() {
       (p.mode === "view" && p.note.path === note.path) || (p.mode === "compose" && p.initial.path === note.path) ? { mode: "empty" } : p
     );
     await load(q);
-  }
-
-  function askIris(title: string) {
-    router.push(`/?ask=${encodeURIComponent(`About my note “${title}”: `)}`);
   }
 
   // Upload a .md/.txt file → open the composer pre-filled (the CEO reviews, then saves).
@@ -211,7 +205,6 @@ export default function MemoryPage() {
             note={pane.note}
             onEdit={() => setPane({ mode: "compose", initial: { title: pane.note.title, body: stripH1(pane.note.body, pane.note.title), path: pane.note.path } })}
             onDelete={() => void removeNote(pane.note)}
-            onAsk={() => askIris(pane.note.title)}
           />
         ) : (
           <div className="flex h-full flex-col items-center justify-center gap-2 px-6 text-center text-sm text-muted-foreground">
@@ -229,10 +222,12 @@ export default function MemoryPage() {
       <div className="hidden w-[360px] shrink-0 flex-col overflow-hidden border-l lg:flex">
         <IrisDock
           projectId={activeId}
-          projects={projects}
-          active={active}
-          onSelectProject={setActiveId}
-          emptyHint="Your memory assistant. Ask Iris about your saved notes — she can explain them, spot overlaps or stale/duplicate entries, and suggest cleaner wording or consolidations to keep the vault tidy. She reads your notes; apply any edits from the editor."
+          suggestion={
+            pane.mode === "view"
+              ? { label: pane.note.title, prompt: `About “${pane.note.title}” — `, attach: { name: `${pane.note.title}.md`, content: pane.note.body } }
+              : undefined
+          }
+          emptyHint="Your memory assistant. Open a note and tap “Ask about” to bring it into the chat — Iris can explain it, spot overlaps or stale/duplicate entries, and suggest cleaner wording. She reads your pinned notes; apply any edits from the editor on the left."
         />
       </div>
     </div>
@@ -247,7 +242,7 @@ function KindIcon({ kind }: { kind: NoteSummary["kind"] }) {
   );
 }
 
-function NoteView({ note, onEdit, onDelete, onAsk }: { note: Note; onEdit: () => void; onDelete: () => void; onAsk: () => void }) {
+function NoteView({ note, onEdit, onDelete }: { note: Note; onEdit: () => void; onDelete: () => void }) {
   return (
     <div className="flex h-full flex-col">
       <div className="flex shrink-0 items-center gap-2 border-b px-6 py-3">
@@ -255,10 +250,8 @@ function NoteView({ note, onEdit, onDelete, onAsk }: { note: Note; onEdit: () =>
         <span className="rounded-full border px-2 py-0.5 text-xs font-medium capitalize text-muted-foreground">{note.kind}</span>
         <code className="hidden truncate font-mono text-xs text-muted-foreground sm:inline">{note.path}</code>
         <div className="ml-auto flex shrink-0 items-center gap-1.5">
-          <button onClick={onAsk} className="inline-flex h-8 items-center gap-1.5 rounded-md border bg-background px-2.5 text-xs font-medium transition-colors hover:bg-accent" title="Ask Iris about this note">
-            <Sparkles className="h-3.5 w-3.5 text-primary" /> Ask Iris
-          </button>
-          {/* Journals are auto-generated task records — editing one would fork it into
+          {/* Iris lives in the dock on the right — open a note and use "Ask about" there.
+              Journals are auto-generated task records — editing one would fork it into
               a free-form note and delete the journal, so only notes are editable. */}
           {note.kind !== "journal" && (
             <button onClick={onEdit} className="inline-flex h-8 items-center gap-1.5 rounded-md border bg-background px-2.5 text-xs font-medium transition-colors hover:bg-accent">
