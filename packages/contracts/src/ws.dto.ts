@@ -14,6 +14,9 @@ export const WsEventSchema = z.discriminatedUnion("type", [
   z.object({ type: z.literal("notification"), notificationId: z.string(), kind: z.string(), subject: z.string() }),
   // The project list changed (a repo was added or removed) — the panel refetches.
   z.object({ type: z.literal("projects_changed") }),
+  // A compact summary of a tool Iris just invoked during a chat turn (e.g. "Read
+  // src/auth.ts") — drives the live "Iris is working…" activity while a reply is pending.
+  z.object({ type: z.literal("iris_activity"), summary: z.string() }),
 ]);
 
 export type WsEvent = z.infer<typeof WsEventSchema>;

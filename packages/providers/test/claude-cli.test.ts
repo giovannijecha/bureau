@@ -169,6 +169,28 @@ describe("ClaudeCliProvider — stream", () => {
   });
 });
 
+describe("emitStreamChunk — structured tool activity", () => {
+  it("calls onToolUse with a compact summary per tool, alongside the text stream", () => {
+    const chunks: string[] = [];
+    const tools: string[] = [];
+    const line = JSON.stringify({
+      type: "assistant",
+      message: { content: [{ type: "text", text: "thinking" }, { type: "tool_use", name: "Read", input: { file_path: "src/a.ts" } }] },
+    });
+    emitStreamChunk(line, (c) => chunks.push(c), (s) => tools.push(s));
+    expect(tools).toEqual(["Read src/a.ts"]); // structured summary — no "→ " prefix
+    expect(chunks.join("")).toContain("→ Read src/a.ts"); // text stream unchanged (workers rely on it)
+    expect(chunks.join("")).toContain("thinking");
+  });
+
+  it("works without onToolUse (workers pass only onChunk)", () => {
+    const chunks: string[] = [];
+    const line = JSON.stringify({ type: "assistant", message: { content: [{ type: "tool_use", name: "Bash", input: { command: "git status" } }] } });
+    expect(() => emitStreamChunk(line, (c) => chunks.push(c))).not.toThrow();
+    expect(chunks.join("")).toContain("→ Bash: git status");
+  });
+});
+
 describe("ClaudeCliProvider — retry & reliability", () => {
   const timeout = (): CliResult => ({ stdout: "", stderr: `${CLI_TIMEOUT_SENTINEL}claude CLI timed out after 240000ms`, code: -1 });
 
