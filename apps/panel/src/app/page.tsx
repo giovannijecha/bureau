@@ -12,7 +12,6 @@ import {
   MessageSquare,
   ArrowRight,
   CheckCircle2,
-  FolderGit2,
   Paperclip,
   X,
   FileText,
@@ -279,12 +278,6 @@ export default function AssistantPage() {
                 Tell Iris what you need or where you are. She&apos;ll talk it through and, when it&apos;s clear, propose a
                 task — a pipeline you can create, review, and run.
               </p>
-              {active && (
-                <span className="mt-1 inline-flex items-center gap-1.5 rounded-full border bg-card px-2.5 py-1 text-xs text-muted-foreground">
-                  <FolderGit2 className="h-3.5 w-3.5 text-primary" />
-                  {active.owner}/{active.name}
-                </span>
-              )}
             </div>
           ) : (
             <div className="w-full space-y-3.5 px-6 py-6 lg:px-10">
@@ -402,7 +395,11 @@ export default function AssistantPage() {
                   className="hidden"
                   onChange={onFiles}
                 />
-                <ProjectPicker compact projects={projects} active={active} onChange={setActiveId} />
+                {/* The global header switcher owns project scope on md+; keep a fallback
+                    here only on narrow screens where that switcher is hidden. */}
+                <div className="md:hidden">
+                  <ProjectPicker compact projects={projects} active={active} onChange={setActiveId} />
+                </div>
               </div>
               <div className="flex items-center gap-2.5">
                 <CharCount value={input.length} max={MESSAGE_MAX} />

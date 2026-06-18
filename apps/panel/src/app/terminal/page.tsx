@@ -48,7 +48,7 @@ function saveEntries(scope: Scope, projectId: string | null | undefined, entries
 }
 
 export default function TerminalPage() {
-  const { projects, active, activeId, setActiveId } = useProjects();
+  const { active, activeId } = useProjects();
   const [scope, setScope] = useState<Scope>("project");
   const [entries, setEntries] = useState<Entry[]>([]);
   const [cwd, setCwd] = useState<string>("");
@@ -251,131 +251,139 @@ export default function TerminalPage() {
   }, []);
 
   const promptCwd = shortPath(cwd);
+  // Catppuccin Mocha — a soft pastel terminal theme (base #1e1e2e, text #cdd6f4).
   const tab = (on: boolean) =>
     cn(
-      "inline-flex items-center gap-1.5 rounded-md px-2 py-1 font-medium transition-colors",
-      on ? "bg-neutral-700/70 text-neutral-100" : "text-neutral-400 hover:text-neutral-200"
+      "inline-flex items-center gap-1.5 rounded-md px-2.5 py-1 font-medium transition-colors",
+      on ? "bg-[#45475a] text-[#cdd6f4] shadow-sm" : "text-[#7f849c] hover:text-[#bac2de]"
     );
 
   return (
-    <div className="flex h-full flex-col gap-2 p-3 sm:p-6">
-      <div className="flex min-h-0 flex-1 gap-3">
-        {/* Left: the terminal (true black, Bureau style). */}
-        <div className="flex min-h-0 min-w-0 flex-1 flex-col overflow-hidden rounded-xl border border-neutral-800 bg-black shadow-2xl">
-          {/* Header — scope switch, connection, cwd, actions (no macOS traffic lights). */}
-          <div className="flex shrink-0 flex-wrap items-center gap-2 border-b border-neutral-800 bg-neutral-950/60 px-3 py-2.5 sm:gap-3 sm:px-4">
-            <div className="flex shrink-0 items-center rounded-lg border border-neutral-700/60 bg-neutral-900/60 p-0.5 text-xs">
-              <button onClick={() => setScope("project")} className={tab(scope === "project")}>
-                <FolderGit2 className="h-3.5 w-3.5" /> Project
-              </button>
-              <button onClick={() => setScope("system")} className={tab(scope === "system")}>
-                <Monitor className="h-3.5 w-3.5" /> System
-              </button>
-            </div>
-            <span
-              className={cn("h-2 w-2 shrink-0 rounded-full", connected ? "bg-emerald-400" : "animate-pulse bg-amber-400")}
-              title={connected ? "connected" : "connecting…"}
-            />
-            <code className="hidden min-w-0 flex-1 truncate font-mono text-xs text-neutral-500 md:block" title={cwd}>
-              {cwd}
-            </code>
-            <div className="ml-auto flex shrink-0 items-center gap-2">
-              {running && (
-                <button
-                  onClick={interrupt}
-                  className="inline-flex items-center gap-1 rounded-md border border-neutral-700/60 px-2 py-1 text-xs font-medium text-red-400 transition-colors hover:bg-red-500/10"
-                  title="Stop the running command (Ctrl-C)"
-                >
-                  <CircleStop className="h-3.5 w-3.5" /> Stop
-                </button>
-              )}
-              <button
-                onClick={() => setEntries([])}
-                className="inline-flex items-center gap-1 rounded-md border border-neutral-700/60 px-2 py-1 text-xs font-medium text-neutral-400 transition-colors hover:bg-neutral-800 hover:text-neutral-200"
-                title="Clear the screen"
-              >
-                <Trash2 className="h-3.5 w-3.5" /> Clear
-              </button>
-            </div>
+    <div className="flex h-full gap-3 p-3 sm:p-6">
+      {/* Left: the terminal — Catppuccin Mocha surface. */}
+      <div className="flex min-h-0 min-w-0 flex-1 flex-col overflow-hidden rounded-xl border border-[#313244] bg-[#1e1e2e] shadow-2xl">
+        {/* Title bar — traffic lights, scope switch, connection, cwd, actions. */}
+        <div className="flex shrink-0 flex-wrap items-center gap-2 border-b border-[#313244] bg-[#181825] px-3 py-2.5 sm:gap-3 sm:px-4">
+          <div className="hidden shrink-0 items-center gap-1.5 sm:flex" aria-hidden>
+            <span className="h-3 w-3 rounded-full bg-[#f38ba8]" />
+            <span className="h-3 w-3 rounded-full bg-[#f9e2af]" />
+            <span className="h-3 w-3 rounded-full bg-[#a6e3a1]" />
           </div>
-
-          {/* Scrollback — output AND the live prompt flow together, top to bottom. */}
-          <div
-            ref={scrollRef}
-            onClick={focusPrompt}
-            className="min-h-0 flex-1 cursor-text space-y-0.5 overflow-y-auto px-4 py-3 font-mono text-[13px] leading-relaxed text-neutral-200"
-          >
-            {entries.length === 0 && (
-              <p className="text-neutral-500">
-                {scope === "system" ? (
-                  <>Your computer&apos;s shell, starting at your home directory. Run anything you&apos;d run in a real terminal.</>
-                ) : (
-                  <>
-                    A shell in <span className="text-neutral-300">{active ? `${active.owner}/${active.name}` : "your project"}</span>&apos;s
-                    clone — for inspecting the repo (git status, log, ls…). Iris can also propose read-only commands you run here.
-                  </>
-                )}
-              </p>
+          <div className="flex shrink-0 items-center gap-0.5 rounded-lg bg-[#313244]/50 p-0.5 text-xs">
+            <button onClick={() => setScope("project")} className={tab(scope === "project")}>
+              <FolderGit2 className="h-3.5 w-3.5" /> Project
+            </button>
+            <button onClick={() => setScope("system")} className={tab(scope === "system")}>
+              <Monitor className="h-3.5 w-3.5" /> System
+            </button>
+          </div>
+          <code className="hidden min-w-0 flex-1 truncate font-mono text-xs text-[#6c7086] md:block" title={cwd}>
+            {cwd}
+          </code>
+          <div className="ml-auto flex shrink-0 items-center gap-2">
+            {running && (
+              <button
+                onClick={interrupt}
+                className="inline-flex items-center gap-1 rounded-md border border-[#313244] px-2 py-1 text-xs font-medium text-[#f38ba8] transition-colors hover:bg-[#f38ba8]/10"
+                title="Stop the running command (Ctrl-C)"
+              >
+                <CircleStop className="h-3.5 w-3.5" /> Stop
+              </button>
             )}
-            {entries.map((e) => {
-              if (e.kind === "command")
-                return (
-                  <div key={e.id} className="flex gap-2 whitespace-pre-wrap break-words">
-                    <span className="shrink-0 select-none text-emerald-400">❯</span>
-                    <span className="text-neutral-100">{e.text}</span>
-                  </div>
-                );
-              if (e.kind === "note")
-                return (
-                  <div key={e.id} className={cn("whitespace-pre-wrap break-words", e.tone === "error" ? "text-red-400" : "text-neutral-500")}>
-                    {e.text}
-                  </div>
-                );
-              return (
-                <div key={e.id} className="whitespace-pre-wrap break-words text-neutral-300">
-                  <AnsiText text={e.text} />
-                </div>
-              );
-            })}
-
-            {/* The live line: an inline prompt when it's your turn, a cursor while busy. */}
-            {!connected ? (
-              <div className="text-neutral-500">connecting…</div>
-            ) : running ? (
-              <div className="flex items-center gap-2 text-neutral-500">
-                <span className="inline-block h-4 w-2 animate-pulse bg-neutral-400" />
-                <span className="text-xs">running… press Ctrl-C to stop</span>
-              </div>
-            ) : (
-              <div className="flex items-baseline gap-2">
-                <span className="shrink-0 select-none text-emerald-400" title={cwd}>
-                  {promptCwd} <span className="text-neutral-600">❯</span>
-                </span>
-                <input
-                  ref={inputRef}
-                  value={input}
-                  onChange={(e) => setInput(e.target.value)}
-                  onKeyDown={onKeyDown}
-                  spellCheck={false}
-                  autoCapitalize="off"
-                  autoComplete="off"
-                  autoCorrect="off"
-                  className="min-w-0 flex-1 bg-transparent text-neutral-100 caret-emerald-400 outline-none"
-                />
-              </div>
-            )}
+            <button
+              onClick={() => setEntries([])}
+              className="inline-flex items-center gap-1 rounded-md border border-[#313244] px-2 py-1 text-xs font-medium text-[#7f849c] transition-colors hover:bg-[#313244]/60 hover:text-[#cdd6f4]"
+              title="Clear the screen"
+            >
+              <Trash2 className="h-3.5 w-3.5" /> Clear
+            </button>
           </div>
         </div>
-        {/* Right: work inline with Iris (hidden on narrow screens). */}
-        <div className="hidden w-[380px] shrink-0 flex-col overflow-hidden rounded-xl border bg-card lg:flex">
-          <IrisDock projectId={activeId} onRunCommand={runFromIris} projects={projects} active={active} onSelectProject={setActiveId} />
+
+        {/* Scrollback — output AND the live prompt flow together, top to bottom. */}
+        <div
+          ref={scrollRef}
+          onClick={focusPrompt}
+          className="min-h-0 flex-1 cursor-text space-y-0.5 overflow-y-auto px-4 py-3 font-mono text-[13px] leading-relaxed text-[#cdd6f4]"
+        >
+          {entries.length === 0 && (
+            <p className="text-[#6c7086]">
+              {scope === "system" ? (
+                <>Your computer&apos;s shell, starting at your home directory. Run anything you&apos;d run in a real terminal.</>
+              ) : (
+                <>
+                  A shell in <span className="text-[#a6e3a1]">{active ? `${active.owner}/${active.name}` : "your project"}</span>&apos;s clone
+                  — for inspecting the repo (git status, log, ls…). Iris can also propose read-only commands you run here.
+                </>
+              )}
+            </p>
+          )}
+          {entries.map((e) => {
+            if (e.kind === "command")
+              return (
+                <div key={e.id} className="flex gap-2 whitespace-pre-wrap break-words">
+                  <span className="shrink-0 select-none text-[#a6e3a1]">❯</span>
+                  <span className="text-[#cdd6f4]">{e.text}</span>
+                </div>
+              );
+            if (e.kind === "note")
+              return (
+                <div key={e.id} className={cn("whitespace-pre-wrap break-words", e.tone === "error" ? "text-[#f38ba8]" : "text-[#6c7086]")}>
+                  {e.text}
+                </div>
+              );
+            return (
+              <div key={e.id} className="whitespace-pre-wrap break-words text-[#bac2de]">
+                <AnsiText text={e.text} />
+              </div>
+            );
+          })}
+
+          {/* The live line: an inline prompt when it's your turn, a cursor while busy. */}
+          {!connected ? (
+            <div className="text-[#6c7086]">connecting…</div>
+          ) : running ? (
+            <div className="flex items-center gap-2 text-[#6c7086]">
+              <span className="inline-block h-4 w-2 animate-pulse bg-[#cba6f7]" />
+              <span className="text-xs">running… press Ctrl-C to stop</span>
+            </div>
+          ) : (
+            <div className="flex items-baseline gap-2">
+              <span className="shrink-0 select-none text-[#a6e3a1]" title={cwd}>
+                {promptCwd} <span className="text-[#6c7086]">❯</span>
+              </span>
+              <input
+                ref={inputRef}
+                value={input}
+                onChange={(e) => setInput(e.target.value)}
+                onKeyDown={onKeyDown}
+                spellCheck={false}
+                autoCapitalize="off"
+                autoComplete="off"
+                autoCorrect="off"
+                className="min-w-0 flex-1 bg-transparent text-[#cdd6f4] caret-[#cba6f7] outline-none"
+              />
+            </div>
+          )}
+        </div>
+
+        {/* Status bar — connection, scope, and the standing security note. */}
+        <div className="flex shrink-0 flex-wrap items-center gap-x-2 gap-y-0.5 border-t border-[#313244] bg-[#181825] px-3 py-1.5 text-[11px] text-[#6c7086]">
+          <span className="inline-flex items-center gap-1.5">
+            <span className={cn("h-1.5 w-1.5 rounded-full", connected ? "bg-[#a6e3a1]" : "animate-pulse bg-[#fab387]")} />
+            {connected ? "connected" : "connecting…"}
+          </span>
+          <span className="text-[#45475a]">·</span>
+          <span>{scope === "system" ? "your machine's shell" : "the active project's clone"}</span>
+          <span className="text-[#45475a]">·</span>
+          <span>secrets stripped · repo changes go through tasks</span>
         </div>
       </div>
 
-      <p className="px-1 text-[11px] text-muted-foreground">
-        Human-operated · {scope === "system" ? "your machine's shell" : "the active project's clone"} · Bureau secrets are stripped · repo
-        changes go through tasks, not the terminal.
-      </p>
+      {/* Right: work inline with Iris (hidden on narrow screens). */}
+      <div className="hidden w-[380px] shrink-0 flex-col overflow-hidden rounded-xl border bg-card lg:flex">
+        <IrisDock projectId={activeId} onRunCommand={runFromIris} />
+      </div>
     </div>
   );
 }

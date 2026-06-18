@@ -1,11 +1,13 @@
 "use client";
 
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode, type MouseEvent } from "react";
 import { useRouter } from "next/navigation";
-import { RefreshCw, ListTodo, Search, ChevronUp, ChevronDown } from "lucide-react";
+import { ListTodo, Search, ChevronUp, ChevronDown, Play, Square, Eye, GitMerge, Trash2, Loader2, AlertCircle } from "lucide-react";
 import type { TaskSummary } from "@bureau/contracts";
-import { listTasks } from "../../lib/api";
+import { listTasks, startTask, stopTask, mergeOpenPr, deleteTask } from "../../lib/api";
 import { useEngineEvents } from "../../lib/useEngineEvents";
+import { useEngineOnline } from "../../lib/useEngineOnline";
+import { useConfirm } from "../../components/ConfirmDialog";
 import { cn } from "../../lib/utils";
 
 const STATUS_COLOR: Record<string, string> = {
@@ -38,9 +40,9 @@ function matchesFilter(t: TaskSummary, f: FilterKey): boolean {
 
 export default function TasksPage() {
   const router = useRouter();
+  const online = useEngineOnline();
   const [tasks, setTasks] = useState<TaskSummary[] | null>(null);
   const [error, setError] = useState<string | null>(null);
-  const [spin, setSpin] = useState(false);
   const [q, setQ] = useState("");
   const [filter, setFilter] = useState<FilterKey>("all");
   const [sort, setSort] = useState<{ col: SortCol; dir: "asc" | "desc" }>({ col: "created", dir: "desc" });
@@ -53,7 +55,6 @@ export default function TasksPage() {
   }, []);
 
   const load = useCallback(async () => {
-    setSpin(true);
     setError(null);
     try {
       const t = await listTasks();
@@ -63,8 +64,6 @@ export default function TasksPage() {
         setError(e instanceof Error ? e.message : String(e));
         setTasks([]);
       }
-    } finally {
-      if (alive.current) setSpin(false);
     }
   }, []);
 
@@ -72,9 +71,24 @@ export default function TasksPage() {
     void load();
   }, [load]);
 
+  // The list is LIVE — engine events refresh it, so there's no manual refresh button.
+  // `load` on reconnect re-syncs anything missed while the socket was down (frames aren't
+  // replayed), and a focus/visibility refetch catches staleness when returning to the tab.
   useEngineEvents((e) => {
     if (e.type === "task_updated") void load();
-  });
+  }, load);
+
+  useEffect(() => {
+    const refetchIfVisible = () => {
+      if (document.visibilityState === "visible") void load();
+    };
+    document.addEventListener("visibilitychange", refetchIfVisible);
+    window.addEventListener("focus", refetchIfVisible);
+    return () => {
+      document.removeEventListener("visibilitychange", refetchIfVisible);
+      window.removeEventListener("focus", refetchIfVisible);
+    };
+  }, [load]);
 
   const counts = useMemo(() => {
     const all = tasks ?? [];
@@ -104,39 +118,48 @@ export default function TasksPage() {
 
   return (
     <div className="flex h-full flex-col">
-      {/* Toolbar */}
+      {/* Toolbar — subtle search + a segmented filter; the list is live (no refresh button). */}
       <div className="flex flex-wrap items-center gap-3 border-b px-6 py-3">
-        <div className="relative min-w-[220px] flex-1">
+        <div className="relative min-w-[200px] max-w-xs flex-1">
           <Search className="pointer-events-none absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-muted-foreground" />
           <input
             value={q}
             onChange={(e) => setQ(e.target.value)}
             placeholder="Search tasks…"
-            className="h-9 w-full rounded-md border bg-background pl-9 pr-3 text-sm outline-none transition-colors focus:border-primary/60"
+            className="h-9 w-full rounded-lg border border-transparent bg-muted/50 pl-9 pr-3 text-sm outline-none transition-colors focus:border-primary/40 focus:bg-background"
           />
         </div>
-        <div className="flex flex-wrap items-center gap-1.5">
+        <div className="flex flex-wrap items-center gap-0.5 rounded-lg bg-muted/40 p-0.5">
           {FILTERS.map((f) => (
             <button
               key={f.key}
               onClick={() => setFilter(f.key)}
               className={cn(
-                "inline-flex h-8 items-center gap-1.5 rounded-full border px-3 text-xs font-medium transition-colors",
-                filter === f.key ? "border-primary/40 bg-primary/10 text-primary" : "bg-background text-muted-foreground hover:bg-accent"
+                "inline-flex h-7 items-center gap-1.5 rounded-md px-2.5 text-xs font-medium transition-colors",
+                filter === f.key ? "bg-background text-foreground shadow-sm" : "text-muted-foreground hover:text-foreground"
               )}
             >
               {f.label}
-              <span className={cn("rounded-full px-1.5 text-[10px]", filter === f.key ? "bg-primary/20" : "bg-muted")}>{counts[f.key]}</span>
+              <span
+                className={cn(
+                  "rounded-full px-1.5 text-[10px] tabular-nums",
+                  filter === f.key ? "bg-primary/15 text-primary" : "bg-muted text-muted-foreground"
+                )}
+              >
+                {counts[f.key]}
+              </span>
             </button>
           ))}
         </div>
-        <button
-          onClick={() => void load()}
-          className="inline-flex h-9 items-center gap-1.5 rounded-md border bg-background px-3 text-sm font-medium transition-colors hover:bg-accent"
+        <span
+          className="ml-auto hidden items-center gap-1.5 text-xs text-muted-foreground sm:inline-flex"
+          title={online === false ? "Engine offline — the list may be stale" : "The list updates automatically as tasks change"}
         >
-          <RefreshCw className={cn("h-4 w-4", spin && "animate-spin")} />
-          Refresh
-        </button>
+          <span
+            className={cn("h-1.5 w-1.5 rounded-full", online === true ? "bg-green-500" : online === false ? "bg-red-500" : "bg-muted-foreground/40")}
+          />
+          {online === true ? "Live" : online === false ? "Offline" : "Connecting…"}
+        </span>
       </div>
 
       {/* Table */}
@@ -145,24 +168,25 @@ export default function TasksPage() {
           <table className="w-full caption-bottom text-sm">
             <thead>
               <tr className="border-b">
-                <SortHeader label="Goal" col="goal" sort={sort} onSort={toggleSort} className="w-[44%]" />
+                <SortHeader label="Goal" col="goal" sort={sort} onSort={toggleSort} className="w-[40%]" />
                 <SortHeader label="Status" col="status" sort={sort} onSort={toggleSort} />
                 <th className="h-10 px-4 text-left align-middle text-xs font-medium text-muted-foreground">Steps</th>
                 <th className="h-10 px-4 text-left align-middle text-xs font-medium text-muted-foreground">Repo</th>
                 <SortHeader label="Created" col="created" sort={sort} onSort={toggleSort} />
+                <th className="h-10 w-0 px-4" />
               </tr>
             </thead>
             <tbody>
               {tasks === null && (
                 <tr>
-                  <td colSpan={5} className="py-16 text-center text-sm text-muted-foreground">
+                  <td colSpan={6} className="py-16 text-center text-sm text-muted-foreground">
                     Loading…
                   </td>
                 </tr>
               )}
               {tasks !== null && rows.length === 0 && (
                 <tr>
-                  <td colSpan={5} className="py-16 text-center text-sm text-muted-foreground">
+                  <td colSpan={6} className="py-16 text-center text-sm text-muted-foreground">
                     {error ? (
                       `⚠ ${error}`
                     ) : (
@@ -178,17 +202,17 @@ export default function TasksPage() {
                 <tr
                   key={t.id}
                   onClick={() => router.push(`/tasks/${t.id}`)}
-                  className="cursor-pointer border-b transition-colors last:border-0 hover:bg-muted/50"
+                  className="group cursor-pointer border-b transition-colors last:border-0 hover:bg-muted/50"
                 >
                   <td className="max-w-0 truncate px-4 py-3 align-middle font-medium">{t.goal}</td>
                   <td className="px-4 py-3 align-middle">
                     <span
                       className={cn(
                         "inline-flex items-center rounded-full border px-2 py-0.5 text-xs font-medium",
-                        STATUS_COLOR[t.status] ?? "border-border text-muted-foreground"
+                        t.merged ? STATUS_COLOR.completed : STATUS_COLOR[t.status] ?? "border-border text-muted-foreground"
                       )}
                     >
-                      {t.status.replace(/_/g, " ")}
+                      {t.merged ? "merged" : t.status.replace(/_/g, " ")}
                     </span>
                   </td>
                   <td className="px-4 py-3 align-middle text-muted-foreground">
@@ -198,6 +222,9 @@ export default function TasksPage() {
                     {t.repoOwner}/{t.repoName}
                   </td>
                   <td className="whitespace-nowrap px-4 py-3 align-middle text-muted-foreground">{relative(t.createdAt)}</td>
+                  <td className="whitespace-nowrap px-4 py-3 align-middle">
+                    <TaskActions task={t} onChanged={load} />
+                  </td>
                 </tr>
               ))}
             </tbody>
@@ -210,6 +237,126 @@ export default function TasksPage() {
         )}
       </div>
     </div>
+  );
+}
+
+// Quick, status-aware actions you can fire straight from the row — no need to open the task.
+// The destructive/irreversible ones (stop, merge, delete) ask for confirmation first.
+function TaskActions({ task, onChanged }: { task: TaskSummary; onChanged: () => void }) {
+  const router = useRouter();
+  const confirm = useConfirm();
+  const [busy, setBusy] = useState(false);
+  const [err, setErr] = useState<string | null>(null);
+
+  const swallow = (e: MouseEvent) => e.stopPropagation(); // never trigger the row's open-on-click
+
+  async function run(fn: () => Promise<unknown>, confirmOpts?: Parameters<typeof confirm>[0]) {
+    if (confirmOpts) {
+      const ok = await confirm(confirmOpts);
+      if (!ok) return;
+    }
+    setBusy(true);
+    setErr(null);
+    try {
+      await fn();
+      onChanged(); // refresh now (engine events also fire, but delete may not)
+    } catch (e) {
+      setErr(e instanceof Error ? e.message : String(e));
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  let primary: ReactNode = null;
+  if (task.status === "created") {
+    primary = <ActionBtn icon={Play} label="Start" busy={busy} onClick={(e) => { swallow(e); void run(() => startTask(task.id)); }} />;
+  } else if (isRunning(task.status)) {
+    primary = (
+      <ActionBtn
+        icon={Square}
+        label="Stop"
+        tone="danger"
+        busy={busy}
+        onClick={(e) => {
+          swallow(e);
+          void run(() => stopTask(task.id), { title: "Stop this task?", description: "The running step is aborted — you can't resume it.", confirmLabel: "Stop", variant: "destructive" });
+        }}
+      />
+    );
+  } else if (task.status === "awaiting_human") {
+    primary = <ActionBtn icon={Eye} label="Review" tone="amber" onClick={(e) => { swallow(e); router.push(`/tasks/${task.id}`); }} />;
+  } else if (task.prOpen) {
+    primary = (
+      <ActionBtn
+        icon={GitMerge}
+        label="Merge"
+        tone="primary"
+        busy={busy}
+        onClick={(e) => {
+          swallow(e);
+          void run(() => mergeOpenPr(task.id), { title: "Merge to main?", description: "Squash-merge this task's open PR into main.", confirmLabel: "Merge" });
+        }}
+      />
+    );
+  }
+
+  return (
+    <div className="flex items-center justify-end gap-1" onClick={swallow}>
+      {err && (
+        <span title={err} className="text-destructive">
+          <AlertCircle className="h-4 w-4" />
+        </span>
+      )}
+      {primary}
+      <button
+        title="Delete task"
+        aria-label="Delete task"
+        disabled={busy}
+        onClick={(e) => {
+          swallow(e);
+          void run(() => deleteTask(task.id), {
+            title: "Delete this task?",
+            description: "The task and its history are permanently removed. This can't be undone.",
+            confirmLabel: "Delete",
+            variant: "destructive",
+          });
+        }}
+        className="flex h-7 w-7 items-center justify-center rounded-md text-muted-foreground opacity-0 transition-all hover:bg-destructive/10 hover:text-destructive focus:opacity-100 group-hover:opacity-100 disabled:opacity-50"
+      >
+        <Trash2 className="h-4 w-4" />
+      </button>
+    </div>
+  );
+}
+
+function ActionBtn({
+  icon: Icon,
+  label,
+  onClick,
+  busy = false,
+  tone = "default",
+}: {
+  icon: typeof Play;
+  label: string;
+  onClick: (e: MouseEvent) => void;
+  busy?: boolean;
+  tone?: "default" | "primary" | "amber" | "danger";
+}) {
+  const tones: Record<string, string> = {
+    default: "border bg-background text-foreground hover:bg-accent",
+    primary: "bg-primary text-primary-foreground hover:bg-primary/90",
+    amber: "border border-amber-500/40 bg-amber-500/10 text-amber-600 hover:bg-amber-500/20 dark:text-amber-400",
+    danger: "border bg-background text-muted-foreground hover:bg-destructive/10 hover:text-destructive",
+  };
+  return (
+    <button
+      onClick={onClick}
+      disabled={busy}
+      className={cn("inline-flex h-7 items-center gap-1.5 rounded-md px-2.5 text-xs font-medium transition-colors disabled:opacity-50", tones[tone])}
+    >
+      {busy ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <Icon className="h-3.5 w-3.5" />}
+      {label}
+    </button>
   );
 }
 

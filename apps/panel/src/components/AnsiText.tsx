@@ -9,11 +9,13 @@ import { memo, useMemo, type ReactNode } from "react";
 
 type AnsiStyle = { fg?: string; bold?: boolean; dim?: boolean; underline?: boolean };
 
+// Catppuccin Mocha ANSI palette — soft pastels that read well on any dark surface
+// (the Terminal's #1e1e2e base and the Iris chat's card alike).
 const ANSI_FG: Record<number, string> = {
-  30: "text-neutral-500", 31: "text-red-400", 32: "text-emerald-400", 33: "text-yellow-400",
-  34: "text-blue-400", 35: "text-fuchsia-400", 36: "text-cyan-400", 37: "text-neutral-200",
-  90: "text-neutral-400", 91: "text-red-300", 92: "text-emerald-300", 93: "text-yellow-300",
-  94: "text-blue-300", 95: "text-fuchsia-300", 96: "text-cyan-300", 97: "text-white",
+  30: "text-[#6c7086]", 31: "text-[#f38ba8]", 32: "text-[#a6e3a1]", 33: "text-[#f9e2af]",
+  34: "text-[#89b4fa]", 35: "text-[#f5c2e7]", 36: "text-[#94e2d5]", 37: "text-[#bac2de]",
+  90: "text-[#7f849c]", 91: "text-[#f38ba8]", 92: "text-[#a6e3a1]", 93: "text-[#f9e2af]",
+  94: "text-[#89b4fa]", 95: "text-[#f5c2e7]", 96: "text-[#89dceb]", 97: "text-[#cdd6f4]",
 };
 
 function applySgr(style: AnsiStyle, codeStr: string): AnsiStyle {

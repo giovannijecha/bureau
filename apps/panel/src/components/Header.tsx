@@ -1,6 +1,6 @@
 "use client";
 
-import { usePathname } from "next/navigation";
+import { usePathname, useRouter } from "next/navigation";
 import {
   WifiOff,
   Sparkles,
@@ -19,8 +19,10 @@ import {
 } from "lucide-react";
 import { useEngineOnline } from "../lib/useEngineOnline";
 import { useSidebar } from "../lib/sidebar";
+import { useProjects } from "../lib/useProjects";
 import { ThemeToggle } from "./ThemeToggle";
 import { NotificationBell } from "./NotificationBell";
+import { ProjectPicker } from "./ProjectPicker";
 import { cn } from "../lib/utils";
 
 // One consistent top bar for every section, driven by the route — so the header
@@ -49,10 +51,21 @@ const SECTIONS: SectionMeta[] = [
 
 export function Header() {
   const pathname = usePathname() ?? "/";
+  const router = useRouter();
   const section = SECTIONS.find((s) => s.match(pathname)) ?? SECTIONS[0]!;
   const Icon = section.icon;
   const online = useEngineOnline();
   const { openDrawer } = useSidebar();
+  const { projects, active, setActiveId } = useProjects();
+
+  // The global repo switcher re-scopes the whole app. On the Projects section it also moves
+  // to the picked project's workspace (URL + view follow the pick); on a working page (Git,
+  // Terminal, …) it re-scopes IN PLACE so you can switch repo without being yanked off the
+  // page you're on.
+  function switchProject(id: string) {
+    setActiveId(id);
+    if (pathname.startsWith("/projects")) router.push(`/projects/${id}`);
+  }
 
   const navBtn =
     "flex h-9 w-9 shrink-0 items-center justify-center rounded-lg text-muted-foreground transition-colors hover:bg-accent hover:text-foreground";
@@ -71,6 +84,15 @@ export function Header() {
           <h1 className="text-[15px] font-semibold leading-none tracking-tight">{section.title}</h1>
           <p className="mt-1 truncate text-xs text-muted-foreground">{section.subtitle}</p>
         </div>
+        {/* Global project switcher — what Iris is scoped to, switchable from every page (md+). */}
+        {projects.length > 0 && (
+          <>
+            <div className="mx-1 hidden h-6 w-px shrink-0 bg-border md:block" />
+            <div className="hidden min-w-0 max-w-[200px] md:block lg:max-w-[260px]">
+              <ProjectPicker projects={projects} active={active} onChange={switchProject} />
+            </div>
+          </>
+        )}
       </div>
 
       <div className="flex shrink-0 items-center gap-3">
