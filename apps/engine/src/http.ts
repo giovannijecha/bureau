@@ -22,6 +22,7 @@ import { VcsError } from "@bureau/vcs";
 import { Orchestrator, OrchestratorError } from "./orchestrator.js";
 import type { TaskStore, MessageLog } from "./ports.js";
 import { toTaskSummary, toTaskDetail, latestDiff } from "./summary.js";
+import { sameMachineOrigin } from "./ws-origin.js";
 
 export interface HttpDeps {
   readonly orchestrator: Orchestrator;
@@ -60,7 +61,16 @@ function isZodError(err: unknown): boolean {
 }
 
 async function handle(deps: HttpDeps, req: IncomingMessage, res: ServerResponse): Promise<void> {
-  setCors(res);
+  // Share the WebSocket upgrade's Origin policy with the HTTP path. The engine is an
+  // unauthenticated, state-mutating daemon bound to 127.0.0.1 — so a browser tab open on
+  // the CEO's host can reach it. A wildcard CORS + no CSRF guard would let a malicious page
+  // forge writes (force-push via /api/git/op, project delete, token-spending /api/chat).
+  // We reflect ONLY a same-machine Origin (never "*"), and reject any state-changing method
+  // from a cross-site Origin. A no-Origin client (curl/CLI on this box) stays allowed — it
+  // already has local shell access. canPush() remains the sole push gate underneath this.
+  const origin = typeof req.headers.origin === "string" ? req.headers.origin : undefined;
+  const sameOrigin = sameMachineOrigin(origin);
+  setCors(res, origin, sameOrigin);
   if (req.method === "OPTIONS") {
     res.writeHead(204).end();
     return;
@@ -69,6 +79,11 @@ async function handle(deps: HttpDeps, req: IncomingMessage, res: ServerResponse)
   const url = new URL(req.url ?? "/", "http://localhost");
   const path = url.pathname;
   const method = req.method ?? "GET";
+
+  if ((method === "POST" || method === "DELETE" || method === "PUT" || method === "PATCH") && !sameOrigin) {
+    sendJson(res, 403, { error: "cross-origin request rejected" });
+    return;
+  }
 
   if (method === "GET" && path === "/health") {
     sendJson(res, 200, { status: "ok" });
@@ -418,10 +433,16 @@ async function readJson(req: IncomingMessage): Promise<unknown> {
   return raw.length ? JSON.parse(raw) : {};
 }
 
-function setCors(res: ServerResponse): void {
-  res.setHeader("Access-Control-Allow-Origin", "*"); // localhost-only daemon
-  res.setHeader("Access-Control-Allow-Methods", "GET, POST, DELETE, OPTIONS");
-  res.setHeader("Access-Control-Allow-Headers", "Content-Type");
+// Reflect ONLY a same-machine browser Origin (the local panel) — never a wildcard, so a
+// cross-site page's preflight fails closed and the browser refuses to deliver its request.
+// A no-Origin client (curl/CLI) needs no CORS headers. Credentials stay unset.
+function setCors(res: ServerResponse, origin: string | undefined, sameOrigin: boolean): void {
+  if (origin && sameOrigin) {
+    res.setHeader("Access-Control-Allow-Origin", origin);
+    res.setHeader("Vary", "Origin");
+    res.setHeader("Access-Control-Allow-Methods", "GET, POST, DELETE, OPTIONS");
+    res.setHeader("Access-Control-Allow-Headers", "Content-Type");
+  }
 }
 
 function sendJson(res: ServerResponse, status: number, body: unknown): void {

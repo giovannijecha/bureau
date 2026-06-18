@@ -1,5 +1,6 @@
 import { describe, it, expect, afterEach } from "vitest";
 import type { Server } from "node:http";
+import { request as httpRequest } from "node:http";
 import type { AddressInfo } from "node:net";
 
 import type { Task, TaskId, GateId, StepId } from "@bureau/core";
@@ -118,6 +119,35 @@ const post = (url: string, body: unknown) =>
     headers: { "Content-Type": "application/json" },
     body: typeof body === "string" ? body : JSON.stringify(body),
   });
+
+// Node's undici fetch silently drops the forbidden `Origin` header, so the Origin-guard
+// tests go through node:http directly, which lets us set any header verbatim.
+function raw(
+  method: string,
+  url: string,
+  headers: Record<string, string>,
+  body?: string
+): Promise<{ status: number; headers: Record<string, string | string[] | undefined> }> {
+  return new Promise((resolve, reject) => {
+    const u = new URL(url);
+    const req = httpRequest(
+      {
+        hostname: u.hostname,
+        port: u.port,
+        path: u.pathname + u.search,
+        method,
+        headers: { ...(body !== undefined ? { "Content-Type": "application/json" } : {}), ...headers },
+      },
+      (res) => {
+        res.resume();
+        res.on("end", () => resolve({ status: res.statusCode ?? 0, headers: res.headers }));
+      }
+    );
+    req.on("error", reject);
+    if (body !== undefined) req.write(body);
+    req.end();
+  });
+}
 
 // ── tests ─────────────────────────────────────────────────────────────────
 
@@ -305,6 +335,39 @@ describe("notifications", () => {
     const url = await listen({ orchestrator, store: fakeStore(), messages: fakeMessages() });
     expect((await post(`${url}/api/notifications/read-all`, {})).status).toBe(204);
     expect(all).toBe(true);
+  });
+});
+
+describe("CORS + cross-origin guard", () => {
+  it("rejects a state-changing request from a cross-site Origin → 403", async () => {
+    const url = await listen({ orchestrator: fakeOrchestrator(), store: fakeStore(), messages: fakeMessages() });
+    const res = await raw("POST", `${url}/api/tasks/t1/start`, { Origin: "https://evil.example.com" }, "{}");
+    expect(res.status).toBe(403);
+  });
+
+  it("allows a state-changing request from the local panel Origin", async () => {
+    const url = await listen({ orchestrator: fakeOrchestrator(), store: fakeStore(), messages: fakeMessages() });
+    const res = await raw("POST", `${url}/api/tasks/t1/start`, { Origin: "http://localhost:3000" }, "{}");
+    expect(res.status).toBe(200);
+  });
+
+  it("allows a no-Origin client (curl/CLI on the same host)", async () => {
+    const url = await listen({ orchestrator: fakeOrchestrator(), store: fakeStore(), messages: fakeMessages() });
+    const res = await raw("POST", `${url}/api/tasks/t1/start`, {}, "{}");
+    expect(res.status).toBe(200);
+  });
+
+  it("reflects the exact same-machine Origin (never a wildcard) with Vary: Origin", async () => {
+    const url = await listen({ orchestrator: fakeOrchestrator(), store: fakeStore(), messages: fakeMessages() });
+    const res = await raw("GET", `${url}/api/projects`, { Origin: "http://127.0.0.1:3000" });
+    expect(res.headers["access-control-allow-origin"]).toBe("http://127.0.0.1:3000");
+    expect(String(res.headers["vary"])).toContain("Origin");
+  });
+
+  it("emits no Allow-Origin header for a cross-site Origin", async () => {
+    const url = await listen({ orchestrator: fakeOrchestrator(), store: fakeStore(), messages: fakeMessages() });
+    const res = await raw("GET", `${url}/api/projects`, { Origin: "https://evil.example.com" });
+    expect(res.headers["access-control-allow-origin"]).toBeUndefined();
   });
 });
 
