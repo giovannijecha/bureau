@@ -7,6 +7,7 @@ import type { CapabilityInput } from "@bureau/capabilities";
 import type { Provider } from "@bureau/providers";
 import type { WsEvent, Message, TaskProposal, Conversation } from "@bureau/contracts";
 
+import { createDb, runMigrations, ProjectRepo } from "@bureau/db";
 import { Orchestrator, buildRepoContext } from "../src/orchestrator.js";
 import { ProjectRegistry, type ProjectConfig } from "../src/projects.js";
 import type { TaskStore, VcsPort, MessageLog, ConversationStore, MemoryPort, UsagePort, UsageEvent, NotificationStore } from "../src/ports.js";
@@ -250,6 +251,7 @@ const PROJECT: ProjectConfig = {
 
 let store: TaskStore;
 let vcs: ReturnType<typeof fakeVcs>;
+let projectRepo: ProjectRepo;
 let mem: ReturnType<typeof fakeMemory>;
 let usage: ReturnType<typeof fakeUsage>;
 let notifs: ReturnType<typeof fakeNotifications>;
@@ -276,6 +278,9 @@ async function until(pred: () => boolean, ms = 1000): Promise<void> {
 beforeEach(() => {
   store = fakeStore().store;
   vcs = fakeVcs();
+  const db = createDb(":memory:");
+  runMigrations(db);
+  projectRepo = new ProjectRepo(db);
   mem = fakeMemory();
   usage = fakeUsage();
   notifs = fakeNotifications();
@@ -323,6 +328,8 @@ beforeEach(() => {
     capabilities: registry,
     provider: prov.provider,
     projects: new ProjectRegistry([PROJECT]),
+    projectRepo,
+    reposRoot: "/repos",
     vcs: () => vcs.vcs,
     events: { emit: (e) => void events.push(e) },
     messages: fakeMessages(),
@@ -357,6 +364,8 @@ describe("projects", () => {
       capabilities: reg,
       provider: prov.provider,
       projects: new ProjectRegistry([A, B]),
+      projectRepo,
+      reposRoot: "/repos",
       vcs: (p) => {
         seen.push(p.id);
         return vcs.vcs;
@@ -378,6 +387,42 @@ describe("projects", () => {
 
     expect(seen.length).toBeGreaterThan(0);
     expect(seen.every((id) => id === "b")).toBe(true); // never resolved to A, the first owner/name match
+  });
+
+  it("addProject validates the URL, clones, registers in the SHARED registry, persists, and emits", async () => {
+    const before = vcs.calls.ensureClone;
+    const dto = await orch.addProject({ url: "https://github.com/globex/api" });
+    expect(dto).toEqual({ id: "globex-api", owner: "globex", name: "api", baseBranch: "main" });
+    expect(orch.listProjects().map((p) => p.id)).toContain("globex-api"); // the one shared registry reflects it
+    expect(projectRepo.get("globex-api")?.url).toBe("https://github.com/globex/api"); // persisted to DB
+    expect(vcs.calls.ensureClone).toBe(before + 1); // cloned eagerly
+    expect(events.some((e) => e.type === "projects_changed")).toBe(true);
+  });
+
+  it("addProject rejects a duplicate and an unsafe URL", async () => {
+    await orch.addProject({ url: "https://github.com/globex/api" });
+    await expect(orch.addProject({ url: "https://github.com/globex/api" })).rejects.toThrow(/already exists/);
+    await expect(orch.addProject({ url: "file:///etc/passwd" })).rejects.toThrow();
+  });
+
+  it("addProject rolls back the persisted row when the clone fails", async () => {
+    vcs.vcs.ensureClone = async () => {
+      throw new Error("network down");
+    };
+    await expect(orch.addProject({ url: "https://github.com/globex/api" })).rejects.toThrow(/Couldn't clone/);
+    expect(projectRepo.get("globex-api")).toBeNull(); // row rolled back
+    expect(orch.listProjects().map((p) => p.id)).not.toContain("globex-api"); // not registered
+  });
+
+  it("removeProject refuses while a non-terminal task references it (409), then removes a free one", async () => {
+    await orch.addProject({ url: "https://github.com/globex/api" }); // 2 projects now
+    const draft = orch.createTask(PROPOSAL, "widget"); // a 'created' (non-terminal) task on the default project
+    expect(draft.projectId).toBe("widget");
+    await expect(orch.removeProject("widget")).rejects.toThrow(expect.objectContaining({ status: 409 }));
+    await orch.removeProject("globex-api"); // no tasks reference it → clean removal
+    expect(orch.listProjects().map((p) => p.id)).not.toContain("globex-api");
+    expect(projectRepo.get("globex-api")).toBeNull();
+    expect(events.some((e) => e.type === "projects_changed")).toBe(true);
   });
 });
 

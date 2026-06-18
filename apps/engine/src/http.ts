@@ -14,7 +14,7 @@
 //   POST /api/tasks/:id/open-pr   push → open a PR for review on GitHub, NO merge
 
 import { createServer, type IncomingMessage, type ServerResponse, type Server } from "node:http";
-import { SendMessageRequestDto, CreateTaskRequestDto, SaveNoteRequestDto, GateDecisionRequestDto, GitOpRequestDto, SetModelsRequestDto } from "@bureau/contracts";
+import { SendMessageRequestDto, CreateTaskRequestDto, SaveNoteRequestDto, GateDecisionRequestDto, GitOpRequestDto, SetModelsRequestDto, CreateProjectRequestDto } from "@bureau/contracts";
 import type { TaskId } from "@bureau/core";
 import { VcsError } from "@bureau/vcs";
 import { Orchestrator, OrchestratorError } from "./orchestrator.js";
@@ -76,6 +76,21 @@ async function handle(deps: HttpDeps, req: IncomingMessage, res: ServerResponse)
   // GET /api/projects — the repositories Bureau works on.
   if (method === "GET" && path === "/api/projects") {
     sendJson(res, 200, deps.orchestrator.listProjects());
+    return;
+  }
+
+  // POST /api/projects — add a repo by URL (validate → persist → clone → register).
+  if (method === "POST" && path === "/api/projects") {
+    const body = CreateProjectRequestDto.parse(await readJson(req));
+    sendJson(res, 201, await deps.orchestrator.addProject(body));
+    return;
+  }
+
+  // DELETE /api/projects/:id[?force=1] — remove a repo (refused while tasks reference it).
+  const projDelMatch = path.match(/^\/api\/projects\/([^/]+)$/);
+  if (method === "DELETE" && projDelMatch) {
+    await deps.orchestrator.removeProject(decodeURIComponent(projDelMatch[1]!), { force: url.searchParams.get("force") === "1" });
+    res.writeHead(204).end();
     return;
   }
 

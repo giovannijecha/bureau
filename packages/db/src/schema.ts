@@ -187,4 +187,20 @@ export const notifications = sqliteTable(
   (t) => [index("notifications_by_created").on(t.createdAt)]
 );
 
-export const schema = { tasks, steps, gates, artifacts, decisionLog, conversations, messages, usageEvents, notifications };
+// The GitHub repositories Bureau works on. Seeded from BUREAU_PROJECTS on first boot,
+// then the durable source of truth (the CEO can add/remove repos at runtime). Only the
+// durable facts are stored — on-disk clone/worktree paths are DERIVED from
+// BUREAU_REPOS_ROOT + id at boot, never persisted (so the table is machine-portable and
+// carries no secrets). `id` is the same slug that tasks/conversations soft-reference; no
+// FK is added so a removed project never orphans/fails an existing task row.
+export const projects = sqliteTable("projects", {
+  id: text("id").primaryKey(),
+  owner: text("owner").notNull(),
+  name: text("name").notNull(),
+  url: text("url").notNull(),
+  baseBranch: text("base_branch").notNull(),
+  testCommand: text("test_command", { mode: "json" }).$type<string[] | null>(),
+  createdAt: text("created_at").notNull(),
+});
+
+export const schema = { tasks, steps, gates, artifacts, decisionLog, conversations, messages, usageEvents, notifications, projects };

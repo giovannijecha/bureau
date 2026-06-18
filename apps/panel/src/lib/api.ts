@@ -27,6 +27,7 @@ import type {
   Attachment,
   GitOpRequest,
   GitOpResult,
+  CreateProjectRequest,
 } from "@bureau/contracts";
 
 export const ENGINE_URL = process.env.NEXT_PUBLIC_ENGINE_URL ?? "http://localhost:4319";
@@ -50,6 +51,20 @@ const postJson = (path: string, body?: unknown) =>
 /** The repositories Bureau works on. */
 export async function listProjects(): Promise<Project[]> {
   return json(await fetch(`${BASE}/api/projects`));
+}
+
+/** Add a repo by URL (engine validates, clones, and registers it). */
+export async function createProject(req: CreateProjectRequest): Promise<Project> {
+  return json(await postJson("/api/projects", req));
+}
+
+/** Remove a repo. `force` overrides the in-flight-task guard (rarely needed). */
+export async function removeProject(id: string, force = false): Promise<void> {
+  const res = await fetch(`${BASE}/api/projects/${encodeURIComponent(id)}${force ? "?force=1" : ""}`, { method: "DELETE" });
+  if (!res.ok) {
+    const body = (await res.json().catch(() => ({}))) as { error?: string };
+    throw new Error(body.error ?? `engine responded ${res.status}`);
+  }
 }
 
 /** Engine status (provider availability + counts) for Settings. */

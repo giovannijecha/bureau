@@ -1,7 +1,7 @@
 import { describe, it, expect } from "vitest";
 import { join } from "node:path";
 
-import { ProjectRegistry, projectsFromJson, slug, toProjectDto, type ProjectConfig } from "../src/projects.js";
+import { ProjectRegistry, projectsFromJson, buildProjectConfig, projectConfigFromRow, slug, toProjectDto, type ProjectConfig } from "../src/projects.js";
 import { OrchestratorError } from "../src/errors.js";
 
 const P = (over: Partial<ProjectConfig> = {}): ProjectConfig => ({
@@ -106,5 +106,60 @@ describe("ProjectRegistry", () => {
       name: "n",
       baseBranch: "main",
     });
+  });
+
+  it("add appends a project, rejecting a duplicate id (409)", () => {
+    const reg = new ProjectRegistry([P({ id: "a" })]);
+    reg.add(P({ id: "b", owner: "o2", name: "b" }));
+    expect(reg.list().map((p) => p.id)).toEqual(["a", "b"]);
+    expect(() => reg.add(P({ id: "a" }))).toThrow(expect.objectContaining({ status: 409 }));
+  });
+
+  it("remove drops a project, 404 unknown, 409 on the last, and shifts the default", () => {
+    const reg = new ProjectRegistry([P({ id: "a" }), P({ id: "b", owner: "o2", name: "b" })]);
+    expect(() => reg.remove("nope")).toThrow(expect.objectContaining({ status: 404 }));
+    reg.remove("a");
+    expect(reg.list().map((p) => p.id)).toEqual(["b"]);
+    expect(reg.default().id).toBe("b"); // default shifts to the survivor
+    expect(() => reg.remove("b")).toThrow(expect.objectContaining({ status: 409 })); // never empties
+  });
+});
+
+describe("buildProjectConfig — CEO-added repo (validated)", () => {
+  it("derives owner/name/id + safe paths from a valid github URL", () => {
+    const c = buildProjectConfig("/repos", { url: "https://github.com/Acme/Widget.git" });
+    expect({ id: c.id, owner: c.owner, name: c.name, baseBranch: c.baseBranch }).toEqual({
+      id: "acme-widget",
+      owner: "Acme",
+      name: "Widget",
+      baseBranch: "main",
+    });
+    expect(c.canonicalPath).toBe(join("/repos", "acme-widget", "repo"));
+  });
+
+  it("honors an explicit baseBranch + testCommand", () => {
+    const c = buildProjectConfig("/repos", { url: "https://github.com/a/b", baseBranch: "dev", testCommand: ["pnpm", "test"] });
+    expect(c.baseBranch).toBe("dev");
+    expect(c.testCommand).toEqual(["pnpm", "test"]);
+  });
+
+  it("rejects an unsafe URL (file://, ssh, non-github)", () => {
+    expect(() => buildProjectConfig("/repos", { url: "file:///etc/passwd" })).toThrow();
+    expect(() => buildProjectConfig("/repos", { url: "git@github.com:a/b.git" })).toThrow();
+    expect(() => buildProjectConfig("/repos", { url: "https://evil.com/a/b" })).toThrow();
+  });
+});
+
+describe("projectConfigFromRow — rebuild at boot", () => {
+  it("re-derives on-disk paths from reposRoot + id (paths are never stored)", () => {
+    const c = projectConfigFromRow("/repos", { id: "acme-widget", owner: "acme", name: "widget", url: "https://github.com/acme/widget", baseBranch: "main", testCommand: ["npm", "test"] });
+    expect(c.canonicalPath).toBe(join("/repos", "acme-widget", "repo"));
+    expect(c.worktreesDir).toBe(join("/repos", "acme-widget", "worktrees"));
+    expect(c.testCommand).toEqual(["npm", "test"]);
+  });
+
+  it("omits testCommand when the row has none", () => {
+    const c = projectConfigFromRow("/r", { id: "a", owner: "o", name: "n", url: "u", baseBranch: "main", testCommand: null });
+    expect("testCommand" in c).toBe(false);
   });
 });

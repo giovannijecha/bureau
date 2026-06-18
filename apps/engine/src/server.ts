@@ -1,19 +1,21 @@
 // Bureau engine — persistent Node daemon. Wires the real adapters and starts
 // the HTTP API + WebSocket hub. localhost only.
 //
-// Projects: set BUREAU_PROJECTS (JSON array of {owner,name,url,baseBranch?}) plus
-// BUREAU_REPOS_ROOT for multi-repo; or use the legacy single-repo env below.
+// Projects are DB-backed. BUREAU_REPOS_ROOT is ALWAYS required (each project's clone +
+// worktrees are derived from it + the project id). On FIRST run (empty DB) seed the initial
+// project(s) from env — either BUREAU_PROJECTS (JSON array of {owner,name,url,baseBranch?})
+// or the legacy single-repo trio (BUREAU_REPO_OWNER/NAME/URL). After that the DB is the
+// source of truth: env can be dropped and the CEO can add/remove repos from the panel.
 //
-// Required env (multi-repo): BUREAU_PROJECTS, BUREAU_REPOS_ROOT
-// Required env (legacy single-repo): BUREAU_REPO_OWNER, BUREAU_REPO_NAME,
-//               BUREAU_REPO_URL, BUREAU_CANONICAL, BUREAU_WORKTREES
+// Required env: BUREAU_REPOS_ROOT (always) + on a cold start either BUREAU_PROJECTS or
+//               BUREAU_REPO_OWNER/NAME/URL.
 // Optional:     BUREAU_BASE_BRANCH (main), BUREAU_DB (./bureau.db), PORT (4319),
 //               ANTHROPIC_API_KEY (else falls back to the `claude` CLI),
 //               BUREAU_AUTHOR_NAME, BUREAU_AUTHOR_EMAIL, BUREAU_GIT_PATH, BUREAU_GH_PATH
 
 import { randomUUID } from "node:crypto";
 import Anthropic from "@anthropic-ai/sdk";
-import { createDb, runMigrations, TaskRepo, MessageRepo, ConversationRepo, UsageRepo, NotificationRepo } from "@bureau/db";
+import { createDb, runMigrations, TaskRepo, MessageRepo, ConversationRepo, UsageRepo, NotificationRepo, ProjectRepo } from "@bureau/db";
 import { CapabilityRegistry, EditCapability, DocumentCapability, ReviewCapability, PlanCapability, ResearchCapability, TestCapability } from "@bureau/capabilities";
 import {
   AnthropicProvider,
@@ -26,7 +28,7 @@ import { makeRunner, type CommitAuthor } from "@bureau/vcs";
 import type { WsEvent } from "@bureau/contracts";
 
 import { Orchestrator } from "./orchestrator.js";
-import { ProjectRegistry, projectsFromJson, parseTestCommand, slug, type ProjectConfig } from "./projects.js";
+import { ProjectRegistry, projectsFromJson, projectConfigFromRow, parseTestCommand, slug, type ProjectConfig } from "./projects.js";
 import { RealVcs, DbMessageLog, DbConversationStore, VaultStore, DbUsage, DbNotifications } from "./adapters.js";
 import { WsHub } from "./ws.js";
 import { TerminalHub } from "./terminal.js";
@@ -59,14 +61,17 @@ function buildProvider(): Provider {
   return new ClaudeCliProvider({ authStrategy: strategy });
 }
 
-/** Build the project registry from BUREAU_PROJECTS (JSON) or the legacy single-repo env. */
-function buildRegistry(): ProjectRegistry {
+/** Build the SEED project configs from BUREAU_PROJECTS (JSON) or the legacy single-repo
+ *  env. On-disk paths are derived from reposRoot + id in BOTH modes (one consistent model
+ *  — the legacy literal BUREAU_CANONICAL/BUREAU_WORKTREES are no longer used). These seed
+ *  the DB on first run; thereafter the DB (env-seeded + CEO-added) is the source of truth. */
+function buildEnvConfigs(reposRoot: string): ProjectConfig[] {
   const json = process.env.BUREAU_PROJECTS;
   if (json !== undefined && json.trim().length > 0) {
-    return new ProjectRegistry(projectsFromJson(json, env("BUREAU_REPOS_ROOT")));
+    return projectsFromJson(json, reposRoot);
   }
-  const name = env("BUREAU_REPO_NAME");
   const owner = env("BUREAU_REPO_OWNER");
+  const name = env("BUREAU_REPO_NAME");
   // Optional: a test command as a JSON argv array, e.g. BUREAU_TEST_COMMAND='["npm","test"]'.
   const testRaw = process.env.BUREAU_TEST_COMMAND;
   let testCommand: readonly string[] | undefined;
@@ -79,17 +84,17 @@ function buildRegistry(): ProjectRegistry {
     }
     testCommand = parseTestCommand(parsed, "BUREAU_TEST_COMMAND");
   }
-  const project: ProjectConfig = {
-    id: slug(`${owner}-${name}`),
-    owner,
-    name,
-    url: env("BUREAU_REPO_URL"),
-    baseBranch: env("BUREAU_BASE_BRANCH", "main"),
-    canonicalPath: env("BUREAU_CANONICAL"),
-    worktreesDir: env("BUREAU_WORKTREES"),
-    ...(testCommand !== undefined ? { testCommand } : {}),
-  };
-  return new ProjectRegistry([project]);
+  const id = slug(`${owner}-${name}`);
+  return [
+    projectConfigFromRow(reposRoot, {
+      id,
+      owner,
+      name,
+      url: env("BUREAU_REPO_URL"),
+      baseBranch: env("BUREAU_BASE_BRANCH", "main"),
+      testCommand: testCommand ? [...testCommand] : null,
+    }),
+  ];
 }
 
 async function main(): Promise<void> {
@@ -127,7 +132,36 @@ async function main(): Promise<void> {
     name: env("BUREAU_AUTHOR_NAME", "Bureau"),
     email: env("BUREAU_AUTHOR_EMAIL", "bureau@localhost"),
   };
-  const projects = buildRegistry();
+
+  // Projects are now DB-backed: idempotently seed the env-configured repos when env config
+  // is present, then build the one (mutable) registry from the DB — env-seeded + any the CEO
+  // added. Once the DB has projects, env is OPTIONAL: it can be dropped and the CEO-added
+  // repos persist (the DB is the source of truth). Env is only REQUIRED on a true cold start
+  // (empty DB) to seed the first project. (BUREAU_REPOS_ROOT is always required — paths derive
+  // from it.)
+  const reposRoot = env("BUREAU_REPOS_ROOT");
+  const projectRepo = new ProjectRepo(db);
+  const hasEnvConfig = (process.env.BUREAU_PROJECTS?.trim() ?? "") !== "" || (process.env.BUREAU_REPO_OWNER?.trim() ?? "") !== "";
+  if (hasEnvConfig) {
+    for (const c of buildEnvConfigs(reposRoot)) {
+      projectRepo.seed({
+        id: c.id,
+        owner: c.owner,
+        name: c.name,
+        url: c.url,
+        baseBranch: c.baseBranch,
+        testCommand: c.testCommand ? [...c.testCommand] : null,
+        createdAt: new Date().toISOString(),
+      });
+    }
+  }
+  const rows = projectRepo.list();
+  if (rows.length === 0) {
+    throw new Error(
+      "No projects configured. On first run set BUREAU_PROJECTS (or the legacy single-repo env); after that you can add repos from the panel and they persist."
+    );
+  }
+  const projects = new ProjectRegistry(rows.map((r) => projectConfigFromRow(reposRoot, r)));
 
   // A VCS port bound to a specific project (its clone, owner/repo, and author).
   const vcsFor = (project: ProjectConfig): VcsPort =>
@@ -159,6 +193,8 @@ async function main(): Promise<void> {
     capabilities,
     provider,
     projects,
+    projectRepo,
+    reposRoot,
     vcs: vcsFor,
     events,
     messages,

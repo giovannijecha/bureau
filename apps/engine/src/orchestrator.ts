@@ -25,14 +25,15 @@ import type {
 } from "@bureau/core";
 import type { CapabilityRegistry } from "@bureau/capabilities";
 import type { Provider } from "@bureau/providers";
-import type { Message, TaskProposal, ChatResponse, Project, Conversation, EngineInfo, Hub, Note, NoteSummary, UsageSummary, Notification, NotificationKind, GitInfo, Attachment, GitOpRequest, GitOpResult, GitTree, GitFileContent, GithubAccount, PullRequest, Issue, TreeCommits, CommitDetail, FileList, FileHistory } from "@bureau/contracts";
+import type { Message, TaskProposal, ChatResponse, Project, CreateProjectRequest, Conversation, EngineInfo, Hub, Note, NoteSummary, UsageSummary, Notification, NotificationKind, GitInfo, Attachment, GitOpRequest, GitOpResult, GitTree, GitFileContent, GithubAccount, PullRequest, Issue, TreeCommits, CommitDetail, FileList, FileHistory } from "@bureau/contracts";
 import { DESTRUCTIVE_GIT_OPS } from "@bureau/contracts";
-import { join } from "node:path";
+import type { ProjectRepo } from "@bureau/db";
+import { join, resolve, sep } from "node:path";
 import { tmpdir } from "node:os";
 import { mkdir, writeFile, rm } from "node:fs/promises";
 
 import type { TaskStore, VcsPort, EventSink, MessageLog, ConversationStore, MemoryPort, UsagePort, NotificationStore, RepoView, GitAdminOp } from "./ports.js";
-import { ProjectRegistry, toProjectDto, type ProjectConfig } from "./projects.js";
+import { ProjectRegistry, toProjectDto, buildProjectConfig, type ProjectConfig } from "./projects.js";
 import { defaultModelPolicy, resolveModel, isKnownModel, MODEL_SCOPES, type ModelPolicy } from "./models.js";
 import { OrchestratorError } from "./errors.js";
 import { irisRespond } from "./iris.js";
@@ -54,6 +55,10 @@ export interface OrchestratorDeps {
   readonly capabilities: CapabilityRegistry;
   readonly provider: Provider;
   readonly projects: ProjectRegistry;
+  /** Persisted project store (DB) — projects survive restarts; the registry is seeded from it. */
+  readonly projectRepo: ProjectRepo;
+  /** Root dir under which each project's clone + worktrees live (paths derived from id). */
+  readonly reposRoot: string;
   /** Build a VCS port bound to a given project (clone path, owner/repo, author). */
   readonly vcs: (project: ProjectConfig) => VcsPort;
   readonly events: EventSink;
@@ -85,6 +90,65 @@ export class Orchestrator {
   /** The projects the CEO can work on. */
   listProjects(): Project[] {
     return this.d.projects.list().map(toProjectDto);
+  }
+
+  /** Add a project the CEO supplied by URL: validate → persist → clone → register → notify.
+   *  Eager clone (with rollback) so a bad URL / unreachable repo fails the request loudly. */
+  async addProject(req: CreateProjectRequest): Promise<Project> {
+    // Validate the URL + derive owner/name/id + safe on-disk paths (throws on a bad URL).
+    const config = buildProjectConfig(this.d.reposRoot, {
+      url: req.url,
+      baseBranch: req.baseBranch,
+      testCommand: req.testCommand,
+    });
+    if (this.d.projects.list().some((p) => p.id === config.id)) {
+      throw new OrchestratorError(`A project for ${config.owner}/${config.name} already exists`, 409);
+    }
+    // Persist first, then clone eagerly; roll back the row + any partial clone on failure.
+    this.d.projectRepo.upsert({
+      id: config.id,
+      owner: config.owner,
+      name: config.name,
+      url: config.url,
+      baseBranch: config.baseBranch,
+      testCommand: config.testCommand ? [...config.testCommand] : null,
+      createdAt: this.d.clock(),
+    });
+    try {
+      await this.d.vcs(config).ensureClone();
+    } catch (err) {
+      this.d.projectRepo.delete(config.id);
+      await rm(join(this.d.reposRoot, config.id), { recursive: true, force: true }).catch(() => {});
+      throw new OrchestratorError(`Couldn't clone ${config.owner}/${config.name}: ${err instanceof Error ? err.message : String(err)}`, 502);
+    }
+    this.d.projects.add(config); // mutate the one shared registry in place → every consumer sees it
+    this.d.events.emit({ type: "projects_changed" });
+    return toProjectDto(config);
+  }
+
+  /** Remove a project. Refuses (409) while any non-terminal task still references it
+   *  (unless forced); then drops it from the registry + DB and deletes its clone on disk. */
+  async removeProject(id: string, opts?: { force?: boolean }): Promise<void> {
+    const project = this.d.projects.get(id); // 404 if unknown
+    const live = this.d.store
+      .list()
+      .filter(
+        (t) =>
+          t.status !== "completed" &&
+          t.status !== "aborted" &&
+          (t.projectId === id || (t.repoOwner === project.owner && t.repoName === project.name))
+      );
+    if (live.length > 0 && opts?.force !== true) {
+      throw new OrchestratorError(`${live.length} task(s) still reference this project — finish or stop them first`, 409);
+    }
+    this.d.projects.remove(id); // throws 409 if it's the last project (≥1 invariant)
+    this.d.projectRepo.delete(id);
+    // Delete the on-disk clone (clean/lean — no orphaned dirs). Path-guarded vs traversal.
+    const dir = join(this.d.reposRoot, id);
+    if (resolve(dir).startsWith(resolve(this.d.reposRoot) + sep)) {
+      await rm(dir, { recursive: true, force: true }).catch(() => {});
+    }
+    this.d.events.emit({ type: "projects_changed" });
   }
 
   /** The Agent-Activity Hub: live capability-worker status, a cross-task activity

@@ -3,8 +3,9 @@
 // selected in the Assistant. The registry is the single source of truth for which
 // repos exist and where they live on disk.
 
-import { join } from "node:path";
+import { join, resolve, sep } from "node:path";
 import type { Project } from "@bureau/contracts";
+import { parseGithubRepo } from "@bureau/vcs";
 import { OrchestratorError } from "./errors.js";
 
 export interface ProjectConfig {
@@ -30,7 +31,10 @@ export function toProjectDto(p: ProjectConfig): Project {
 }
 
 export class ProjectRegistry {
-  private readonly projects: readonly ProjectConfig[];
+  // Mutable IN PLACE: each snapshot is a readonly array, but the field is reassigned by
+  // add/remove. The orchestrator + terminal hold THIS instance and call methods on it, so
+  // a mutation propagates everywhere with zero rewiring — never construct a second registry.
+  private projects: readonly ProjectConfig[];
 
   constructor(projects: readonly ProjectConfig[]) {
     if (projects.length === 0) throw new Error("ProjectRegistry needs at least one project");
@@ -67,6 +71,77 @@ export class ProjectRegistry {
     if (!p) throw new OrchestratorError(`No project configured for ${owner}/${name}`, 409);
     return p;
   }
+
+  /** Add a project at runtime. Rejects a duplicate id so two inputs can't alias one clone. */
+  add(config: ProjectConfig): void {
+    if (this.projects.some((p) => p.id === config.id)) {
+      throw new OrchestratorError(`A project with id "${config.id}" already exists`, 409);
+    }
+    this.projects = [...this.projects, config];
+  }
+
+  /** Remove a project at runtime. Never empties the registry (default()/resolve rely on ≥1). */
+  remove(id: string): void {
+    const next = this.projects.filter((p) => p.id !== id);
+    if (next.length === this.projects.length) throw new OrchestratorError(`Unknown project: ${id}`, 404);
+    if (next.length === 0) throw new OrchestratorError("Cannot remove the last project", 409);
+    this.projects = next;
+  }
+}
+
+// ── path safety (derive on-disk locations only from a safe slug id) ───────────
+
+/** Derive a project's clone + worktrees dirs under reposRoot, asserting they can't
+ *  escape it (belt-and-suspenders on top of slug() already stripping "/", ".", ".."). */
+function derivePaths(reposRoot: string, id: string): { canonicalPath: string; worktreesDir: string } {
+  const canonicalPath = join(reposRoot, id, "repo");
+  const worktreesDir = join(reposRoot, id, "worktrees");
+  if (!resolve(canonicalPath).startsWith(resolve(reposRoot) + sep)) {
+    throw new OrchestratorError(`Refusing unsafe project path for id "${id}"`, 400);
+  }
+  return { canonicalPath, worktreesDir };
+}
+
+/** Build a validated config for a CEO-ADDED repo: the URL is allowlisted (https/github),
+ *  owner+name are DERIVED from it (single-sourced identity), and the on-disk paths are
+ *  derived from the slug id. Throws VcsError (bad URL) or OrchestratorError. */
+export function buildProjectConfig(
+  reposRoot: string,
+  input: { url: string; baseBranch?: string | undefined; testCommand?: readonly string[] | undefined }
+): ProjectConfig {
+  const { owner, name } = parseGithubRepo(input.url);
+  const id = slug(`${owner}-${name}`);
+  const baseBranch = input.baseBranch && input.baseBranch.trim() !== "" ? input.baseBranch.trim() : "main";
+  const { canonicalPath, worktreesDir } = derivePaths(reposRoot, id);
+  return {
+    id,
+    owner,
+    name,
+    url: input.url.trim(),
+    baseBranch,
+    canonicalPath,
+    worktreesDir,
+    ...(input.testCommand !== undefined ? { testCommand: input.testCommand } : {}),
+  };
+}
+
+/** Rebuild a config from a persisted row at boot — paths are re-derived from reposRoot
+ *  (never stored), the durable facts come from the row (already validated when added). */
+export function projectConfigFromRow(
+  reposRoot: string,
+  row: { id: string; owner: string; name: string; url: string; baseBranch: string; testCommand: string[] | null }
+): ProjectConfig {
+  const { canonicalPath, worktreesDir } = derivePaths(reposRoot, row.id);
+  return {
+    id: row.id,
+    owner: row.owner,
+    name: row.name,
+    url: row.url,
+    baseBranch: row.baseBranch,
+    canonicalPath,
+    worktreesDir,
+    ...(row.testCommand && row.testCommand.length > 0 ? { testCommand: row.testCommand } : {}),
+  };
 }
 
 // ── env → projects ──────────────────────────────────────────────────────────
@@ -118,14 +193,15 @@ export function projectsFromJson(json: string, reposRoot: string): ProjectConfig
     // different owners don't collide.
     const id = typeof r.id === "string" && r.id.trim() !== "" ? slug(r.id) : slug(`${owner}-${name}`);
     const testCommand = parseTestCommand(r.testCommand, `projects[${i}].testCommand`);
+    const { canonicalPath, worktreesDir } = derivePaths(reposRoot, id);
     return {
       id,
       owner,
       name,
       url,
       baseBranch,
-      canonicalPath: join(reposRoot, id, "repo"),
-      worktreesDir: join(reposRoot, id, "worktrees"),
+      canonicalPath,
+      worktreesDir,
       ...(testCommand !== undefined ? { testCommand } : {}),
     };
   });

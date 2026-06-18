@@ -22,13 +22,18 @@ import {
   Leaf,
   Monitor,
   Palette,
+  Plus,
+  Trash2,
+  Loader2,
   Terminal as TerminalIcon,
   type LucideIcon,
   type LucideProps,
 } from "lucide-react";
-import type { EngineInfo, Project, GithubAccount } from "@bureau/contracts";
-import { getConfig, listProjects, ENGINE_URL, getGithubAccount, setModels } from "../../lib/api";
+import type { EngineInfo, GithubAccount } from "@bureau/contracts";
+import { getConfig, ENGINE_URL, getGithubAccount, setModels, createProject, removeProject } from "../../lib/api";
 import { useAppearance, ACCENTS, SCALES, type ThemeMode, type ScaleKey } from "../../lib/appearance";
+import { useProjects } from "../../lib/useProjects";
+import { useConfirm } from "../../components/ConfirmDialog";
 import { Dropdown } from "../../components/Dropdown";
 import { cn } from "../../lib/utils";
 
@@ -60,7 +65,6 @@ type SectionId = (typeof SECTIONS)[number]["id"];
 export default function SettingsPage() {
   const [section, setSection] = useState<SectionId>("general");
   const [info, setInfo] = useState<EngineInfo | null>(null);
-  const [projects, setProjects] = useState<Project[]>([]);
   const [online, setOnline] = useState<boolean | null>(null);
   const [account, setAccount] = useState<GithubAccount | null>(null);
 
@@ -97,12 +101,6 @@ export default function SettingsPage() {
         }
       } catch {
         if (alive) setOnline(false);
-      }
-      try {
-        const p = await listProjects();
-        if (alive) setProjects(p);
-      } catch {
-        /* offline */
       }
       try {
         const a = await getGithubAccount();
@@ -162,7 +160,7 @@ export default function SettingsPage() {
             <ModelsCard info={info} onChange={changeModel} onPreset={applyPreset} />
           )}
 
-          {section === "projects" && <ProjectsCard projects={projects} />}
+          {section === "projects" && <ProjectsCard />}
 
           {section === "system" && <SystemCard info={info} online={online} />}
         </div>
@@ -439,31 +437,103 @@ function ModelsCard({ info, onChange, onPreset }: { info: EngineInfo | null; onC
   );
 }
 
-function ProjectsCard({ projects }: { projects: Project[] }) {
+function ProjectsCard() {
+  const { projects, refresh } = useProjects();
+  const confirm = useConfirm();
+  const [url, setUrl] = useState("");
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+
+  async function add() {
+    const trimmed = url.trim();
+    if (!trimmed || busy) return;
+    setBusy(true);
+    setError(null);
+    try {
+      await createProject({ url: trimmed });
+      setUrl("");
+      refresh();
+    } catch (e) {
+      setError(e instanceof Error ? e.message : String(e));
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function remove(p: { id: string; owner: string; name: string }) {
+    const ok = await confirm({
+      title: "Remove project?",
+      description: `“${p.owner}/${p.name}” will be removed and its local clone deleted. Tasks already merged are unaffected; re-adding re-clones it. This can't be undone.`,
+      confirmLabel: "Remove",
+      variant: "destructive",
+    });
+    if (!ok) return;
+    setError(null);
+    try {
+      await removeProject(p.id);
+      refresh();
+    } catch (e) {
+      setError(e instanceof Error ? e.message : String(e));
+    }
+  }
+
   return (
     <Card title="Projects" icon={FolderGit2}>
+      {/* Add a repo by URL — the engine validates, clones, and registers it. */}
+      <div className="flex flex-wrap items-center gap-2">
+        <input
+          value={url}
+          disabled={busy}
+          onChange={(e) => setUrl(e.target.value)}
+          onKeyDown={(e) => {
+            if (e.key === "Enter") {
+              e.preventDefault();
+              void add();
+            }
+          }}
+          placeholder="https://github.com/owner/repo"
+          className="h-9 min-w-[200px] flex-1 rounded-md border bg-background px-3 text-sm outline-none transition-colors focus:border-primary/60"
+        />
+        <button
+          onClick={() => void add()}
+          disabled={busy || url.trim() === ""}
+          className="inline-flex h-9 items-center gap-1.5 rounded-md bg-primary px-3.5 text-sm font-medium text-primary-foreground transition-colors hover:bg-primary/90 disabled:opacity-50"
+        >
+          {busy ? <Loader2 className="h-4 w-4 animate-spin" /> : <Plus className="h-4 w-4" />}
+          Add
+        </button>
+      </div>
+      {error && <p className="text-xs text-destructive">⚠ {error}</p>}
+
       {projects.length === 0 ? (
-        <p className="text-sm text-muted-foreground">
-          None configured — set <code className="font-mono text-xs">BUREAU_PROJECTS</code> on the engine.
-        </p>
+        <p className="text-sm text-muted-foreground">No projects yet — add one above.</p>
       ) : (
-        <ul className="space-y-2">
+        <ul className="divide-y rounded-lg border">
           {projects.map((p) => (
-            <li key={p.id} className="flex flex-wrap items-center gap-x-2 gap-y-1 text-sm">
-              <FolderGit2 className="h-3.5 w-3.5 shrink-0 text-muted-foreground" />
-              <span className="font-medium">
-                {p.owner}/{p.name}
-              </span>
-              <span className="flex items-center gap-1 text-xs text-muted-foreground">
-                <GitBranch className="h-3 w-3" />
-                {p.baseBranch}
-              </span>
+            <li key={p.id} className="group flex items-center gap-2.5 px-3 py-2.5">
+              <FolderGit2 className="h-4 w-4 shrink-0 text-muted-foreground" />
+              <div className="min-w-0 flex-1">
+                <div className="truncate text-sm font-medium">
+                  {p.owner}/{p.name}
+                </div>
+                <div className="flex items-center gap-1 text-xs text-muted-foreground">
+                  <GitBranch className="h-3 w-3" /> {p.baseBranch}
+                </div>
+              </div>
+              <button
+                onClick={() => void remove(p)}
+                title="Remove project"
+                aria-label={`Remove ${p.owner}/${p.name}`}
+                className="shrink-0 rounded-md p-1.5 text-muted-foreground opacity-0 transition-all hover:bg-destructive/10 hover:text-destructive focus:opacity-100 group-hover:opacity-100"
+              >
+                <Trash2 className="h-4 w-4" />
+              </button>
             </li>
           ))}
         </ul>
       )}
-      <p className="border-t pt-3 text-xs text-muted-foreground">
-        Repositories are configured via <code className="font-mono">BUREAU_PROJECTS</code> on the engine. In-app add/remove is a planned feature.
+      <p className="text-xs text-muted-foreground">
+        Repos are cloned under the engine&apos;s repos root. Only <code className="font-mono">https://github.com/…</code> URLs — no credentials are stored.
       </p>
     </Card>
   );
