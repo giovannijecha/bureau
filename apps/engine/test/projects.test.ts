@@ -79,8 +79,11 @@ describe("projectsFromJson", () => {
 });
 
 describe("ProjectRegistry", () => {
-  it("requires at least one project and rejects duplicate ids", () => {
-    expect(() => new ProjectRegistry([])).toThrow();
+  it("allows zero projects (fresh install) and rejects duplicate ids", () => {
+    const empty = new ProjectRegistry([]);
+    expect(empty.list()).toEqual([]);
+    expect(() => empty.default()).toThrow(expect.objectContaining({ status: 409 })); // 409, not a crash
+    expect(() => empty.resolve(undefined)).toThrow(expect.objectContaining({ status: 409 }));
     expect(() => new ProjectRegistry([P(), P()])).toThrow(/Duplicate/);
   });
 
@@ -115,13 +118,15 @@ describe("ProjectRegistry", () => {
     expect(() => reg.add(P({ id: "a" }))).toThrow(expect.objectContaining({ status: 409 }));
   });
 
-  it("remove drops a project, 404 unknown, 409 on the last, and shifts the default", () => {
+  it("remove drops a project, 404 on unknown, can empty the registry, and shifts the default", () => {
     const reg = new ProjectRegistry([P({ id: "a" }), P({ id: "b", owner: "o2", name: "b" })]);
     expect(() => reg.remove("nope")).toThrow(expect.objectContaining({ status: 404 }));
     reg.remove("a");
     expect(reg.list().map((p) => p.id)).toEqual(["b"]);
     expect(reg.default().id).toBe("b"); // default shifts to the survivor
-    expect(() => reg.remove("b")).toThrow(expect.objectContaining({ status: 409 })); // never empties
+    reg.remove("b"); // removing the last is now allowed — back to the fresh-install state
+    expect(reg.list()).toEqual([]);
+    expect(() => reg.default()).toThrow(expect.objectContaining({ status: 409 }));
   });
 });
 

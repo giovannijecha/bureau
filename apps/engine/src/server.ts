@@ -135,11 +135,11 @@ async function main(): Promise<void> {
 
   // Projects are now DB-backed: idempotently seed the env-configured repos when env config
   // is present, then build the one (mutable) registry from the DB — env-seeded + any the CEO
-  // added. Once the DB has projects, env is OPTIONAL: it can be dropped and the CEO-added
-  // repos persist (the DB is the source of truth). Env is only REQUIRED on a true cold start
-  // (empty DB) to seed the first project. (BUREAU_REPOS_ROOT is always required — paths derive
-  // from it.)
-  const reposRoot = env("BUREAU_REPOS_ROOT");
+  // added. Env is fully OPTIONAL: with none set the engine boots with ZERO projects and the
+  // panel shows its onboarding (add a repo from there); the DB is the source of truth and
+  // persists what the CEO adds. BUREAU_REPOS_ROOT defaults to ./.bureau/repos (paths derive
+  // from it) so a fresh "clone and run" works with no configuration at all.
+  const reposRoot = env("BUREAU_REPOS_ROOT", "./.bureau/repos");
   const projectRepo = new ProjectRepo(db);
   const hasEnvConfig = (process.env.BUREAU_PROJECTS?.trim() ?? "") !== "" || (process.env.BUREAU_REPO_OWNER?.trim() ?? "") !== "";
   if (hasEnvConfig) {
@@ -155,13 +155,8 @@ async function main(): Promise<void> {
       });
     }
   }
-  const rows = projectRepo.list();
-  if (rows.length === 0) {
-    throw new Error(
-      "No projects configured. On first run set BUREAU_PROJECTS (or the legacy single-repo env); after that you can add repos from the panel and they persist."
-    );
-  }
-  const projects = new ProjectRegistry(rows.map((r) => projectConfigFromRow(reposRoot, r)));
+  // May be empty on a fresh install — the panel onboards the CEO to add the first repo.
+  const projects = new ProjectRegistry(projectRepo.list().map((r) => projectConfigFromRow(reposRoot, r)));
 
   // A VCS port bound to a specific project (its clone, owner/repo, and author).
   const vcsFor = (project: ProjectConfig): VcsPort =>
@@ -221,14 +216,16 @@ async function main(): Promise<void> {
       try {
         return projects.resolve(projectId).canonicalPath;
       } catch {
-        return projects.default().canonicalPath;
+        // Unknown/absent project (incl. a fresh install with none) — fall back to the
+        // first project if any, else the engine's cwd so the shell still opens somewhere.
+        return projects.list()[0]?.canonicalPath ?? process.cwd();
       }
     },
     resolveId: (projectId) => {
       try {
         return projects.resolve(projectId).id;
       } catch {
-        return projects.default().id;
+        return projects.list()[0]?.id ?? "none";
       }
     },
   });
@@ -265,7 +262,8 @@ async function main(): Promise<void> {
   // enforced, not just documented.
   server.listen(port, "127.0.0.1", () => {
     console.log(`Bureau engine listening on http://localhost:${port} (ws: /ws)`);
-    console.log(`Projects: ${projects.list().map((p) => `${p.owner}/${p.name}`).join(", ")}`);
+    const names = projects.list().map((p) => `${p.owner}/${p.name}`).join(", ");
+    console.log(`Projects: ${names || "(none yet — add one from the panel)"}`);
   });
 
   // Graceful shutdown: drain in-flight pipelines so a restart never abandons a

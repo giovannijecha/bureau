@@ -21,6 +21,8 @@ export interface ProjectsState {
   setActiveId: (id: string) => void;
   /** Re-fetch the project list (after an add/remove) and reconcile the active id. */
   refresh: () => void;
+  /** True until the first fetch resolves — lets consumers avoid a no-projects flash. */
+  loading: boolean;
   error: string | null;
 }
 
@@ -30,6 +32,7 @@ export function ProjectsProvider({ children }: { children: ReactNode }) {
   const [projects, setProjects] = useState<Project[]>([]);
   const [activeId, setActiveIdState] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
+  const [loading, setLoading] = useState(true);
 
   const setActiveId = useCallback((id: string) => {
     setActiveIdState(id);
@@ -52,6 +55,8 @@ export function ProjectsProvider({ children }: { children: ReactNode }) {
       });
     } catch (e) {
       setError(e instanceof Error ? e.message : String(e));
+    } finally {
+      setLoading(false);
     }
   }, []);
 
@@ -66,7 +71,7 @@ export function ProjectsProvider({ children }: { children: ReactNode }) {
 
   const active = projects.find((p) => p.id === activeId) ?? null;
   return (
-    <ProjectsContext.Provider value={{ projects, active, activeId, setActiveId, refresh: () => void refresh(), error }}>
+    <ProjectsContext.Provider value={{ projects, active, activeId, setActiveId, refresh: () => void refresh(), loading, error }}>
       {children}
     </ProjectsContext.Provider>
   );

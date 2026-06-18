@@ -156,7 +156,7 @@ export class Orchestrator {
     if (live.length > 0 && opts?.force !== true) {
       throw new OrchestratorError(`${live.length} task(s) still reference this project — finish or stop them first`, 409);
     }
-    this.d.projects.remove(id); // throws 409 if it's the last project (≥1 invariant)
+    this.d.projects.remove(id); // may empty the registry → panel falls back to onboarding
     this.d.projectRepo.delete(id);
     // Delete the on-disk clone (clean/lean — no orphaned dirs). Path-guarded vs traversal.
     const dir = join(this.d.reposRoot, id);
