@@ -13,17 +13,22 @@ import {
   SlidersHorizontal,
   Sun,
   Moon,
-  PanelLeftClose,
-  PanelLeftOpen,
   Info,
   Github,
+  KeyRound,
+  Copy,
+  Check,
+  Sparkles,
+  Leaf,
+  Monitor,
+  Palette,
+  Terminal as TerminalIcon,
   type LucideIcon,
   type LucideProps,
 } from "lucide-react";
 import type { EngineInfo, Project, GithubAccount } from "@bureau/contracts";
 import { getConfig, listProjects, ENGINE_URL, getGithubAccount, setModels } from "../../lib/api";
-import { useTheme } from "../../lib/useTheme";
-import { useSidebar } from "../../lib/sidebar";
+import { useAppearance, ACCENTS, SCALES, type ThemeMode, type ScaleKey } from "../../lib/appearance";
 import { Dropdown } from "../../components/Dropdown";
 import { cn } from "../../lib/utils";
 
@@ -43,7 +48,17 @@ const SCOPE_LABELS: Record<string, string> = {
   document: "Scribe",
 };
 
+const SECTIONS = [
+  { id: "general", label: "General", icon: SlidersHorizontal },
+  { id: "connections", label: "Connections", icon: KeyRound },
+  { id: "models", label: "Models", icon: Cpu },
+  { id: "projects", label: "Projects", icon: FolderGit2 },
+  { id: "system", label: "System", icon: Server },
+] as const;
+type SectionId = (typeof SECTIONS)[number]["id"];
+
 export default function SettingsPage() {
+  const [section, setSection] = useState<SectionId>("general");
   const [info, setInfo] = useState<EngineInfo | null>(null);
   const [projects, setProjects] = useState<Project[]>([]);
   const [online, setOnline] = useState<boolean | null>(null);
@@ -56,6 +71,18 @@ export default function SettingsPage() {
       setInfo((prev) => (prev ? { ...prev, models: res.models } : prev)); // authoritative — avoids a poll-race revert
     } catch {
       /* the 5s poll re-syncs the authoritative value */
+    }
+  }
+
+  async function applyPreset(model: string) {
+    if (!info) return;
+    const map = Object.fromEntries(Object.keys(info.models).map((s) => [s, model]));
+    setInfo((prev) => (prev ? { ...prev, models: map } : prev)); // optimistic
+    try {
+      const res = await setModels(map);
+      setInfo((prev) => (prev ? { ...prev, models: res.models } : prev));
+    } catch {
+      /* poll re-syncs */
     }
   }
 
@@ -94,209 +121,434 @@ export default function SettingsPage() {
 
   return (
     <div className="h-full overflow-y-auto p-4 sm:p-6">
-      <div className="grid max-w-3xl gap-4">
-        <PreferencesCard />
-
-        <Card title="Engine" icon={Server}>
-          <Row label="URL">
-            <code className="rounded bg-muted px-1.5 py-0.5 font-mono text-xs">{ENGINE_URL}</code>
-          </Row>
-          <Row label="Status">
-            {online === null ? (
-              <span className="text-sm text-muted-foreground">checking…</span>
-            ) : online ? (
-              <Badge ok>
-                <Wifi className="h-3.5 w-3.5" /> Connected
-              </Badge>
-            ) : (
-              <Badge>
-                <WifiOff className="h-3.5 w-3.5" /> Offline
-              </Badge>
-            )}
-          </Row>
-          {info && <Row label="In-flight tasks">{info.inflightTasks}</Row>}
-        </Card>
-
-        <Card title="GitHub" icon={Github}>
-          {account === null ? (
-            <span className="text-sm text-muted-foreground">checking…</span>
-          ) : account.connected ? (
-            <>
-              <Row label="Account">
-                <span className="inline-flex items-center gap-1.5 text-sm font-medium">
-                  <Github className="h-3.5 w-3.5" /> {account.login}
-                </span>
-              </Row>
-              {account.name && (
-                <Row label="Name">
-                  <span className="text-sm">{account.name}</span>
-                </Row>
-              )}
-              <Row label="Status">
-                <Badge ok>
-                  <CheckCircle2 className="h-3.5 w-3.5" /> Connected
-                </Badge>
-              </Row>
-            </>
-          ) : (
-            <div className="space-y-2">
-              <Badge>
-                <XCircle className="h-3.5 w-3.5" /> Not connected
-              </Badge>
-              <p className="text-xs text-muted-foreground">
-                Run <code className="font-mono">gh auth login</code> in a terminal to connect your GitHub account — Bureau reuses the gh CLI&apos;s
-                authentication (no token is stored).
-              </p>
-            </div>
-          )}
-        </Card>
-
-        <Card title="Model provider" icon={Cpu}>
-          {info ? (
-            <>
-              <Row label="Provider">
-                <code className="rounded bg-muted px-1.5 py-0.5 font-mono text-xs">{info.provider.name}</code>
-              </Row>
-              <Row label="Available">
-                {info.provider.available ? (
-                  <Badge ok>
-                    <CheckCircle2 className="h-3.5 w-3.5" /> yes
-                  </Badge>
-                ) : (
-                  <Badge>
-                    <XCircle className="h-3.5 w-3.5" /> no
-                  </Badge>
+      <div className="mx-auto flex max-w-5xl flex-col gap-5 lg:flex-row">
+        {/* Section nav — a vertical rail on desktop, a horizontal scroller on mobile. */}
+        <nav className="flex shrink-0 gap-1 overflow-x-auto pb-1 lg:w-48 lg:flex-col lg:overflow-visible lg:pb-0">
+          {SECTIONS.map((s) => {
+            const Icon = s.icon;
+            const active = section === s.id;
+            return (
+              <button
+                key={s.id}
+                onClick={() => setSection(s.id)}
+                className={cn(
+                  "inline-flex shrink-0 items-center gap-2.5 rounded-lg px-3 py-2 text-sm font-medium transition-colors lg:w-full",
+                  active ? "bg-primary text-primary-foreground" : "text-muted-foreground hover:bg-muted hover:text-foreground"
                 )}
-              </Row>
+              >
+                <Icon className="h-4 w-4 shrink-0" />
+                {s.label}
+              </button>
+            );
+          })}
+        </nav>
+
+        {/* Content */}
+        <div className="min-w-0 flex-1 space-y-4">
+          {section === "general" && <AppearanceCard />}
+
+          {section === "connections" && (
+            <>
+              <ModelProviderCard info={info} />
+              <GithubCard account={account} />
+              <p className="px-1 text-xs text-muted-foreground">
+                Bureau stores no credentials — GitHub auth lives in the <code className="font-mono">gh</code> CLI and the model key in the engine&apos;s
+                environment. Hosted sign-in (OAuth) and a panel access lock are separate, opt-in features.
+              </p>
             </>
-          ) : (
-            <p className="text-sm text-muted-foreground">Engine offline.</p>
           )}
-        </Card>
 
-        {info && info.models && (
-          <Card title="Models" icon={Cpu}>
-            <p className="text-xs text-muted-foreground">
-              Which model each worker runs on. Switch a scope to a cheaper model to cut cost (see Metrics) — chat is a good candidate. Applies for this
-              session; set <code className="font-mono">BUREAU_MODEL_*</code> on the engine for a permanent default.
-            </p>
-            {MODEL_SCOPE_ORDER.filter((s) => info.models[s] !== undefined).map((s) => (
-              <Row key={s} label={SCOPE_LABELS[s] ?? s}>
-                <Dropdown value={info.models[s]!} options={MODEL_OPTIONS} onChange={(m) => void changeModel(s, m)} buttonClassName="h-8" />
-              </Row>
-            ))}
-          </Card>
-        )}
-
-        <Card title="Projects" icon={FolderGit2}>
-          {projects.length === 0 ? (
-            <p className="text-sm text-muted-foreground">
-              None configured — set <code className="font-mono text-xs">BUREAU_PROJECTS</code> on the engine.
-            </p>
-          ) : (
-            <ul className="space-y-2">
-              {projects.map((p) => (
-                <li key={p.id} className="flex flex-wrap items-center gap-x-2 gap-y-1 text-sm">
-                  <FolderGit2 className="h-3.5 w-3.5 shrink-0 text-muted-foreground" />
-                  <span className="font-medium">
-                    {p.owner}/{p.name}
-                  </span>
-                  <span className="flex items-center gap-1 text-xs text-muted-foreground">
-                    <GitBranch className="h-3 w-3" />
-                    {p.baseBranch}
-                  </span>
-                </li>
-              ))}
-            </ul>
+          {section === "models" && (
+            <ModelsCard info={info} onChange={changeModel} onPreset={applyPreset} />
           )}
-        </Card>
 
-        <Card title="About" icon={Info}>
-          <Row label="Version">
-            <code className="rounded bg-muted px-1.5 py-0.5 font-mono text-xs">v0.1.0</code>
-          </Row>
-          <Row label="Edition">
-            <span className="text-sm">Local-first</span>
-          </Row>
-          <Row label="Source">
-            <a
-              href="https://github.com/giovannijecha/bureau"
-              target="_blank"
-              rel="noreferrer"
-              className="inline-flex items-center gap-1.5 text-sm text-primary transition-colors hover:underline"
-            >
-              <Github className="h-3.5 w-3.5" /> giovannijecha/bureau
-            </a>
-          </Row>
-        </Card>
+          {section === "projects" && <ProjectsCard projects={projects} />}
 
-        <p className="text-xs text-muted-foreground">
-          Engine configuration (repos, provider, paths) is set via the environment — see{" "}
-          <code className="font-mono">apps/engine/.env.example</code>.
-        </p>
+          {section === "system" && <SystemCard info={info} online={online} />}
+        </div>
       </div>
     </div>
   );
 }
 
-function PreferencesCard() {
-  const { dark, setDark } = useTheme();
-  const { collapsed, setCollapsed } = useSidebar();
+function AppearanceCard() {
+  const { mode, accent, scale, reduceMotion, setMode, setAccent, setScale, setReduceMotion } = useAppearance();
+  const activeAccent = ACCENTS.find((a) => a.key === accent) ?? ACCENTS[0]!;
   return (
-    <Card title="Preferences" icon={SlidersHorizontal}>
-      <Row label="Theme">
-        <Segmented value={dark} onChange={setDark} falseOpt={{ label: "Light", icon: Sun }} trueOpt={{ label: "Dark", icon: Moon }} />
-      </Row>
-      <Row label="Sidebar">
-        <Segmented
-          value={collapsed}
-          onChange={setCollapsed}
-          falseOpt={{ label: "Expanded", icon: PanelLeftOpen }}
-          trueOpt={{ label: "Collapsed", icon: PanelLeftClose }}
-        />
-      </Row>
-      <p className="text-xs text-muted-foreground">Saved on this device · the sidebar setting applies to the desktop rail.</p>
+    <Card title="Appearance" icon={Palette}>
+      {/* Theme — visual preview tiles. */}
+      <div>
+        <div className="mb-2.5 text-sm font-medium">Theme</div>
+        <div className="grid grid-cols-3 gap-2.5">
+          <ThemeTile value="light" label="Light" icon={Sun} active={mode === "light"} onClick={() => setMode("light")} />
+          <ThemeTile value="dark" label="Dark" icon={Moon} active={mode === "dark"} onClick={() => setMode("dark")} />
+          <ThemeTile value="system" label="System" icon={Monitor} active={mode === "system"} onClick={() => setMode("system")} />
+        </div>
+      </div>
+
+      {/* The rest — roomy, divided rows with a description each. */}
+      <div className="divide-y border-t">
+        <SettingRow title="Accent" desc={`Highlight color across Bureau — ${activeAccent.label}.`}>
+          <div className="flex items-center gap-2">
+            {ACCENTS.map((acc) => {
+              const active = accent === acc.key;
+              return (
+                <button
+                  key={acc.key}
+                  onClick={() => setAccent(acc.key)}
+                  title={acc.label}
+                  aria-label={acc.label}
+                  aria-pressed={active}
+                  className={cn(
+                    "h-6 w-6 rounded-full ring-2 ring-offset-2 ring-offset-card transition-all hover:scale-110",
+                    active ? "ring-foreground" : "ring-transparent hover:ring-border"
+                  )}
+                  style={{ background: acc.swatch || "linear-gradient(135deg, var(--foreground) 50%, var(--muted-foreground) 50%)" }}
+                />
+              );
+            })}
+          </div>
+        </SettingRow>
+        <SettingRow title="Scale" desc="Overall size of the interface.">
+          <Choice<ScaleKey> value={scale} onChange={setScale} options={SCALES.map((s) => ({ value: s.key, label: s.label }))} />
+        </SettingRow>
+        <SettingRow title="Motion" desc="Reduce animations and transitions.">
+          <Choice<"full" | "reduced">
+            value={reduceMotion ? "reduced" : "full"}
+            onChange={(v) => setReduceMotion(v === "reduced")}
+            options={[
+              { value: "full", label: "Full" },
+              { value: "reduced", label: "Reduced" },
+            ]}
+          />
+        </SettingRow>
+      </div>
+      <p className="text-xs text-muted-foreground">Saved on this device. Theme can follow your OS; reduced motion stops animations.</p>
     </Card>
   );
 }
 
-/** A two-state segmented control (used for the boolean preferences). */
-function Segmented({
+// A static mini-mockup of the app in a given palette — the body of a theme preview tile.
+function MiniPreview({ bg, side, bar }: { bg: string; side: string; bar: string }) {
+  return (
+    <div className="flex h-full w-full" style={{ background: bg }}>
+      <div className="h-full w-1/3" style={{ background: side }} />
+      <div className="flex flex-1 flex-col justify-center gap-1 px-1.5">
+        <div className="h-1.5 w-3/4 rounded-full" style={{ background: "var(--primary)" }} />
+        <div className="h-1 w-full rounded-full" style={{ background: bar }} />
+        <div className="h-1 w-2/3 rounded-full" style={{ background: bar }} />
+      </div>
+    </div>
+  );
+}
+
+const PV_LIGHT = { bg: "#ffffff", side: "#f1f1f4", bar: "#d4d4d8" };
+const PV_DARK = { bg: "#18181b", side: "#27272a", bar: "#3f3f46" };
+
+function ThemeTile({
+  value,
+  label,
+  icon: Icon,
+  active,
+  onClick,
+}: {
+  value: ThemeMode;
+  label: string;
+  icon: LucideIcon;
+  active: boolean;
+  onClick: () => void;
+}) {
+  return (
+    <button
+      onClick={onClick}
+      aria-pressed={active}
+      className={cn(
+        "flex flex-col gap-2 rounded-xl border p-1.5 text-left transition-all",
+        active ? "border-primary ring-1 ring-primary" : "border-border hover:border-foreground/30"
+      )}
+    >
+      <div className="h-14 w-full overflow-hidden rounded-md border">
+        {value === "light" && <MiniPreview {...PV_LIGHT} />}
+        {value === "dark" && <MiniPreview {...PV_DARK} />}
+        {value === "system" && (
+          <div className="flex h-full w-full">
+            <div className="w-1/2 overflow-hidden border-r">
+              <MiniPreview {...PV_LIGHT} />
+            </div>
+            <div className="w-1/2 overflow-hidden">
+              <MiniPreview {...PV_DARK} />
+            </div>
+          </div>
+        )}
+      </div>
+      <div className="flex items-center gap-1.5 px-0.5 pb-0.5">
+        <Icon className="h-3.5 w-3.5 text-muted-foreground" />
+        <span className="text-xs font-medium">{label}</span>
+        {active && <Check className="ml-auto h-3.5 w-3.5 text-primary" />}
+      </div>
+    </button>
+  );
+}
+
+/** A roomy settings row: title + description on the left, control on the right. */
+function SettingRow({ title, desc, children }: { title: string; desc?: string; children: ReactNode }) {
+  return (
+    <div className="flex flex-wrap items-center justify-between gap-x-4 gap-y-2 py-3.5">
+      <div className="min-w-0">
+        <div className="text-sm font-medium">{title}</div>
+        {desc && <div className="mt-0.5 text-xs text-muted-foreground">{desc}</div>}
+      </div>
+      <div className="shrink-0">{children}</div>
+    </div>
+  );
+}
+
+/** A segmented control over N string options (icons optional). */
+function Choice<T extends string>({
   value,
   onChange,
-  falseOpt,
-  trueOpt,
+  options,
 }: {
-  value: boolean;
-  onChange: (v: boolean) => void;
-  falseOpt: { label: string; icon: LucideIcon };
-  trueOpt: { label: string; icon: LucideIcon };
+  value: T;
+  onChange: (v: T) => void;
+  options: { value: T; label: string; icon?: LucideIcon }[];
 }) {
-  const opts: { v: boolean; label: string; icon: LucideIcon }[] = [
-    { v: false, ...falseOpt },
-    { v: true, ...trueOpt },
-  ];
   return (
-    <div className="inline-flex rounded-lg border bg-background p-0.5">
-      {opts.map((o) => {
+    <div className="inline-flex flex-wrap items-center gap-0.5 rounded-xl bg-muted/40 p-1">
+      {options.map((o) => {
         const Icon = o.icon;
-        const active = value === o.v;
+        const active = value === o.value;
         return (
           <button
-            key={o.label}
-            onClick={() => onChange(o.v)}
+            key={o.value}
+            onClick={() => onChange(o.value)}
             aria-pressed={active}
             className={cn(
-              "inline-flex items-center gap-1.5 rounded-md px-2.5 py-1 text-xs font-medium transition-colors",
-              active ? "bg-primary text-primary-foreground shadow-sm" : "text-muted-foreground hover:text-foreground"
+              "inline-flex items-center gap-1.5 rounded-lg px-3 py-1.5 text-xs font-medium transition-all",
+              active
+                ? "bg-primary text-primary-foreground shadow-sm"
+                : "text-muted-foreground hover:bg-background/60 hover:text-foreground"
             )}
           >
-            <Icon className="h-3.5 w-3.5" />
+            {Icon && <Icon className="h-3.5 w-3.5" />}
             {o.label}
           </button>
         );
       })}
     </div>
+  );
+}
+
+function ModelProviderCard({ info }: { info: EngineInfo | null }) {
+  return (
+    <Card title="Model provider" icon={KeyRound}>
+      {info ? (
+        <>
+          <Row label="Provider">
+            <code className="rounded bg-muted px-1.5 py-0.5 font-mono text-xs">{info.provider.name}</code>
+          </Row>
+          <Row label="Authenticated">
+            {info.provider.available ? (
+              <Badge ok>
+                <CheckCircle2 className="h-3.5 w-3.5" /> Ready
+              </Badge>
+            ) : (
+              <Badge>
+                <XCircle className="h-3.5 w-3.5" /> Not configured
+              </Badge>
+            )}
+          </Row>
+          {!info.provider.available && (
+            <p className="text-xs text-muted-foreground">
+              Set <code className="font-mono">ANTHROPIC_API_KEY</code> when launching the engine, or sign in with the local{" "}
+              <code className="font-mono">claude</code> CLI — Bureau uses whichever is available and never stores the key.
+            </p>
+          )}
+        </>
+      ) : (
+        <p className="text-sm text-muted-foreground">Engine offline.</p>
+      )}
+    </Card>
+  );
+}
+
+function GithubCard({ account }: { account: GithubAccount | null }) {
+  return (
+    <Card title="GitHub" icon={Github}>
+      {account === null ? (
+        <span className="text-sm text-muted-foreground">checking…</span>
+      ) : account.connected ? (
+        <>
+          <Row label="Account">
+            <span className="inline-flex items-center gap-1.5 text-sm font-medium">
+              <Github className="h-3.5 w-3.5" /> {account.login}
+            </span>
+          </Row>
+          {account.name && (
+            <Row label="Name">
+              <span className="text-sm">{account.name}</span>
+            </Row>
+          )}
+          <Row label="Status">
+            <Badge ok>
+              <CheckCircle2 className="h-3.5 w-3.5" /> Connected
+            </Badge>
+          </Row>
+        </>
+      ) : (
+        <div className="space-y-2.5">
+          <Badge>
+            <XCircle className="h-3.5 w-3.5" /> Not connected
+          </Badge>
+          <p className="text-xs text-muted-foreground">
+            Bureau reuses the <code className="font-mono">gh</code> CLI&apos;s authentication (no token is stored). Run this in a terminal to connect:
+          </p>
+          <CopyCommand command="gh auth login" />
+        </div>
+      )}
+    </Card>
+  );
+}
+
+function ModelsCard({ info, onChange, onPreset }: { info: EngineInfo | null; onChange: (s: string, m: string) => void; onPreset: (m: string) => void }) {
+  if (!info || !info.models) {
+    return (
+      <Card title="Models" icon={Cpu}>
+        <p className="text-sm text-muted-foreground">Engine offline.</p>
+      </Card>
+    );
+  }
+  return (
+    <Card title="Models" icon={Cpu}>
+      <p className="text-xs text-muted-foreground">
+        Which model each worker runs on. Cheaper models cut cost (see Metrics). Applies for this session; set{" "}
+        <code className="font-mono">BUREAU_MODEL_*</code> on the engine for a permanent default.
+      </p>
+      <div className="flex flex-wrap gap-2">
+        <PresetButton icon={Sparkles} label="Max quality" hint="all Opus" onClick={() => onPreset("claude-opus-4-8")} />
+        <PresetButton icon={Leaf} label="Cost-saver" hint="all Sonnet" onClick={() => onPreset("claude-sonnet-4-6")} />
+      </div>
+      <div className="space-y-2.5 border-t pt-3">
+        {MODEL_SCOPE_ORDER.filter((s) => info.models[s] !== undefined).map((s) => (
+          <Row key={s} label={SCOPE_LABELS[s] ?? s}>
+            <Dropdown value={info.models[s]!} options={MODEL_OPTIONS} onChange={(m) => onChange(s, m)} buttonClassName="h-8" />
+          </Row>
+        ))}
+      </div>
+    </Card>
+  );
+}
+
+function ProjectsCard({ projects }: { projects: Project[] }) {
+  return (
+    <Card title="Projects" icon={FolderGit2}>
+      {projects.length === 0 ? (
+        <p className="text-sm text-muted-foreground">
+          None configured — set <code className="font-mono text-xs">BUREAU_PROJECTS</code> on the engine.
+        </p>
+      ) : (
+        <ul className="space-y-2">
+          {projects.map((p) => (
+            <li key={p.id} className="flex flex-wrap items-center gap-x-2 gap-y-1 text-sm">
+              <FolderGit2 className="h-3.5 w-3.5 shrink-0 text-muted-foreground" />
+              <span className="font-medium">
+                {p.owner}/{p.name}
+              </span>
+              <span className="flex items-center gap-1 text-xs text-muted-foreground">
+                <GitBranch className="h-3 w-3" />
+                {p.baseBranch}
+              </span>
+            </li>
+          ))}
+        </ul>
+      )}
+      <p className="border-t pt-3 text-xs text-muted-foreground">
+        Repositories are configured via <code className="font-mono">BUREAU_PROJECTS</code> on the engine. In-app add/remove is a planned feature.
+      </p>
+    </Card>
+  );
+}
+
+function SystemCard({ info, online }: { info: EngineInfo | null; online: boolean | null }) {
+  return (
+    <>
+      <Card title="Engine" icon={Server}>
+        <Row label="URL">
+          <code className="rounded bg-muted px-1.5 py-0.5 font-mono text-xs">{ENGINE_URL}</code>
+        </Row>
+        <Row label="Status">
+          {online === null ? (
+            <span className="text-sm text-muted-foreground">checking…</span>
+          ) : online ? (
+            <Badge ok>
+              <Wifi className="h-3.5 w-3.5" /> Connected
+            </Badge>
+          ) : (
+            <Badge>
+              <WifiOff className="h-3.5 w-3.5" /> Offline
+            </Badge>
+          )}
+        </Row>
+        {info && <Row label="In-flight tasks">{info.inflightTasks}</Row>}
+      </Card>
+
+      <Card title="About" icon={Info}>
+        <Row label="Version">
+          <code className="rounded bg-muted px-1.5 py-0.5 font-mono text-xs">v0.1.0</code>
+        </Row>
+        <Row label="Edition">
+          <span className="text-sm">Local-first</span>
+        </Row>
+        <Row label="Source">
+          <a
+            href="https://github.com/giovannijecha/bureau"
+            target="_blank"
+            rel="noreferrer"
+            className="inline-flex items-center gap-1.5 text-sm text-primary transition-colors hover:underline"
+          >
+            <Github className="h-3.5 w-3.5" /> giovannijecha/bureau
+          </a>
+        </Row>
+      </Card>
+    </>
+  );
+}
+
+/** A read-only command with a one-click copy button. */
+function CopyCommand({ command }: { command: string }) {
+  const [copied, setCopied] = useState(false);
+  return (
+    <div className="flex items-center gap-2 rounded-lg border bg-background p-1 pl-3">
+      <TerminalIcon className="h-3.5 w-3.5 shrink-0 text-muted-foreground" />
+      <code className="min-w-0 flex-1 truncate font-mono text-xs">{command}</code>
+      <button
+        onClick={() => {
+          void navigator.clipboard?.writeText(command).then(() => {
+            setCopied(true);
+            setTimeout(() => setCopied(false), 1500);
+          });
+        }}
+        className="inline-flex h-7 items-center gap-1.5 rounded-md px-2 text-xs font-medium text-muted-foreground transition-colors hover:bg-accent hover:text-foreground"
+      >
+        {copied ? <Check className="h-3.5 w-3.5 text-green-500" /> : <Copy className="h-3.5 w-3.5" />}
+        {copied ? "Copied" : "Copy"}
+      </button>
+    </div>
+  );
+}
+
+function PresetButton({ icon: Icon, label, hint, onClick }: { icon: LucideIcon; label: string; hint: string; onClick: () => void }) {
+  return (
+    <button
+      onClick={onClick}
+      className="inline-flex items-center gap-2 rounded-lg border bg-background px-3 py-2 text-left transition-colors hover:bg-accent"
+    >
+      <Icon className="h-4 w-4 shrink-0 text-primary" />
+      <span className="leading-tight">
+        <span className="block text-sm font-medium">{label}</span>
+        <span className="block text-[11px] text-muted-foreground">{hint}</span>
+      </span>
+    </button>
   );
 }
 

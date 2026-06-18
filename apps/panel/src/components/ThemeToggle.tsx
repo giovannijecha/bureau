@@ -1,14 +1,14 @@
 "use client";
 
 import { Sun, Moon } from "lucide-react";
-import { useTheme } from "../lib/useTheme";
+import { useAppearance } from "../lib/appearance";
 
 export function ThemeToggle() {
-  const { dark, toggle } = useTheme();
+  const { dark, toggleDark } = useAppearance();
 
   return (
     <button
-      onClick={toggle}
+      onClick={toggleDark}
       className="flex h-8 w-8 items-center justify-center rounded-md text-muted-foreground transition-colors hover:bg-accent hover:text-foreground"
       aria-label="Toggle theme"
     >
