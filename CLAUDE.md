@@ -2,7 +2,7 @@
 
 Local-first AI agent team that works on the user's GitHub repositories. The user is CEO and talks exclusively with **Iris** (the orchestrator). Iris materialises a persistent **Task** and delegates to stateless **capability** workers (plan/edit/test/review/document). State is the truth; agents are replaceable operatives.
 
-See umbrella `C:/Users/giova/Claude/CLAUDE.md` for cross-project rules, agent model tiers, and the orchestrator-vs-subagent policy.
+See the umbrella workspace `CLAUDE.md` (one level up, in the maintainer's local workspace) for cross-project rules, agent model tiers, and the orchestrator-vs-subagent policy.
 
 ## Tech stack
 
@@ -19,7 +19,7 @@ See umbrella `C:/Users/giova/Claude/CLAUDE.md` for cross-project rules, agent mo
 |---|---|
 | `packages/core` | Pure domain — Task/Step/Gate/Artifact/DecisionLog types + `transition()` + `canPush()`. Zero I/O, zero runtime deps on other `@bureau/*` packages. |
 | `packages/db` | SQLite schema (Drizzle), migrations, repo layer. Imports `core`. |
-| `packages/providers` | Model adapters (Anthropic/OpenAI/Gemini) + auth strategies. Imports `core`, `contracts`. |
+| `packages/providers` | Model adapters (Anthropic/OpenAI/Gemini) + auth strategies. Imports `core`, `contracts`. <!-- Only the Anthropic adapter (API + `claude` CLI) is wired today; OpenAI/Gemini are declared but ABSENT — implement per phase. --> |
 | `packages/vcs` | git/gh subprocess wrapper, worktree lifecycle. Imports `core`. |
 | `packages/mind` | Obsidian vault markdown read/write. Imports `core`. |
 | `packages/capabilities` | Stateless capability workers: plan/edit/test/review/document. Imports `core`, `providers`, `contracts`. |

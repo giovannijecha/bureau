@@ -114,7 +114,8 @@ export function Header() {
           <div className="flex h-8 w-8 items-center justify-center rounded-full bg-primary text-xs font-semibold text-primary-foreground">
             CEO
           </div>
-          <span className="hidden text-sm font-medium sm:inline">Giovanni</span>
+          {/* The operator's display name — configurable via NEXT_PUBLIC_USER_NAME, neutral by default. */}
+          <span className="hidden text-sm font-medium sm:inline">{process.env.NEXT_PUBLIC_USER_NAME ?? "You"}</span>
         </div>
       </div>
     </header>

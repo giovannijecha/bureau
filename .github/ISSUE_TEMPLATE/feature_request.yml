@@ -1,0 +1,30 @@
+name: Feature request
+description: Suggest an idea or improvement for Bureau
+labels: ["enhancement"]
+body:
+  - type: textarea
+    id: problem
+    attributes:
+      label: What problem does this solve?
+      description: The motivation — what's painful or missing today.
+    validations:
+      required: true
+  - type: textarea
+    id: proposal
+    attributes:
+      label: Proposed solution
+      description: What you'd like Bureau to do.
+    validations:
+      required: true
+  - type: textarea
+    id: alternatives
+    attributes:
+      label: Alternatives considered
+      description: Other approaches you weighed, and why this one.
+  - type: checkboxes
+    id: security
+    attributes:
+      label: Security
+      options:
+        - label: I've checked this doesn't weaken any invariant in SECURITY.md (single push gate, shell-free workers, loopback + Origin-locked transport, no secrets at rest).
+          required: true
