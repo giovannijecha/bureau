@@ -14,7 +14,7 @@
 //   POST /api/tasks/:id/open-pr   push → open a PR for review on GitHub, NO merge
 
 import { createServer, type IncomingMessage, type ServerResponse, type Server } from "node:http";
-import { SendMessageRequestDto, CreateTaskRequestDto, SaveNoteRequestDto, GateDecisionRequestDto, GitOpRequestDto, SetModelsRequestDto, CreateProjectRequestDto, EstimateRequestDto } from "@bureau/contracts";
+import { SendMessageRequestDto, CreateTaskRequestDto, SaveNoteRequestDto, GateDecisionRequestDto, GitOpRequestDto, SetModelsRequestDto, CreateProjectRequestDto, EstimateRequestDto, SetBudgetRequestDto } from "@bureau/contracts";
 import type { TaskId } from "@bureau/core";
 import { VcsError } from "@bureau/vcs";
 import { Orchestrator, OrchestratorError } from "./orchestrator.js";
@@ -111,6 +111,13 @@ async function handle(deps: HttpDeps, req: IncomingMessage, res: ServerResponse)
   if (method === "POST" && path === "/api/estimate") {
     const body = EstimateRequestDto.parse(await readJson(req));
     sendJson(res, 200, deps.orchestrator.estimateCost(body.capabilities));
+    return;
+  }
+
+  // POST /api/config/budget — set the per-task USD spend cap (0 = no cap).
+  if (method === "POST" && path === "/api/config/budget") {
+    const body = SetBudgetRequestDto.parse(await readJson(req));
+    sendJson(res, 200, { budgetUsd: deps.orchestrator.setBudget(body.budgetUsd) });
     return;
   }
 

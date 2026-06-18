@@ -19,7 +19,7 @@ import {
   Coins,
 } from "lucide-react";
 import type { Message, TaskProposal, Conversation, Attachment, GitOpRequest, CostEstimate } from "@bureau/contracts";
-import { chat, createTask, estimateCost, listConversations, deleteConversation, messagesFor, getGitInfo } from "../lib/api";
+import { chat, createTask, estimateCost, getConfig, listConversations, deleteConversation, messagesFor, getGitInfo } from "../lib/api";
 import { useProjects } from "../lib/useProjects";
 import { useEngineEvents } from "../lib/useEngineEvents";
 import { ProjectSwitcher } from "../components/ProjectSwitcher";
@@ -519,17 +519,23 @@ function ProposalCard({
   onRefine: () => void;
   onKeep: () => void;
 }) {
-  // Forecast the pipeline's token + cost BEFORE the CEO commits to running it.
+  // Forecast the pipeline's token + cost BEFORE the CEO commits to running it, and flag
+  // when that forecast would blow the per-task budget cap (a runtime guard stops it anyway).
   const [est, setEst] = useState<CostEstimate | null>(null);
+  const [budget, setBudget] = useState(0);
   useEffect(() => {
     let alive = true;
     estimateCost(proposal.steps.map((s) => s.capability))
       .then((e) => alive && setEst(e))
       .catch(() => alive && setEst(null));
+    getConfig()
+      .then((c) => alive && setBudget(c.budgetUsd))
+      .catch(() => {});
     return () => {
       alive = false;
     };
   }, [proposal]);
+  const overBudget = budget > 0 && est !== null && est.totalCostUsd > budget;
 
   return (
     <div className="rounded-xl border border-primary/30 bg-card p-4">
@@ -553,14 +559,18 @@ function ProposalCard({
         ))}
       </div>
       {est && (
-        <div className="mb-4 flex flex-wrap items-center gap-x-1.5 gap-y-1 text-xs text-muted-foreground">
+        <div className={cn("mb-4 flex flex-wrap items-center gap-x-1.5 gap-y-1 text-xs", overBudget ? "text-amber-600 dark:text-amber-500" : "text-muted-foreground")}>
           <Coins className="h-3.5 w-3.5 shrink-0" />
           <span>≈ {fmtTokens(est.totalInputTokens + est.totalOutputTokens)} tokens</span>
           <span aria-hidden>·</span>
-          <span className="font-medium text-foreground">~{fmtCost(est.totalCostUsd)}</span>
-          <span className="text-muted-foreground/70">
-            · {est.perStep.some((p) => p.basis === "history") ? "from your past runs" : "rough estimate"}
-          </span>
+          <span className={cn("font-medium", overBudget ? "" : "text-foreground")}>~{fmtCost(est.totalCostUsd)}</span>
+          {overBudget ? (
+            <span className="font-medium">⚠ over your {fmtCost(budget)} cap — it&apos;ll stop mid-run</span>
+          ) : (
+            <span className="text-muted-foreground/70">
+              · {est.perStep.some((p) => p.basis === "history") ? "from your past runs" : "rough estimate"}
+            </span>
+          )}
         </div>
       )}
       <div className="flex flex-wrap gap-2">

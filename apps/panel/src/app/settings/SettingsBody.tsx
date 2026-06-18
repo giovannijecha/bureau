@@ -3,6 +3,7 @@
 import { useEffect, useState, type ComponentType, type ReactNode } from "react";
 import {
   Cpu,
+  Coins,
   FolderGit2,
   Wifi,
   WifiOff,
@@ -30,7 +31,7 @@ import {
   type LucideProps,
 } from "lucide-react";
 import type { EngineInfo, GithubAccount } from "@bureau/contracts";
-import { getConfig, ENGINE_URL, getGithubAccount, setModels, createProject, removeProject } from "../../lib/api";
+import { getConfig, ENGINE_URL, getGithubAccount, setModels, setBudget, createProject, removeProject } from "../../lib/api";
 import { useAppearance, ACCENTS, SCALES, type ThemeMode, type ScaleKey } from "../../lib/appearance";
 import { useProjects } from "../../lib/useProjects";
 import { useConfirm } from "../../components/ConfirmDialog";
@@ -89,6 +90,16 @@ export function SettingsBody({ initialSection }: { initialSection?: string | und
       setInfo((prev) => (prev ? { ...prev, models: res.models } : prev));
     } catch {
       /* poll re-syncs */
+    }
+  }
+
+  async function changeBudget(usd: number) {
+    setInfo((prev) => (prev ? { ...prev, budgetUsd: usd } : prev)); // optimistic
+    try {
+      const res = await setBudget(usd);
+      setInfo((prev) => (prev ? { ...prev, budgetUsd: res.budgetUsd } : prev));
+    } catch {
+      /* the 5s poll re-syncs the authoritative value */
     }
   }
 
@@ -158,7 +169,10 @@ export function SettingsBody({ initialSection }: { initialSection?: string | und
           )}
 
           {section === "models" && (
-            <ModelsCard info={info} onChange={changeModel} onPreset={applyPreset} />
+            <>
+              <ModelsCard info={info} onChange={changeModel} onPreset={applyPreset} />
+              <BudgetCard info={info} onChange={changeBudget} />
+            </>
           )}
 
           {section === "projects" && <ProjectsCard />}
@@ -535,6 +549,58 @@ function ProjectsCard() {
       <p className="text-xs text-muted-foreground">
         Repos are cloned under the engine&apos;s repos root. Only <code className="font-mono">https://github.com/…</code> URLs — no credentials are stored.
       </p>
+    </Card>
+  );
+}
+
+function BudgetCard({ info, onChange }: { info: EngineInfo | null; onChange: (usd: number) => void }) {
+  const [val, setVal] = useState("");
+  const [saved, setSaved] = useState(false);
+  useEffect(() => {
+    if (info) setVal(info.budgetUsd > 0 ? String(info.budgetUsd) : "");
+  }, [info?.budgetUsd]);
+  if (!info) return null;
+  const parsed = val.trim() === "" ? 0 : Number(val);
+  const valid = Number.isFinite(parsed) && parsed >= 0 && parsed <= 1000;
+  const dirty = valid && parsed !== info.budgetUsd;
+  function save() {
+    if (!dirty) return;
+    onChange(parsed);
+    setSaved(true);
+    setTimeout(() => setSaved(false), 1500);
+  }
+  return (
+    <Card title="Budget" icon={Coins}>
+      <p className="text-sm text-muted-foreground">
+        A per-task spend cap. A running task stops before its next step once it crosses this — protection against a runaway
+        pipeline. The proposal card warns when an estimate would exceed it.
+      </p>
+      <div className="flex flex-wrap items-center gap-2">
+        <div className="relative">
+          <span className="pointer-events-none absolute left-2.5 top-1/2 -translate-y-1/2 text-sm text-muted-foreground">$</span>
+          <input
+            value={val}
+            onChange={(e) => setVal(e.target.value)}
+            onKeyDown={(e) => {
+              if (e.key === "Enter") save();
+            }}
+            inputMode="decimal"
+            placeholder="0.00"
+            aria-label="Per-task budget cap in USD"
+            className="h-9 w-32 rounded-md border bg-background pl-6 pr-3 text-sm outline-none transition-colors focus:border-primary/60"
+          />
+        </div>
+        <span className="text-xs text-muted-foreground">per task · 0 = no cap</span>
+        <button
+          onClick={save}
+          disabled={!dirty}
+          className="ml-auto inline-flex h-9 items-center gap-1.5 rounded-md bg-primary px-3.5 text-sm font-medium text-primary-foreground transition-colors hover:bg-primary/90 disabled:opacity-50"
+        >
+          {saved ? <Check className="h-4 w-4" /> : null}
+          {saved ? "Saved" : "Save"}
+        </button>
+      </div>
+      {!valid && <p className="text-xs text-destructive">Enter an amount between $0 and $1000.</p>}
     </Card>
   );
 }

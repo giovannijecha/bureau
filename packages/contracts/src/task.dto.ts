@@ -81,6 +81,9 @@ export const EngineInfoDto = z.object({
   inflightTasks: z.number().int().nonnegative(),
   /** The model each scope runs on (scope → model id): "iris" + each worker capability. */
   models: z.record(z.string(), z.string()),
+  /** Per-task USD spend cap — a running task aborts before its next step once it crosses
+   *  this; 0 means no cap. The pre-run estimate warns when a proposal would exceed it. */
+  budgetUsd: z.number().nonnegative(),
 });
 export type EngineInfo = z.infer<typeof EngineInfoDto>;
 
@@ -89,6 +92,12 @@ export const SetModelsRequestDto = z.object({
   models: z.record(z.string(), z.string()),
 });
 export type SetModelsRequest = z.infer<typeof SetModelsRequestDto>;
+
+/** Settings write: set the per-task USD budget cap (0 = no cap). */
+export const SetBudgetRequestDto = z.object({
+  budgetUsd: z.number().nonnegative().max(1000),
+});
+export type SetBudgetRequest = z.infer<typeof SetBudgetRequestDto>;
 
 /** Full task view for the Assistant panel: summary + pipeline + gates + diff + PR.
  *  Deliberately omits on-disk paths (e.g. worktreePath) — the panel never needs

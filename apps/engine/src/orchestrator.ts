@@ -40,6 +40,7 @@ import { irisRespond } from "./iris.js";
 import { buildHub } from "./hub.js";
 import { journalPath, journalMarkdown, notePath } from "./memory.js";
 import { estimateTaskCost, type ScopeAverage } from "./estimate.js";
+import { costUsd } from "./usage.js";
 import { ASSIGNEE, prOpen, prUrl, isMerged } from "./summary.js";
 
 export { OrchestratorError };
@@ -70,6 +71,9 @@ export interface OrchestratorDeps {
   readonly notifications: NotificationStore;
   /** Per-scope model policy (iris + each worker). Defaults to all-Opus when omitted. */
   readonly models?: ModelPolicy;
+  /** Per-task USD spend cap — a running task aborts before its next step once it crosses
+   *  this. 0 / omitted = no cap (the historical default). */
+  readonly budgetUsd?: number;
   readonly ids: () => string;
   readonly clock: () => string;
 }
@@ -83,9 +87,18 @@ export class Orchestrator {
   private readonly merging = new Set<string>();
   /** Which model each scope runs on — mutable (the CEO can change it in Settings). */
   private readonly modelPolicy: ModelPolicy;
+  /** Per-task USD cap — mutable (the CEO sets it in Settings). 0 = no cap. */
+  private budgetUsd: number;
 
   constructor(private readonly d: OrchestratorDeps) {
     this.modelPolicy = { ...(d.models ?? defaultModelPolicy()) };
+    this.budgetUsd = Math.max(0, d.budgetUsd ?? 0);
+  }
+
+  /** Set the per-task USD budget cap (0 = no cap). Returns the clamped value in effect. */
+  setBudget(usd: number): number {
+    this.budgetUsd = Math.max(0, Number.isFinite(usd) ? usd : 0);
+    return this.budgetUsd;
   }
 
   /** The projects the CEO can work on. */
@@ -447,6 +460,7 @@ export class Orchestrator {
       projectCount: this.d.projects.list().length,
       inflightTasks: this.running.size,
       models: { ...this.modelPolicy },
+      budgetUsd: this.budgetUsd,
     };
   }
 
@@ -843,6 +857,8 @@ export class Orchestrator {
       task = this.drive(task, { type: "PLANNING_DONE" });
       this.emitTaskUpdated(task);
 
+      // Running tally of this task's model spend, for the budget guard (0 cap = off).
+      let spentUsd = 0;
       for (const planned of task.steps) {
         if (this.requireTask(taskId).status !== "executing") return; // stopped between steps
         currentStepId = planned.id;
@@ -877,6 +893,7 @@ export class Orchestrator {
           })
         );
         this.recordUsage(step.capability, taskId, out.usage); // tokens were spent regardless of a concurrent stop
+        if (out.usage) spentUsd += costUsd(out.usage.model, out.usage.inputTokens, out.usage.outputTokens);
         if (this.requireTask(taskId).status !== "executing") return; // stopped during the step
         if (out.artifacts.length > 0) this.addArtifacts(this.requireTask(taskId), out.artifacts);
 
@@ -885,6 +902,15 @@ export class Orchestrator {
         currentStepId = undefined;
         this.d.events.emit({ type: "step_completed", taskId, stepId: planned.id });
         this.notifyTestFailure(taskId, step.capability, out.summary); // advisory red flag, never blocks
+
+        // Budget guard: stop BEFORE the next step once the running spend crosses the cap,
+        // so a runaway pipeline can't bill unbounded. The just-finished step counts; the
+        // throw is caught below → a clean abort (the step is already completed, not failed).
+        if (this.budgetUsd > 0 && spentUsd > this.budgetUsd) {
+          throw new Error(
+            `Budget cap reached: this task has spent ~$${spentUsd.toFixed(2)} of its $${this.budgetUsd.toFixed(2)} cap. Stopping before the next step.`
+          );
+        }
       }
 
       // A read-only task (plan/review/test only) has no gate: there's no diff to
