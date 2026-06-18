@@ -41,16 +41,18 @@ interface Bucket {
   inputTokens: number;
   outputTokens: number;
   costUsd: number;
+  events: number;
 }
 
 function add(b: Bucket, row: UsageRow): void {
   b.inputTokens += row.inputTokens;
   b.outputTokens += row.outputTokens;
   b.costUsd += costUsd(row.model, row.inputTokens, row.outputTokens);
+  b.events += 1;
 }
 
 function emptyBucket(): Bucket {
-  return { inputTokens: 0, outputTokens: 0, costUsd: 0 };
+  return { inputTokens: 0, outputTokens: 0, costUsd: 0, events: 0 };
 }
 
 /** Round a USD figure to whole micro-dollars so the JSON stays tidy. */
@@ -79,10 +81,14 @@ export function summarizeUsage(rows: readonly UsageRow[], sinceDay: string | nul
 
   const seal = <K extends string>(m: Map<string, Bucket>, key: K) =>
     [...m.entries()].map(([k, b]) => ({ [key]: k, inputTokens: b.inputTokens, outputTokens: b.outputTokens, costUsd: round(b.costUsd) }));
+  // byScope additionally carries the per-scope event count (so the pre-run estimate can
+  // average tokens-per-run); byModel/byDay don't need it.
+  const sealScopes = (): UsageSummary["byScope"] =>
+    [...byScope.entries()].map(([scope, b]) => ({ scope, inputTokens: b.inputTokens, outputTokens: b.outputTokens, costUsd: round(b.costUsd), events: b.events }));
 
   return {
     totals: { inputTokens: totals.inputTokens, outputTokens: totals.outputTokens, costUsd: round(totals.costUsd), events: rows.length },
-    byScope: (seal(byScope, "scope") as UsageSummary["byScope"]).sort((a, b) => b.costUsd - a.costUsd),
+    byScope: sealScopes().sort((a, b) => b.costUsd - a.costUsd),
     byModel: (seal(byModel, "model") as UsageSummary["byModel"]).sort((a, b) => b.costUsd - a.costUsd),
     byDay: (seal(byDay, "day") as UsageSummary["byDay"]).sort((a, b) => (a.day < b.day ? -1 : 1)),
     sinceDay,

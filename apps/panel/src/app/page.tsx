@@ -16,9 +16,10 @@ import {
   X,
   FileText,
   Image as ImageIcon,
+  Coins,
 } from "lucide-react";
-import type { Message, TaskProposal, Conversation, Attachment, GitOpRequest } from "@bureau/contracts";
-import { chat, createTask, listConversations, deleteConversation, messagesFor, getGitInfo } from "../lib/api";
+import type { Message, TaskProposal, Conversation, Attachment, GitOpRequest, CostEstimate } from "@bureau/contracts";
+import { chat, createTask, estimateCost, listConversations, deleteConversation, messagesFor, getGitInfo } from "../lib/api";
 import { useProjects } from "../lib/useProjects";
 import { useEngineEvents } from "../lib/useEngineEvents";
 import { ProjectSwitcher } from "../components/ProjectSwitcher";
@@ -496,6 +497,15 @@ function TypingIndicator({ activity }: { activity: string | null }) {
   );
 }
 
+function fmtTokens(n: number): string {
+  return n >= 1000 ? `${Math.round(n / 1000)}k` : String(n);
+}
+function fmtCost(n: number): string {
+  if (n <= 0) return "$0";
+  if (n < 0.01) return "<$0.01";
+  return `$${n.toFixed(2)}`;
+}
+
 function ProposalCard({
   proposal,
   busy,
@@ -509,6 +519,18 @@ function ProposalCard({
   onRefine: () => void;
   onKeep: () => void;
 }) {
+  // Forecast the pipeline's token + cost BEFORE the CEO commits to running it.
+  const [est, setEst] = useState<CostEstimate | null>(null);
+  useEffect(() => {
+    let alive = true;
+    estimateCost(proposal.steps.map((s) => s.capability))
+      .then((e) => alive && setEst(e))
+      .catch(() => alive && setEst(null));
+    return () => {
+      alive = false;
+    };
+  }, [proposal]);
+
   return (
     <div className="rounded-xl border border-primary/30 bg-card p-4">
       <div className="mb-1 flex items-center gap-2">
@@ -530,6 +552,17 @@ function ProposalCard({
           </div>
         ))}
       </div>
+      {est && (
+        <div className="mb-4 flex flex-wrap items-center gap-x-1.5 gap-y-1 text-xs text-muted-foreground">
+          <Coins className="h-3.5 w-3.5 shrink-0" />
+          <span>≈ {fmtTokens(est.totalInputTokens + est.totalOutputTokens)} tokens</span>
+          <span aria-hidden>·</span>
+          <span className="font-medium text-foreground">~{fmtCost(est.totalCostUsd)}</span>
+          <span className="text-muted-foreground/70">
+            · {est.perStep.some((p) => p.basis === "history") ? "from your past runs" : "rough estimate"}
+          </span>
+        </div>
+      )}
       <div className="flex flex-wrap gap-2">
         <button
           onClick={onCreate}

@@ -14,7 +14,7 @@
 //   POST /api/tasks/:id/open-pr   push → open a PR for review on GitHub, NO merge
 
 import { createServer, type IncomingMessage, type ServerResponse, type Server } from "node:http";
-import { SendMessageRequestDto, CreateTaskRequestDto, SaveNoteRequestDto, GateDecisionRequestDto, GitOpRequestDto, SetModelsRequestDto, CreateProjectRequestDto } from "@bureau/contracts";
+import { SendMessageRequestDto, CreateTaskRequestDto, SaveNoteRequestDto, GateDecisionRequestDto, GitOpRequestDto, SetModelsRequestDto, CreateProjectRequestDto, EstimateRequestDto } from "@bureau/contracts";
 import type { TaskId } from "@bureau/core";
 import { VcsError } from "@bureau/vcs";
 import { Orchestrator, OrchestratorError } from "./orchestrator.js";
@@ -104,6 +104,13 @@ async function handle(deps: HttpDeps, req: IncomingMessage, res: ServerResponse)
   if (method === "POST" && path === "/api/config/models") {
     const body = SetModelsRequestDto.parse(await readJson(req));
     sendJson(res, 200, { models: deps.orchestrator.setModels(body.models) });
+    return;
+  }
+
+  // POST /api/estimate — forecast a proposed pipeline's token + USD cost before creating it.
+  if (method === "POST" && path === "/api/estimate") {
+    const body = EstimateRequestDto.parse(await readJson(req));
+    sendJson(res, 200, deps.orchestrator.estimateCost(body.capabilities));
     return;
   }
 
