@@ -9,7 +9,6 @@ import {
   ListTodo,
   GitBranch,
   Bot,
-  Settings,
   BrainCircuit,
   BarChart3,
   Terminal,
@@ -44,7 +43,6 @@ const SECTIONS: SectionMeta[] = [
   { match: (p) => p.startsWith("/git"), title: "Git", subtitle: "Branches, worktrees, and PRs", icon: GitBranch },
   { match: (p) => p.startsWith("/terminal"), title: "Terminal", subtitle: "A human-operated shell in your project's clone", icon: Terminal },
   { match: (p) => p.startsWith("/agents"), title: "Agents", subtitle: "Your capability workers", icon: Bot },
-  { match: (p) => p.startsWith("/settings"), title: "Settings", subtitle: "Configuration and connection", icon: Settings },
 ];
 
 export function Header() {
