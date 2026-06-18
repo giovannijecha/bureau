@@ -25,7 +25,7 @@ import type {
 } from "@bureau/core";
 import type { CapabilityRegistry } from "@bureau/capabilities";
 import type { Provider } from "@bureau/providers";
-import type { Message, TaskProposal, ChatResponse, Project, CreateProjectRequest, Conversation, EngineInfo, Hub, Note, NoteSummary, UsageSummary, Notification, NotificationKind, GitInfo, Attachment, GitOpRequest, GitOpResult, GitTree, GitFileContent, GithubAccount, PullRequest, Issue, TreeCommits, CommitDetail, FileList, FileHistory } from "@bureau/contracts";
+import type { Message, TaskProposal, ChatResponse, Project, CreateProjectRequest, Conversation, EngineInfo, Hub, Note, NoteSummary, UsageSummary, CostEstimate, Notification, NotificationKind, GitInfo, Attachment, GitOpRequest, GitOpResult, GitTree, GitFileContent, GithubAccount, PullRequest, Issue, TreeCommits, CommitDetail, FileList, FileHistory } from "@bureau/contracts";
 import { DESTRUCTIVE_GIT_OPS } from "@bureau/contracts";
 import type { ProjectRepo } from "@bureau/db";
 import { join, resolve, sep } from "node:path";
@@ -39,6 +39,7 @@ import { OrchestratorError } from "./errors.js";
 import { irisRespond } from "./iris.js";
 import { buildHub } from "./hub.js";
 import { journalPath, journalMarkdown, notePath } from "./memory.js";
+import { estimateTaskCost, type ScopeAverage } from "./estimate.js";
 import { ASSIGNEE, prOpen, prUrl, isMerged } from "./summary.js";
 
 export { OrchestratorError };
@@ -155,6 +156,16 @@ export class Orchestrator {
    *  feed, and the "waiting on you" review queue — built from the live task set. */
   hub(): Hub {
     return buildHub(this.d.store.list(), (k) => this.d.capabilities.has(k), 40);
+  }
+
+  /** Forecast a proposed pipeline's token + USD cost before the CEO creates the task —
+   *  per step, from that scope's historical average when there's enough data, else a default. */
+  estimateCost(capabilities: readonly string[]): CostEstimate {
+    const averages = new Map<string, ScopeAverage>();
+    for (const s of this.d.usage.summary(null).byScope) {
+      averages.set(s.scope, { inputTokens: s.inputTokens, outputTokens: s.outputTokens, events: s.events });
+    }
+    return estimateTaskCost(capabilities, this.modelPolicy, averages);
   }
 
   private terminalCtx: ((projectId?: string) => string) | null = null;

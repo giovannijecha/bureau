@@ -28,6 +28,7 @@ import type {
   GitOpRequest,
   GitOpResult,
   CreateProjectRequest,
+  CostEstimate,
 } from "@bureau/contracts";
 
 export const ENGINE_URL = process.env.NEXT_PUBLIC_ENGINE_URL ?? "http://localhost:4319";
@@ -264,6 +265,11 @@ export async function chatEphemeral(
 /** Materialize a proposal into a draft task in the active project. */
 export async function createTask(proposal: TaskProposal, projectId?: string): Promise<TaskDetail> {
   return json(await postJson("/api/tasks", { proposal, projectId }));
+}
+
+/** Forecast a proposed pipeline's token + USD cost before creating the task. */
+export async function estimateCost(capabilities: string[]): Promise<CostEstimate> {
+  return json(await postJson("/api/estimate", { capabilities }));
 }
 
 export async function listTasks(): Promise<TaskSummary[]> {
