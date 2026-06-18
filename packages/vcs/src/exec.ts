@@ -19,16 +19,60 @@ export class VcsError extends Error {
   }
 }
 
-/** Default runner: spawn the command, collect stdout/stderr, resolve with the exit code. */
+// Backstops on every git/gh subprocess: a HARD timeout so a wedged process can't hang the
+// engine forever, and an output CAP so a runaway command (a pathological diff/log, a gh
+// stream) can't grow the buffer until the engine OOMs. Both are far above any healthy run —
+// they catch failure, not normal work. A timeout/overflow resolves as a non-zero exit, so
+// run() surfaces it as a VcsError with a clear reason (never a silent hang or a partial OK).
+const EXEC_TIMEOUT_MS = 600_000; // 10 min — well past any real clone/fetch on this machine
+const EXEC_MAX_BYTES = 64 * 1024 * 1024; // 64 MB combined stdout+stderr
+
+/** Default runner: spawn the command, collect stdout/stderr (bounded), resolve with the exit
+ *  code — killing the child on timeout or output overflow. */
 export const defaultRunner: Runner = (cmd, args, opts) =>
   new Promise<ExecResult>((resolve) => {
     const child = spawn(cmd, args, { cwd: opts?.cwd, stdio: ["ignore", "pipe", "pipe"] });
     let stdout = "";
     let stderr = "";
-    child.stdout.on("data", (d: Buffer) => (stdout += d.toString()));
-    child.stderr.on("data", (d: Buffer) => (stderr += d.toString()));
-    child.on("error", (err: Error) => resolve({ stdout: "", stderr: String(err), code: -1 }));
-    child.on("close", (code: number | null) => resolve({ stdout, stderr, code: code ?? -1 }));
+    let bytes = 0;
+    let settled = false;
+
+    const finish = (r: ExecResult) => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timer);
+      resolve(r);
+    };
+    const timer = setTimeout(() => {
+      child.kill("SIGKILL");
+      finish({
+        stdout,
+        stderr: `${stderr}\n(timed out after ${EXEC_TIMEOUT_MS}ms — command killed)`.trim(),
+        code: 124 /* conventional timeout exit */,
+      });
+    }, EXEC_TIMEOUT_MS);
+
+    /** Append a chunk, killing the child if the combined buffer blows the cap. */
+    const append = (chunk: Buffer, onto: "stdout" | "stderr") => {
+      if (settled) return;
+      bytes += chunk.length;
+      if (bytes > EXEC_MAX_BYTES) {
+        child.kill("SIGKILL");
+        finish({
+          stdout,
+          stderr: `${stderr}\n(output exceeded ${EXEC_MAX_BYTES} bytes — command killed)`,
+          code: 1,
+        });
+        return;
+      }
+      if (onto === "stdout") stdout += chunk.toString();
+      else stderr += chunk.toString();
+    };
+
+    child.stdout.on("data", (d: Buffer) => append(d, "stdout"));
+    child.stderr.on("data", (d: Buffer) => append(d, "stderr"));
+    child.on("error", (err: Error) => finish({ stdout: "", stderr: String(err), code: -1 }));
+    child.on("close", (code: number | null) => finish({ stdout, stderr, code: code ?? -1 }));
   });
 
 /** Run a command and return stdout, throwing a VcsError on a non-zero exit. */
