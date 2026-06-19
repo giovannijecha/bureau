@@ -323,8 +323,8 @@ export default function AssistantPage() {
     <div className="flex h-full">
       <ConversationsRail conversations={conversations} activeId={convId} onSelect={selectConv} onNew={newChat} onDelete={removeConv} projectLabel={projectLabel} />
 
-      <div className="flex min-w-0 flex-1 flex-col">
-        <div className="flex-1 overflow-y-auto">
+      <div className="flex min-h-0 min-w-0 flex-1 flex-col">
+        <div className="min-h-0 flex-1 overflow-y-auto">
           {empty ? (
             <div className="flex min-h-full flex-col items-center justify-center gap-3 px-6 py-10 text-center">
               <div className="flex h-12 w-12 items-center justify-center rounded-2xl bg-primary/10 text-primary">
