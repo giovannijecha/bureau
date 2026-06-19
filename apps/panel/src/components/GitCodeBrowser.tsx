@@ -68,6 +68,7 @@ export function GitCodeBrowser({
   const [loadingFile, setLoadingFile] = useState(false);
   const [readme, setReadme] = useState<string | null>(null);
   const [err, setErr] = useState<string | null>(null);
+  const [empty, setEmpty] = useState(false); // repo has no commits yet (unborn branch)
 
   // "Go to file" finder — file list is lazy-loaded once per ref and cached.
   const [finderOpen, setFinderOpen] = useState(false);
@@ -89,6 +90,7 @@ export function GitCodeBrowser({
       setReadme(null);
       try {
         const t = await getGitTree(projectId, r, p);
+        setEmpty(t.empty);
         setEntries(t.entries);
         if (p === "") {
           const rm = t.entries.find((e) => e.type === "blob" && README_RE.test(e.name));
@@ -102,6 +104,7 @@ export function GitCodeBrowser({
           }
         }
       } catch (e) {
+        setEmpty(false);
         setEntries([]);
         setErr(e instanceof Error ? e.message : "Couldn't list files.");
       }
@@ -386,7 +389,18 @@ export function GitCodeBrowser({
                 <Loader2 className="h-4 w-4 animate-spin" /> Opening…
               </p>
             ) : entries.length === 0 ? (
-              <p className="p-6 text-sm text-muted-foreground">This directory is empty.</p>
+              empty ? (
+                <div className="flex flex-col items-center gap-1.5 p-10 text-center">
+                  <GitBranch className="h-6 w-6 text-muted-foreground/40" />
+                  <p className="text-sm font-medium">No commits yet</p>
+                  <p className="max-w-sm text-xs text-muted-foreground">
+                    This repository is empty. Bureau will populate it once a task lands its first change on{" "}
+                    <code className="font-mono">{ref}</code>.
+                  </p>
+                </div>
+              ) : (
+                <p className="p-6 text-sm text-muted-foreground">This directory is empty.</p>
+              )
             ) : (
               <div className="divide-y">
                 {entries.map((e) => {

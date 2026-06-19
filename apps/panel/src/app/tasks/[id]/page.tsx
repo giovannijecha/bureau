@@ -655,7 +655,8 @@ const TIMELINE_ICON: Record<string, { icon: typeof Circle; tint: string }> = {
   gate_opened: { icon: CircleDot, tint: "text-amber-500" },
   gate_reopened: { icon: Pencil, tint: "text-amber-500" },
   gate_decided: { icon: Check, tint: "text-green-500" },
-  task_completed: { icon: GitMerge, tint: "text-green-500" },
+  // Completion ≠ merge; the label says which it was. Use a neutral done-check glyph.
+  task_completed: { icon: CheckCircle2, tint: "text-green-500" },
   task_aborted: { icon: XCircle, tint: "text-red-500" },
 };
 

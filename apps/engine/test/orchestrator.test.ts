@@ -113,6 +113,9 @@ function fakeVcs() {
     async gitAdmin(op) {
       calls.gitAdmin.push(op.kind);
     },
+    async isEmpty() {
+      return false;
+    },
     async listTree() {
       return [];
     },

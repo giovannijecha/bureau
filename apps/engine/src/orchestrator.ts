@@ -216,7 +216,11 @@ export class Orchestrator {
     const project = this.d.projects.resolve(projectId);
     const r = ref && ref.trim() !== "" ? ref : project.baseBranch;
     const path = dir ?? "";
-    return { ref: r, path, entries: await this.d.vcs(project).listTree(r, path) };
+    const vcs = this.d.vcs(project);
+    // A freshly-created repo with no commits has no resolvable tree — report it as empty
+    // (the panel shows a "no commits yet" state) instead of erroring on `ls-tree`.
+    const empty = await vcs.isEmpty();
+    return { ref: r, path, empty, entries: empty ? [] : await vcs.listTree(r, path) };
   }
 
   /** Read-only codebase browser: a file's content at `ref` (defaults to base branch). */

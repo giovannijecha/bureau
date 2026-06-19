@@ -29,7 +29,8 @@ const KIND: Record<string, { icon: LucideIcon; tint: string }> = {
   gate_opened: { icon: CircleDot, tint: "text-amber-500" },
   gate_reopened: { icon: Pencil, tint: "text-amber-500" },
   gate_decided: { icon: Check, tint: "text-green-500" },
-  task_completed: { icon: GitMerge, tint: "text-green-500" },
+  // A completion isn't necessarily a merge — use a neutral "done" check, not a merge glyph.
+  task_completed: { icon: CheckCircle2, tint: "text-green-500" },
   task_aborted: { icon: XCircle, tint: "text-red-500" },
 };
 
@@ -56,8 +57,9 @@ function outcome(task: TaskSummary | undefined, events: Activity[]): Badge {
     if (task.status === "planning" || task.status === "executing") return BADGE.running;
     return activeBadge(task.status);
   }
-  // No task in the list (deleted / not loaded) — infer, terminal events first.
-  if (events.some((e) => e.kind === "task_completed")) return BADGE.merged;
+  // No task in the list (deleted / not loaded) — infer, terminal events first. A bare
+  // task_completed event can't prove a merge landed, so call it "completed", not "merged".
+  if (events.some((e) => e.kind === "task_completed")) return BADGE.completed;
   if (events.some((e) => e.kind === "task_aborted")) return BADGE.stopped;
   if (events.some((e) => e.kind === "gate_opened")) return BADGE.awaiting;
   return activeBadge("active");

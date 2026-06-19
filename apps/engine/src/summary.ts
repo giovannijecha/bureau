@@ -29,6 +29,7 @@ export function toTaskSummary(task: Task): TaskSummary {
     pendingGates: task.gates.filter((g) => g.status === "pending" || g.status === "open").length,
     merged: isMerged(task),
     prOpen: prOpen(task),
+    mergeError: mergeError(task),
   };
 }
 
@@ -100,7 +101,7 @@ export function toTaskDetail(task: Task): TaskDetail {
     diff: latestDiff(task),
     prUrl: prUrl(task),
     statusNote: statusNote(task),
-    mergeError: mergeError(task),
+    // mergeError is already set by toTaskSummary (spread above).
     steps: task.steps.map((s) => ({
       id: s.id,
       capability: s.capability,
@@ -151,7 +152,14 @@ export function describe(task: Task, entry: DecisionEntry): { kind: string; labe
     case "gate_decided":
       return { kind: entry.type, label: `Review ${entry.decision}` };
     case "task_completed":
-      return { kind: entry.type, label: "Merged to main" };
+      // A task completing is NOT the same as a merge. Only a task that genuinely landed
+      // on main reads "Merged to main"; a read-only/no-diff task (research, plan, review)
+      // simply "completed", a pushed-but-unmerged one is "PR opened", a confirmed-but-
+      // failed merge "didn't land". Never claim a merge that never happened.
+      if (isMerged(task)) return { kind: entry.type, label: "Merged to main" };
+      if (prOpen(task)) return { kind: entry.type, label: "PR opened for review" };
+      if (mergeError(task) !== null) return { kind: entry.type, label: "Completed — merge didn't land" };
+      return { kind: entry.type, label: "Task completed" };
     case "task_aborted":
       return { kind: entry.type, label: `Aborted — ${entry.reason}` };
     case "task_interrupted":

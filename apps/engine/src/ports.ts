@@ -71,8 +71,12 @@ export interface VcsPort {
    *  The orchestrator validates the human confirm gate BEFORE calling this; the vcs
    *  layer re-validates every ref argv-side (assertSafeRef) and runs argv-only. */
   gitAdmin(op: GitAdminOp): Promise<void>;
+  /** True when the canonical clone has no commits yet (an unborn-branch repo) or isn't
+   *  cloned — so the read-only browser shows a "no commits yet" state instead of erroring
+   *  when `ls-tree` can't resolve the base ref. */
+  isEmpty(): Promise<boolean>;
   /** Read-only: one directory level of the codebase at `ref` (the embedded browser).
-   *  Returns [] when the clone doesn't exist. */
+   *  Returns [] when the clone doesn't exist or has no commits. */
   listTree(ref: string, dir: string): Promise<GitFileEntry[]>;
   /** Read-only: a file's content at `ref`, capped. */
   showFile(ref: string, path: string): Promise<{ content: string; truncated: boolean }>;

@@ -330,7 +330,10 @@ export default function GitPage() {
                   </div>
                   <div className="divide-y">
                     {ts.map((t) => {
-                      const mergeFailed = t.status === "completed" && !t.merged && !t.prOpen;
+                      // A merge only "failed" when one was attempted and errored — a read-only
+                      // or no-diff task (research/plan/review) that simply completed has no
+                      // mergeError and must NOT be flagged red.
+                      const mergeFailed = t.mergeError !== null;
                       const inFlight = t.status === "planning" || t.status === "executing" || t.status === "awaiting_human";
                       const label = t.merged ? "merged" : t.prOpen ? "PR open" : mergeFailed ? "merge failed" : t.status.replace(/_/g, " ");
                       const badge = t.merged
@@ -347,7 +350,12 @@ export default function GitPage() {
                             {t.merged ? (
                               <GitMerge className="h-4 w-4 shrink-0 text-green-500" />
                             ) : (
-                              <GitBranch className={cn("h-4 w-4 shrink-0", mergeFailed ? "text-red-500" : "text-amber-500")} />
+                              <GitBranch
+                                className={cn(
+                                  "h-4 w-4 shrink-0",
+                                  mergeFailed ? "text-red-500" : inFlight ? "text-amber-500" : "text-muted-foreground"
+                                )}
+                              />
                             )}
                             <code className="shrink-0 font-mono text-xs text-muted-foreground">bureau/task-{t.id.slice(0, 8)}</code>
                             <span className="min-w-0 flex-1 truncate text-sm">{t.goal}</span>

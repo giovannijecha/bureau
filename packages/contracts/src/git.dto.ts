@@ -39,6 +39,9 @@ export const GitTreeDto = z.object({
   ref: z.string(),
   path: z.string(),
   entries: z.array(GitFileEntryDto),
+  /** True when the repo has no commits yet (a freshly created, unborn-branch repo). The
+   *  browser shows a "no commits yet" state instead of surfacing git's `ls-tree` error. */
+  empty: z.boolean(),
 });
 
 export const GitFileContentDto = z.object({

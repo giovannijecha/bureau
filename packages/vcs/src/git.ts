@@ -178,6 +178,15 @@ export async function headBranch(clonePath: string, runner: Runner = defaultRunn
   return out.code === 0 ? out.stdout.trim() || null : null;
 }
 
+/** True when the repo has no commits yet — an "unborn HEAD" (a freshly created repo, or
+ *  one cloned from an empty remote). `git rev-parse --verify --quiet HEAD` exits non-zero
+ *  in that state. The read-only browser checks this so it shows an empty state instead of
+ *  letting `ls-tree <baseBranch>` fail with exit 128 ("Not a valid object name"). */
+export async function hasNoCommits(clonePath: string, runner: Runner = defaultRunner): Promise<boolean> {
+  const out = await runner("git", ["-C", clonePath, "rev-parse", "--verify", "--quiet", "HEAD"], {});
+  return out.code !== 0;
+}
+
 /** The clone's LOCAL branches (refs/heads). Lets Iris see branches that exist locally
  *  but aren't pushed to origin yet — so she never claims a real local branch "doesn't
  *  exist" just because it isn't on GitHub. Best-effort (empty on a fresh/edge-case repo). */

@@ -21,6 +21,7 @@ import {
   recentCommits,
   remoteBranches,
   headBranch,
+  hasNoCommits,
   localBranches,
   pruneTaskBranches,
   deleteTaskBranch,
@@ -203,8 +204,16 @@ export class RealVcs implements VcsPort {
     }
   }
 
+  /** No commits yet (unborn branch) or not cloned — the browser-facing reads short-
+   *  circuit to an empty result here rather than letting `git ls-tree <ref>` fail (exit
+   *  128: "Not a valid object name") and surface a raw git error in the panel. */
+  async isEmpty(): Promise<boolean> {
+    if (!existsSync(join(this.cfg.canonicalPath, ".git"))) return true;
+    return hasNoCommits(this.cfg.canonicalPath, this.runner);
+  }
+
   async listTree(ref: string, dir: string): Promise<GitFileEntry[]> {
-    if (!existsSync(join(this.cfg.canonicalPath, ".git"))) return [];
+    if (await this.isEmpty()) return [];
     return listTree(this.cfg.canonicalPath, ref, dir, this.runner);
   }
 
@@ -228,7 +237,7 @@ export class RealVcs implements VcsPort {
   }
 
   async treeCommits(ref: string, dir: string): Promise<EntryCommit[]> {
-    if (!existsSync(join(this.cfg.canonicalPath, ".git"))) return [];
+    if (await this.isEmpty()) return [];
     return treeLastCommits(this.cfg.canonicalPath, ref, dir, this.runner);
   }
 
@@ -240,7 +249,7 @@ export class RealVcs implements VcsPort {
   }
 
   async listFiles(ref: string): Promise<{ paths: string[]; truncated: boolean }> {
-    if (!existsSync(join(this.cfg.canonicalPath, ".git"))) return { paths: [], truncated: false };
+    if (await this.isEmpty()) return { paths: [], truncated: false };
     return listAllFiles(this.cfg.canonicalPath, ref, this.runner);
   }
 

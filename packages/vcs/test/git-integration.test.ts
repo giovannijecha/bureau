@@ -5,7 +5,7 @@ import { join } from "node:path";
 
 import { defaultRunner, run } from "../src/exec.js";
 import { createWorktree, removeWorktree } from "../src/worktree.js";
-import { cloneRepo, commitAll, currentBranch, freshBase, syncToBase, getDiff, getWorkingDiff, getReviewDiff, recentCommits, remoteBranches, headBranch, pruneTaskBranches, listTree, treeLastCommits, listAllFiles, fileHistory, showCommit } from "../src/git.js";
+import { cloneRepo, commitAll, currentBranch, freshBase, syncToBase, getDiff, getWorkingDiff, getReviewDiff, recentCommits, remoteBranches, headBranch, hasNoCommits, pruneTaskBranches, listTree, treeLastCommits, listAllFiles, fileHistory, showCommit } from "../src/git.js";
 import { squashAllAndForcePush } from "../src/git-admin.js";
 
 // These tests drive the REAL git binary against throwaway repos under the OS
@@ -40,6 +40,26 @@ describe("createWorktree", () => {
     expect(handle).toEqual({ path: wtPath, branch: "task/abc", repoPath: canonical });
     expect(existsSync(join(wtPath, "README.md"))).toBe(true); // checked out the base content
     expect(await currentBranch(wtPath)).toBe("task/abc");
+  });
+});
+
+describe("hasNoCommits — detect an empty (unborn-HEAD) repo so the browser doesn't error", () => {
+  it("is true for a freshly init'd repo with no commits, false once a commit lands", async () => {
+    const empty = join(tmpRoot, "empty");
+    mkdirSync(empty);
+    await gitIn(empty, ["init", "-b", "main"]);
+    await gitIn(empty, ["config", "user.email", "test@bureau.local"]);
+    await gitIn(empty, ["config", "user.name", "Bureau Test"]);
+
+    expect(await hasNoCommits(empty)).toBe(true);
+    // `canonical` (from beforeEach) already has a commit.
+    expect(await hasNoCommits(canonical)).toBe(false);
+
+    // Land the first commit → no longer empty.
+    writeFileSync(join(empty, "README.md"), "# new\n");
+    await gitIn(empty, ["add", "-A"]);
+    await gitIn(empty, ["commit", "-m", "first"]);
+    expect(await hasNoCommits(empty)).toBe(false);
   });
 });
 

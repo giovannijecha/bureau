@@ -33,6 +33,10 @@ export const TaskSummaryDto = z.object({
   /** True when the branch was pushed + a PR opened for review, but NOT merged — the
    *  branch lives on GitHub for the CEO to test and merge there. */
   prOpen: z.boolean(),
+  /** Why a confirmed merge didn't land (conflicts, branch protection), or null. Only a
+   *  task that genuinely ATTEMPTED a merge carries this — a read-only or no-diff task that
+   *  simply completed has null, so the panel never mislabels it as "merge failed". */
+  mergeError: z.string().nullable(),
 });
 
 export const GateDecisionRequestDto = z.object({
@@ -108,8 +112,7 @@ export const TaskDetailDto = TaskSummaryDto.extend({
   prUrl: z.string().nullable(),
   /** A human-readable note when the task stopped (abort reason / failed step). */
   statusNote: z.string().nullable(),
-  /** Why a confirmed merge didn't land (conflicts, branch protection), or null. */
-  mergeError: z.string().nullable(),
+  // `mergeError` is inherited from TaskSummaryDto.
   steps: z.array(PipelineStepDto),
   gates: z.array(GateViewDto),
   /** The full event history (newest last) — substeps, gates, and re-run cycles. */
