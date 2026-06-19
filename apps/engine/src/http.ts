@@ -17,7 +17,7 @@
 //   POST /api/tasks/:id/establish-base  recover a land that failed on an empty repo (no base)
 
 import { createServer, type IncomingMessage, type ServerResponse, type Server } from "node:http";
-import { SendMessageRequestDto, CreateTaskRequestDto, SaveNoteRequestDto, GateDecisionRequestDto, GitOpRequestDto, SetModelsRequestDto, CreateProjectRequestDto, EstimateRequestDto, SetBudgetRequestDto } from "@bureau/contracts";
+import { SendMessageRequestDto, CreateTaskRequestDto, SaveNoteRequestDto, GateDecisionRequestDto, GitOpRequestDto, SetModelsRequestDto, SetEffortsRequestDto, CurateRequestDto, ApplyCurationRequestDto, CreateProjectRequestDto, EstimateRequestDto, SetBudgetRequestDto } from "@bureau/contracts";
 import type { TaskId } from "@bureau/core";
 import { VcsError } from "@bureau/vcs";
 import { Orchestrator, OrchestratorError } from "./orchestrator.js";
@@ -122,6 +122,13 @@ async function handle(deps: HttpDeps, req: IncomingMessage, res: ServerResponse)
   if (method === "POST" && path === "/api/config/models") {
     const body = SetModelsRequestDto.parse(await readJson(req));
     sendJson(res, 200, { models: deps.orchestrator.setModels(body.models) });
+    return;
+  }
+
+  // POST /api/config/efforts — set the per-scope reasoning effort ("" clears a scope).
+  if (method === "POST" && path === "/api/config/efforts") {
+    const body = SetEffortsRequestDto.parse(await readJson(req));
+    sendJson(res, 200, { efforts: deps.orchestrator.setEfforts(body.efforts) });
     return;
   }
 
@@ -289,6 +296,23 @@ async function handle(deps: HttpDeps, req: IncomingMessage, res: ServerResponse)
       sendJson(res, 201, await deps.orchestrator.saveNote(body.title, body.body, body.expectedPath));
       return;
     }
+  }
+
+  // Memory curation (the Archivist) — MUST precede the /api/memory/:path catch-all below,
+  // or "curate" would be parsed as a note path. Preview/apply/status.
+  if (method === "POST" && path === "/api/memory/curate") {
+    const body = CurateRequestDto.parse(await readJson(req));
+    sendJson(res, 200, await deps.orchestrator.curate(body));
+    return;
+  }
+  if (method === "POST" && path === "/api/memory/curate/apply") {
+    const body = ApplyCurationRequestDto.parse(await readJson(req));
+    sendJson(res, 200, await deps.orchestrator.applyCuration(body));
+    return;
+  }
+  if (method === "GET" && path === "/api/memory/curate/status") {
+    sendJson(res, 200, await deps.orchestrator.curationStatus());
+    return;
   }
 
   // GET /api/memory/:path — one note (path may contain slashes, e.g. notes/foo.md).

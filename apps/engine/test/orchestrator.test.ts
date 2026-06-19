@@ -210,6 +210,7 @@ function fakeConversations(): ConversationStore {
 function fakeMemory() {
   const journals: { path: string; markdown: string }[] = [];
   const saved: { title: string; body: string }[] = [];
+  const archived: string[] = [];
   const memory: MemoryPort = {
     async list() {
       return [];
@@ -222,6 +223,13 @@ function fakeMemory() {
       return { path: `notes/${title}.md`, title, kind: "note", updatedAt: "t", excerpt: "", body };
     },
     async delete() {},
+    async archive(path) {
+      archived.push(path);
+    },
+    async count() {
+      const all = await memory.list();
+      return { notes: all.filter((n) => n.kind === "note").length, journals: all.filter((n) => n.kind === "journal").length };
+    },
     async writeJournal(path, markdown) {
       journals.push({ path, markdown });
     },
@@ -229,7 +237,7 @@ function fakeMemory() {
       return null;
     },
   };
-  return { memory, journals, saved };
+  return { memory, journals, saved, archived };
 }
 
 function fakeNotifications() {
@@ -591,9 +599,11 @@ describe("chat", () => {
 
   it("folds THIS project's journals into Iris's context as a READABLE, scoped index (research reaches chat)", async () => {
     // The active project resolves to acme/widget. A journal from ANOTHER repo must NOT leak in.
+    // list() carries each journal's repo (the real stores parse it once via noteSummary), so the
+    // chat scopes by it WITHOUT re-reading each file.
     mem.memory.list = async () => [
-      { path: "journals/2026-06-19-research-opencode.md", title: "Research: stack OpenCode", kind: "journal", updatedAt: "2026-06-19T09:54:00.000Z", excerpt: "Status: completed." },
-      { path: "journals/2026-06-18-other.md", title: "Other repo secret task", kind: "journal", updatedAt: "2026-06-18T00:00:00.000Z", excerpt: "Status: completed." },
+      { path: "journals/2026-06-19-research-opencode.md", title: "Research: stack OpenCode", kind: "journal", updatedAt: "2026-06-19T09:54:00.000Z", excerpt: "Status: completed.", repo: "acme/widget" },
+      { path: "journals/2026-06-18-other.md", title: "Other repo secret task", kind: "journal", updatedAt: "2026-06-18T00:00:00.000Z", excerpt: "Status: completed.", repo: "other/repo" },
     ];
     mem.memory.get = async (p: string) =>
       p.includes("opencode")
@@ -1460,5 +1470,147 @@ describe("reconcile (crash recovery)", () => {
     orch.createTask(PROPOSAL); // created (draft)
     const cleaned = await orch.reconcile();
     expect(cleaned).toBe(0);
+  });
+});
+
+describe("chat — project pinning (an existing thread keeps its own project)", () => {
+  const Q: ProjectConfig = { id: "q", owner: "other", name: "repo", url: "u-q", baseBranch: "main", canonicalPath: "/q/repo", worktreesDir: "/q/wt" };
+
+  function twoProjectOrch() {
+    let n = 0;
+    return new Orchestrator({
+      store,
+      capabilities: new CapabilityRegistry(),
+      provider: prov.provider,
+      projects: new ProjectRegistry([PROJECT, Q]),
+      projectRepo,
+      reposRoot: "/repos",
+      vcs: () => vcs.vcs,
+      events: { emit: () => {} },
+      messages: fakeMessages(),
+      conversations: fakeConversations(),
+      memory: mem.memory,
+      usage: usage.usage,
+      notifications: notifs.store,
+      ids: () => `c-${++n}`,
+      clock: () => "2026-06-13T00:00:00.000Z",
+    });
+  }
+
+  it("reopening a P-thread with the picker on Q feeds Iris P's repo, NOT Q's", async () => {
+    const o = twoProjectOrch();
+    prov.setReply(JSON.stringify({ reply: "ok" }));
+    const first = await o.chat("hi", "widget"); // thread starts on acme/widget
+    await o.chat("still here?", "q", first.conversationId); // picker switched to other/repo, SAME thread
+    const sys = prov.system();
+    expect(sys).toContain("acme/widget"); // pinned to the thread's project
+    expect(sys).not.toContain("other/repo"); // never the picker's current project
+  });
+
+  it("a brand-new thread uses the requested (picker) project", async () => {
+    const o = twoProjectOrch();
+    prov.setReply(JSON.stringify({ reply: "ok" }));
+    await o.chat("fresh", "q"); // new thread on other/repo
+    expect(prov.system()).toContain("other/repo");
+  });
+});
+
+describe("effort policy (Settings)", () => {
+  it("setEfforts validates, applies per scope, clears on '', and surfaces in engineInfo", () => {
+    expect(orch.engineInfo().efforts).toEqual({}); // empty by default — model's built-in effort
+    orch.setEfforts({ edit: "high", iris: "xhigh" });
+    expect(orch.engineInfo().efforts).toEqual({ edit: "high", iris: "xhigh" });
+    orch.setEfforts({ edit: "" }); // "" clears a scope back to default
+    expect(orch.engineInfo().efforts).toEqual({ iris: "xhigh" });
+    expect(() => orch.setEfforts({ edit: "max" })).toThrow(); // 'max' is not selectable
+  });
+
+  it("threads the resolved effort into a worker step; omits it when unset", async () => {
+    orch.setEfforts({ edit: "high" });
+    const a = orch.createTask(PROPOSAL, "widget");
+    await orch.startTask(a.id);
+    await orch.settle(a.id);
+    expect(captured?.effort).toBe("high");
+
+    orch.setEfforts({ edit: "" }); // back to default
+    captured = null;
+    const b = orch.createTask(PROPOSAL, "widget");
+    await orch.startTask(b.id);
+    await orch.settle(b.id);
+    expect(captured?.effort).toBeUndefined();
+  });
+});
+
+describe("memory curation (the Archivist)", () => {
+  it("curate() returns the Archivist's parsed JSON plan", async () => {
+    prov.setReply(JSON.stringify({ summary: "two stale journals", actions: [{ kind: "prune", paths: ["journals/old.md"], reason: "superseded" }] }));
+    const plan = await orch.curate();
+    expect(plan.summary).toContain("stale");
+    expect(plan.actions[0]).toMatchObject({ kind: "prune", paths: ["journals/old.md"] });
+  });
+
+  it("curate() degrades to an empty plan on non-JSON output (never throws)", async () => {
+    prov.setReply("sorry, I can't do that right now");
+    const plan = await orch.curate();
+    expect(plan.actions).toEqual([]);
+  });
+
+  it("applyCuration archives prune+compact sources, writes the digest, promotes a note, skips audit", async () => {
+    const plan = {
+      summary: "tidy-up",
+      actions: [
+        { kind: "prune" as const, paths: ["journals/a.md"], reason: "superseded" },
+        { kind: "compact" as const, paths: ["journals/b.md", "journals/c.md"], reason: "merge", digestTitle: "Digest: X (June)", digestBody: "merged outcomes" },
+        { kind: "promote" as const, paths: [], reason: "important", noteTitle: "Decision", noteBody: "use X" },
+        { kind: "audit" as const, paths: ["notes/z.md"], reason: "maybe stale" },
+      ],
+    };
+    await orch.applyCuration({ plan, accept: [0, 1, 2, 3] });
+    expect([...mem.archived].sort()).toEqual(["journals/a.md", "journals/b.md", "journals/c.md"]); // prune + compact sources archived (reversible)
+    expect(mem.saved).toContainEqual({ title: "Decision", body: "use X" }); // promote → pinned note
+    expect(mem.journals.some((j) => j.markdown.includes("merged outcomes"))).toBe(true); // digest written as a journal
+  });
+
+  it("applyCuration applies ONLY the accepted subset", async () => {
+    const plan = { summary: "x", actions: [
+      { kind: "prune" as const, paths: ["journals/a.md"], reason: "old" },
+      { kind: "prune" as const, paths: ["journals/b.md"], reason: "old" },
+    ] };
+    await orch.applyCuration({ plan, accept: [1] }); // only the second
+    expect(mem.archived).toEqual(["journals/b.md"]);
+  });
+
+  it("a compact MISSING its digest archives NOTHING (never silently degrades to a destructive prune)", async () => {
+    const plan = { summary: "x", actions: [
+      { kind: "compact" as const, paths: ["journals/a.md", "journals/b.md"], reason: "merge" }, // no digestTitle/Body
+    ] };
+    await orch.applyCuration({ plan, accept: [0] });
+    expect(mem.archived).toEqual([]); // sources untouched — the action is skipped, not a delete
+    expect(mem.journals).toEqual([]); // and no digest written
+  });
+
+  it("counts a task journaled on BOTH open-PR and merge only ONCE (no double-count)", async () => {
+    const t = orch.createTask(PROPOSAL);
+    await orch.startTask(t.id);
+    await orch.settle(t.id);
+    await orch.openPrForReview(t.id); // journals once (completed, PR open)
+    await orch.mergeOpenPr(t.id); // journals AGAIN (merged) — same task, one vault file
+    const st = await orch.curationStatus();
+    expect(st.tasksSinceCuration).toBe(1); // deduped by task id
+  });
+
+  it("tracks finished tasks since curation, doesn't nudge early, and applyCuration re-arms the counter", async () => {
+    const t = orch.createTask(PROPOSAL, "widget");
+    await orch.startTask(t.id);
+    await orch.settle(t.id); // let the pipeline park at the gate
+    await orch.stopTask(t.id); // abort a finished task → journaled → counter increments
+    let st = await orch.curationStatus();
+    expect(st.tasksSinceCuration).toBe(1);
+    expect(st.curateEvery).toBe(10);
+    expect(events.some((e) => e.type === "curation_due")).toBe(false); // 1 of 10 — no early nudge
+    await orch.applyCuration({ plan: { summary: "", actions: [] }, accept: [] });
+    st = await orch.curationStatus();
+    expect(st.tasksSinceCuration).toBe(0); // re-armed
+    expect(st.lastCuratedAt).not.toBeNull();
   });
 });

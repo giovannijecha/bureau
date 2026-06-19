@@ -2,7 +2,8 @@
 // satisfies TaskStore directly, so there's no adapter for it.)
 
 import { existsSync, mkdirSync } from "node:fs";
-import { join, resolve } from "node:path";
+import { mkdir, writeFile } from "node:fs/promises";
+import { join, resolve, dirname, relative, isAbsolute } from "node:path";
 import {
   cloneRepo,
   createWorktree,
@@ -54,7 +55,7 @@ import { readNote, writeNote, listNotes, noteModifiedAt, deleteNote } from "@bur
 import { MessageRepo, ConversationRepo, UsageRepo, NotificationRepo, type MessageRow, type ConversationRow, type NotificationRow } from "@bureau/db";
 import type { Message, Conversation, Note, NoteSummary, UsageSummary, Notification, NotificationKind, GitFileEntry, PullRequest, Issue, EntryCommit, CommitDetail } from "@bureau/contracts";
 import type { VcsPort, WorktreeRef, MessageLog, ConversationStore, MemoryPort, UsagePort, UsageEvent, NotificationStore, RepoView, RepoCommit, GitAdminOp } from "./ports.js";
-import { noteSummary, notePath } from "./memory.js";
+import { noteSummary, notePath, noteKind } from "./memory.js";
 import { summarizeUsage } from "./usage.js";
 
 export interface RealVcsConfig {
@@ -430,6 +431,13 @@ export class VaultStore implements MemoryPort {
     return resolve(this.vaultPath);
   }
 
+  /** Curator-superseded notes are moved to a SIBLING dir OUTSIDE the vault, so they're truly
+   *  gone from the vault: not listed, not in Iris's read sandbox (which is the vault root) — yet
+   *  still on disk, so a curation run stays reversible by moving files back. */
+  private get archiveDir(): string {
+    return `${resolve(this.vaultPath)}.archive`;
+  }
+
   async list(query?: string): Promise<NoteSummary[]> {
     const paths = await listNotes(this.vaultPath);
     const notes = await Promise.all(paths.map((p) => this.read(p)));
@@ -443,6 +451,25 @@ export class VaultStore implements MemoryPort {
 
   async get(path: string): Promise<Note | null> {
     return this.read(path);
+  }
+
+  async archive(path: string): Promise<void> {
+    const note = await this.read(path); // reads via resolveInVault — a traversal path returns null
+    if (!note) return; // nothing to archive
+    const dest = join(this.archiveDir, path);
+    const rel = relative(this.archiveDir, dest);
+    if (rel.startsWith("..") || isAbsolute(rel)) return; // refuse to escape the archive dir
+    await mkdir(dirname(dest), { recursive: true });
+    await writeFile(dest, note.body, "utf8");
+    await deleteNote(this.vaultPath, path);
+  }
+
+  async count(): Promise<{ notes: number; journals: number }> {
+    const paths = await listNotes(this.vaultPath); // archive lives outside the vault — not walked
+    let notes = 0;
+    let journals = 0;
+    for (const p of paths) (noteKind(p) === "journal" ? journals++ : notes++);
+    return { notes, journals };
   }
 
   async saveNote(title: string, body: string): Promise<Note> {
@@ -478,6 +505,9 @@ export class VaultStore implements MemoryPort {
 /** In-memory vault for tests / ephemeral runs. */
 export class InMemoryMemory implements MemoryPort {
   private readonly notes = new Map<string, { content: string; updatedAt: string }>();
+  /** Reversibly-removed notes — held apart from `notes` so they're never listed, counted, or
+   *  reachable, mirroring the disk store's out-of-vault archive. */
+  private readonly archived = new Map<string, { content: string; updatedAt: string }>();
   constructor(private readonly clock: () => string = () => new Date().toISOString()) {}
 
   /** No on-disk directory — read-on-demand isn't available for an ephemeral vault. */
@@ -497,6 +527,20 @@ export class InMemoryMemory implements MemoryPort {
   async get(path: string): Promise<Note | null> {
     const v = this.notes.get(path);
     return v ? { ...noteSummary(path, v.content, v.updatedAt), body: v.content } : null;
+  }
+
+  async archive(path: string): Promise<void> {
+    const v = this.notes.get(path);
+    if (!v) return;
+    this.archived.set(path, { content: v.content, updatedAt: this.clock() });
+    this.notes.delete(path);
+  }
+
+  async count(): Promise<{ notes: number; journals: number }> {
+    let notes = 0;
+    let journals = 0;
+    for (const path of this.notes.keys()) (noteKind(path) === "journal" ? journals++ : notes++);
+    return { notes, journals };
   }
 
   async saveNote(title: string, body: string): Promise<Note> {

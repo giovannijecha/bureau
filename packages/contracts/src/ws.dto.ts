@@ -17,6 +17,9 @@ export const WsEventSchema = z.discriminatedUnion("type", [
   // A compact summary of a tool Iris just invoked during a chat turn (e.g. "Read
   // src/auth.ts") — drives the live "Iris is working…" activity while a reply is pending.
   z.object({ type: z.literal("iris_activity"), summary: z.string() }),
+  // The vault crossed the auto-curation threshold (N finished tasks) — the Memory page
+  // surfaces a non-blocking "tidy memory?" nudge. Preview only; apply stays CEO-gated.
+  z.object({ type: z.literal("curation_due"), tasksSince: z.number() }),
 ]);
 
 export type WsEvent = z.infer<typeof WsEventSchema>;

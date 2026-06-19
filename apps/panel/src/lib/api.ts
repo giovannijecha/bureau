@@ -29,6 +29,8 @@ import type {
   GitOpResult,
   CreateProjectRequest,
   CostEstimate,
+  CurationPlan,
+  CurationStatus,
 } from "@bureau/contracts";
 
 export const ENGINE_URL = process.env.NEXT_PUBLIC_ENGINE_URL ?? "http://localhost:4319";
@@ -81,6 +83,11 @@ export async function getGithubAccount(): Promise<GithubAccount> {
 /** Set the per-scope model policy (Settings). Returns the updated map. */
 export async function setModels(models: Record<string, string>): Promise<{ models: Record<string, string> }> {
   return json(await postJson("/api/config/models", { models }));
+}
+
+/** Set the per-scope reasoning effort (Settings). "" clears a scope to default. Returns the map. */
+export async function setEfforts(efforts: Record<string, string>): Promise<{ efforts: Record<string, string> }> {
+  return json(await postJson("/api/config/efforts", { efforts }));
 }
 
 /** Set the per-task USD budget cap (Settings; 0 = no cap). Returns the value in effect. */
@@ -223,6 +230,21 @@ export async function saveNote(title: string, body: string, expectedPath?: strin
 export async function deleteNote(notePath: string): Promise<void> {
   const res = await fetch(`${BASE}/api/memory/${notePath.split("/").map(encodeURIComponent).join("/")}`, { method: "DELETE" });
   if (!res.ok) throw new Error(`engine responded ${res.status}`);
+}
+
+/** Memory curation (the Archivist). Preview a plan over the whole vault — mutates nothing. */
+export async function curateMemory(trigger: "manual" | "auto" = "manual"): Promise<CurationPlan> {
+  return json(await postJson("/api/memory/curate", { trigger }));
+}
+
+/** Apply the CEO-approved subset of a curation plan (`accept` = action indices). Returns status. */
+export async function applyCuration(plan: CurationPlan, accept: number[]): Promise<CurationStatus> {
+  return json(await postJson("/api/memory/curate/apply", { plan, accept }));
+}
+
+/** Curation status for the Memory header (last curated + how due). */
+export async function curationStatus(): Promise<CurationStatus> {
+  return json(await fetch(`${BASE}/api/memory/curate/status`));
 }
 
 /** The CEO's chat threads, most-recent first. */

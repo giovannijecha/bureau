@@ -32,9 +32,19 @@ export function noteKind(path: string): NoteKind {
   return path.startsWith(`${JOURNAL_DIR}/`) ? "journal" : "note";
 }
 
-/** Build a NoteSummary from a note's path, content, and modified time. */
+/** Build a NoteSummary from a note's path, content, and modified time. For a journal,
+ *  parse its repo here (once, from the body we already have) so the chat can scope the
+ *  journal index per-project from list() alone — no second read per candidate. */
 export function noteSummary(path: string, content: string, updatedAt: string): NoteSummary {
-  return { path, title: titleOf(path, content), kind: noteKind(path), updatedAt, excerpt: excerptOf(content) };
+  const kind = noteKind(path);
+  return {
+    path,
+    title: titleOf(path, content),
+    kind,
+    updatedAt,
+    excerpt: excerptOf(content),
+    ...(kind === "journal" ? { repo: journalRepo(content) } : {}),
+  };
 }
 
 /** Close a dangling code fence in embedded worker text. A brief truncated mid-fence (or a

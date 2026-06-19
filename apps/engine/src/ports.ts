@@ -206,6 +206,11 @@ export interface MemoryPort {
   saveNote(title: string, body: string): Promise<Note>;
   /** Delete a note by its vault path (no-op if absent). */
   delete(path: string): Promise<void>;
+  /** REVERSIBLY remove a note: move it under archive/<path> (copy + delete). No-op if absent.
+   *  The curator uses this so a compact/prune is always undoable by moving the file back. */
+  archive(path: string): Promise<void>;
+  /** Cheap size probe (active notes vs journals, excluding archive/) for the auto-curation nudge. */
+  count(): Promise<{ notes: number; journals: number }>;
   /** Persist a task journal at a deterministic path (best-effort, idempotent). */
   writeJournal(path: string, markdown: string): Promise<void>;
   /** The absolute on-disk vault directory — lets the chat grant Iris READ access to her

@@ -79,6 +79,11 @@ export const TimelineEntryDto = z.object({
   label: z.string(),
 });
 
+/** Reasoning-effort levels the CEO may select per scope (same vocabulary on both provider
+ *  paths). A scope ABSENT from the efforts map runs on the model's built-in default effort. */
+export const EffortSchema = z.enum(["low", "medium", "high", "xhigh"]);
+export type Effort = z.infer<typeof EffortSchema>;
+
 /** Engine status for the Settings panel. */
 export const EngineInfoDto = z.object({
   provider: z.object({ name: z.string(), available: z.boolean() }),
@@ -86,6 +91,8 @@ export const EngineInfoDto = z.object({
   inflightTasks: z.number().int().nonnegative(),
   /** The model each scope runs on (scope → model id): "iris" + each worker capability. */
   models: z.record(z.string(), z.string()),
+  /** Reasoning effort per scope (scope → level). A scope is ABSENT when on default effort. */
+  efforts: z.record(z.string(), EffortSchema),
   /** Per-task USD spend cap — a running task aborts before its next step once it crosses
    *  this; 0 means no cap. The pre-run estimate warns when a proposal would exceed it. */
   budgetUsd: z.number().nonnegative(),
@@ -97,6 +104,13 @@ export const SetModelsRequestDto = z.object({
   models: z.record(z.string(), z.string()),
 });
 export type SetModelsRequest = z.infer<typeof SetModelsRequestDto>;
+
+/** Settings write: set the reasoning effort for one or more scopes. An empty-string value
+ *  CLEARS a scope back to default effort (so the panel can revert without a separate route). */
+export const SetEffortsRequestDto = z.object({
+  efforts: z.record(z.string(), z.union([EffortSchema, z.literal("")])),
+});
+export type SetEffortsRequest = z.infer<typeof SetEffortsRequestDto>;
 
 /** Settings write: set the per-task USD budget cap (0 = no cap). */
 export const SetBudgetRequestDto = z.object({

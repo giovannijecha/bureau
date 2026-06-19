@@ -14,6 +14,9 @@ export interface CapabilityInput {
   /** Which model to run this step on (the engine resolves it per scope); falls back to
    *  the provider's configured default when unset. */
   readonly model?: string;
+  /** Reasoning effort for this step (the engine resolves it per scope); omitted ⇒ the
+   *  model's default effort. */
+  readonly effort?: "low" | "medium" | "high" | "xhigh";
 }
 
 export interface CapabilityOutput {

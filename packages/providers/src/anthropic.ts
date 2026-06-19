@@ -4,9 +4,9 @@
 // with a fake transport and so the engine owns key resolution: it reads the
 // api-key from a secret_ref, builds `new Anthropic({ apiKey })`, and passes it.
 //
-// Default model is claude-opus-4-8 (Anthropic's current Opus). Thinking/effort
-// are intentionally not set at this transport layer in Phase 1 — capabilities
-// can thread them through later via options.
+// Default model is claude-opus-4-8 (Anthropic's current Opus). Reasoning effort is
+// threaded per-call via options.effort → output_config.effort (the same low/medium/high/
+// xhigh vocabulary the claude CLI uses); omitted ⇒ the model's default effort.
 
 import type Anthropic from "@anthropic-ai/sdk";
 import type { Provider, AuthStrategy, Message, ProviderResponse, SendOptions } from "./provider.js";
@@ -50,6 +50,7 @@ export class AnthropicProvider implements Provider {
         this.client.messages.create({
           model: options?.model ?? this.model,
           max_tokens: options?.maxTokens ?? DEFAULT_MAX_TOKENS,
+          ...(options?.effort !== undefined ? { output_config: { effort: options.effort } } : {}),
           ...(system !== undefined ? { system } : {}),
           messages: turns,
         }),
@@ -71,6 +72,7 @@ export class AnthropicProvider implements Provider {
       const stream = this.client.messages.stream({
         model: options?.model ?? this.model,
         max_tokens: options?.maxTokens ?? DEFAULT_STREAM_MAX_TOKENS,
+        ...(options?.effort !== undefined ? { output_config: { effort: options.effort } } : {}),
         ...(system !== undefined ? { system } : {}),
         messages: turns,
       });

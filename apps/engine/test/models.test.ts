@@ -1,5 +1,6 @@
 import { describe, it, expect } from "vitest";
 import { defaultModelPolicy, modelPolicyFromEnv, resolveModel, isKnownModel, KNOWN_MODELS, MODEL_SCOPES } from "../src/models.js";
+import { defaultEffortPolicy, effortPolicyFromEnv, resolveEffort, isKnownEffort, EFFORT_LEVELS } from "../src/models.js";
 import { priceFor } from "../src/usage.js";
 
 describe("model policy", () => {
@@ -34,5 +35,31 @@ describe("model policy", () => {
       expect(price.inPerM).toBeGreaterThan(0);
       expect(price.outPerM).toBeGreaterThan(0);
     }
+  });
+});
+
+describe("effort policy", () => {
+  it("defaults to EMPTY — every scope on the model's built-in effort (no behavior change)", () => {
+    const p = defaultEffortPolicy();
+    for (const s of MODEL_SCOPES) expect(resolveEffort(p, s)).toBeUndefined();
+  });
+
+  it("resolveEffort returns the scope's level, or undefined when unset (so the caller omits it)", () => {
+    const p = defaultEffortPolicy();
+    p.edit = "high";
+    expect(resolveEffort(p, "edit")).toBe("high");
+    expect(resolveEffort(p, "iris")).toBeUndefined();
+  });
+
+  it("isKnownEffort accepts the four levels and rejects others (incl. the uncapped 'max')", () => {
+    for (const e of EFFORT_LEVELS) expect(isKnownEffort(e)).toBe(true);
+    expect(isKnownEffort("max")).toBe(false); // intentionally not selectable
+    expect(isKnownEffort("turbo")).toBe(false);
+  });
+
+  it("effortPolicyFromEnv applies known overrides and ignores unknown/typo levels", () => {
+    const p = effortPolicyFromEnv({ BUREAU_EFFORT_IRIS: "xhigh", BUREAU_EFFORT_EDIT: "ludicrous" });
+    expect(p.iris).toBe("xhigh"); // applied
+    expect(p.edit).toBeUndefined(); // bad level ignored → unset (default effort)
   });
 });

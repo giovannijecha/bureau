@@ -31,7 +31,7 @@ import {
   type LucideProps,
 } from "lucide-react";
 import type { EngineInfo, GithubAccount } from "@bureau/contracts";
-import { getConfig, ENGINE_URL, getGithubAccount, setModels, setBudget, createProject, removeProject } from "../../lib/api";
+import { getConfig, ENGINE_URL, getGithubAccount, setModels, setEfforts, setBudget, createProject, removeProject } from "../../lib/api";
 import { useAppearance, ACCENTS, SCALES, type ThemeMode, type ScaleKey } from "../../lib/appearance";
 import { useProjects } from "../../lib/useProjects";
 import { useConfirm } from "../../components/ConfirmDialog";
@@ -43,6 +43,15 @@ const MODEL_OPTIONS = [
   { value: "claude-opus-4-8", label: "Opus 4.8 — strongest" },
   { value: "claude-sonnet-4-6", label: "Sonnet 4.6 — cheaper" },
   { value: "claude-haiku-4-5", label: "Haiku 4.5 — cheapest" },
+];
+// Reasoning effort per scope. "" = the model's built-in default (no override). Higher effort
+// = deeper reasoning + more tokens spent. Mirrors the engine's EFFORT_LEVELS (max omitted).
+const EFFORT_OPTIONS = [
+  { value: "", label: "Default effort" },
+  { value: "low", label: "Low" },
+  { value: "medium", label: "Medium" },
+  { value: "high", label: "High" },
+  { value: "xhigh", label: "X-High" },
 ];
 const MODEL_SCOPE_ORDER = ["iris", "plan", "research", "edit", "review", "document"];
 const SCOPE_LABELS: Record<string, string> = {
@@ -76,6 +85,22 @@ export function SettingsBody({ initialSection }: { initialSection?: string | und
     try {
       const res = await setModels({ [scope]: model });
       setInfo((prev) => (prev ? { ...prev, models: res.models } : prev)); // authoritative — avoids a poll-race revert
+    } catch {
+      /* the 5s poll re-syncs the authoritative value */
+    }
+  }
+
+  async function changeEffort(scope: string, level: string) {
+    setInfo((prev) => {
+      if (!prev) return prev;
+      const efforts = { ...(prev.efforts ?? {}) };
+      if (level === "") delete efforts[scope];
+      else efforts[scope] = level as EngineInfo["efforts"][string];
+      return { ...prev, efforts }; // optimistic
+    });
+    try {
+      const res = await setEfforts({ [scope]: level });
+      setInfo((prev) => (prev ? { ...prev, efforts: res.efforts as EngineInfo["efforts"] } : prev)); // authoritative
     } catch {
       /* the 5s poll re-syncs the authoritative value */
     }
@@ -170,7 +195,7 @@ export function SettingsBody({ initialSection }: { initialSection?: string | und
 
           {section === "models" && (
             <>
-              <ModelsCard info={info} onChange={changeModel} onPreset={applyPreset} />
+              <ModelsCard info={info} onChange={changeModel} onPreset={applyPreset} onEffort={changeEffort} />
               <BudgetCard info={info} onChange={changeBudget} />
             </>
           )}
@@ -422,7 +447,17 @@ function GithubCard({ account }: { account: GithubAccount | null }) {
   );
 }
 
-function ModelsCard({ info, onChange, onPreset }: { info: EngineInfo | null; onChange: (s: string, m: string) => void; onPreset: (m: string) => void }) {
+function ModelsCard({
+  info,
+  onChange,
+  onPreset,
+  onEffort,
+}: {
+  info: EngineInfo | null;
+  onChange: (s: string, m: string) => void;
+  onPreset: (m: string) => void;
+  onEffort: (s: string, e: string) => void;
+}) {
   if (!info || !info.models) {
     return (
       <Card title="Models" icon={Cpu}>
@@ -433,19 +468,31 @@ function ModelsCard({ info, onChange, onPreset }: { info: EngineInfo | null; onC
   return (
     <Card title="Models" icon={Cpu}>
       <p className="text-xs text-muted-foreground">
-        Which model each worker runs on. Cheaper models cut cost (see Metrics). Applies for this session; set{" "}
-        <code className="font-mono">BUREAU_MODEL_*</code> on the engine for a permanent default.
+        Set the <strong>model</strong> and <strong>reasoning effort</strong> for each worker individually below. Higher effort reasons
+        deeper but spends more tokens; cheaper models cut cost (see Metrics). Applies for this session; set{" "}
+        <code className="font-mono">BUREAU_MODEL_*</code> / <code className="font-mono">BUREAU_EFFORT_*</code> on the engine for a permanent default.
       </p>
-      <div className="flex flex-wrap gap-2">
+      {/* Per-scope is the primary control. The column headers + each row's two dropdowns make
+          it obvious you tune workers individually — the presets below are just a shortcut. */}
+      <div className="space-y-2 border-t pt-3">
+        <div className="flex items-center gap-2 pb-0.5 text-[11px] font-medium uppercase tracking-wide text-muted-foreground">
+          <span className="flex-1">Worker</span>
+          <span className="w-[148px] shrink-0">Model</span>
+          <span className="w-[132px] shrink-0">Effort</span>
+        </div>
+        {MODEL_SCOPE_ORDER.filter((s) => info.models[s] !== undefined).map((s) => (
+          <div key={s} className="flex items-center gap-2">
+            <span className="min-w-0 flex-1 truncate text-sm">{SCOPE_LABELS[s] ?? s}</span>
+            <Dropdown value={info.models[s]!} options={MODEL_OPTIONS} onChange={(m) => onChange(s, m)} buttonClassName="h-8 w-[148px]" />
+            <Dropdown value={info.efforts?.[s] ?? ""} options={EFFORT_OPTIONS} onChange={(e) => onEffort(s, e)} buttonClassName="h-8 w-[132px]" />
+          </div>
+        ))}
+      </div>
+      {/* Quick presets — bulk-set every worker's MODEL (effort is left as-is). */}
+      <div className="flex flex-wrap items-center gap-2 border-t pt-3">
+        <span className="text-xs text-muted-foreground">Apply to all:</span>
         <PresetButton icon={Sparkles} label="Max quality" hint="all Opus" onClick={() => onPreset("claude-opus-4-8")} />
         <PresetButton icon={Leaf} label="Cost-saver" hint="all Sonnet" onClick={() => onPreset("claude-sonnet-4-6")} />
-      </div>
-      <div className="space-y-2.5 border-t pt-3">
-        {MODEL_SCOPE_ORDER.filter((s) => info.models[s] !== undefined).map((s) => (
-          <Row key={s} label={SCOPE_LABELS[s] ?? s}>
-            <Dropdown value={info.models[s]!} options={MODEL_OPTIONS} onChange={(m) => onChange(s, m)} buttonClassName="h-8" />
-          </Row>
-        ))}
       </div>
     </Card>
   );

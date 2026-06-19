@@ -140,6 +140,8 @@ export class ClaudeCliProvider implements Provider {
     const { system, prompt } = renderCliPrompt(messages);
     const tools = options?.tools ?? this.tools;
     const args = ["-p", "--output-format", "json", "--model", options?.model ?? this.model];
+    // Reasoning effort (--effort is a global flag valid in -p mode). Fixed enum value, argv-only.
+    if (options?.effort) args.push("--effort", options.effort);
     // Append (don't replace) so Claude Code's default tool/safety guidance is kept.
     if (system !== undefined) args.push("--append-system-prompt", system);
     if (options?.acceptEdits) {
@@ -181,6 +183,7 @@ export class ClaudeCliProvider implements Provider {
     // requires --verbose with it. The edit flags (acceptEdits/add-dir/tools) all
     // still apply — only the output FORMAT differs from send().
     const args = ["-p", "--output-format", "stream-json", "--verbose", "--model", model];
+    if (options?.effort) args.push("--effort", options.effort);
     if (system !== undefined) args.push("--append-system-prompt", system);
     if (options?.acceptEdits) {
       args.push("--permission-mode", "acceptEdits");

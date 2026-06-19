@@ -10,4 +10,5 @@ export { ReviewCapability, buildReviewPrompt, REVIEW_TOOLS, type ReviewCapabilit
 export { PlanCapability, buildPlanPrompt, PLAN_TOOLS, type PlanCapabilityDeps } from "./plan.js";
 export { ResearchCapability, buildResearchPrompt, RESEARCH_TOOLS, type ResearchCapabilityDeps } from "./research.js";
 export { TestCapability, DEFAULT_TEST_TIMEOUT_MS, type TestCapabilityDeps } from "./test.js";
+export { runCurator, buildCuratePrompt, CURATE_SYSTEM } from "./curate.js";
 export { defaultCommandRunner, type CommandRunner, type CommandResult } from "./run-command.js";

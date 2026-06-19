@@ -75,6 +75,7 @@ export async function runAgenticFileWorker(
     tools: opts.tools ? [...opts.tools] : [...EDIT_TOOLS],
     acceptEdits: opts.acceptEdits ?? true,
     ...(input.model !== undefined ? { model: input.model } : {}),
+    ...(input.effort !== undefined ? { effort: input.effort } : {}),
   };
   // Stream when the caller wants live progress (the engine pipes chunks to the
   // panel); otherwise a plain send. Both run in the worktree + return usage.

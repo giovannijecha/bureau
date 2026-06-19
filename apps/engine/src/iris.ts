@@ -83,7 +83,9 @@ export async function irisRespond(
   onActivity?: (summary: string) => void,
   /** Extra directories Iris's READ-only tools may reach beyond her repo cwd — the System
    *  Memory vault, so she can open a past task's journal (research findings) on demand. */
-  extraReadDirs?: readonly string[]
+  extraReadDirs?: readonly string[],
+  /** Reasoning effort for the chat turn (engine-resolved 'iris' scope); omitted ⇒ default. */
+  effortOverride?: "low" | "medium" | "high" | "xhigh"
 ): Promise<IrisTurn> {
   // Images can't be inlined as text — tell Iris where they are so she Reads (views) them.
   const imgNote =
@@ -114,6 +116,7 @@ You are currently working on the repository ${project.owner}/${project.name} (de
     ...(cwd !== undefined ? { cwd } : {}),
     ...(addDirs ? { addDirs } : {}),
     ...(modelOverride !== undefined ? { model: modelOverride } : {}),
+    ...(effortOverride !== undefined ? { effort: effortOverride } : {}),
     ...(onActivity ? { onToolUse: onActivity } : {}),
   };
 
@@ -175,7 +178,9 @@ export function parseIris(raw: string): IrisTurn {
   return { reply };
 }
 
-function extractJsonObject(raw: string): string | null {
+/** Slice the outermost {...} from a model reply that may wrap it in prose/markdown fences.
+ *  Exported so other single-call workers (e.g. the memory curator) reuse the same extraction. */
+export function extractJsonObject(raw: string): string | null {
   const start = raw.indexOf("{");
   const end = raw.lastIndexOf("}");
   if (start === -1 || end === -1 || end < start) return null;

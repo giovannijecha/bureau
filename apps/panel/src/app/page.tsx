@@ -94,6 +94,12 @@ export default function AssistantPage() {
 
   const selectConv = useCallback(async (id: string) => {
     setConvId(id);
+    // Re-pin the project picker to THIS thread's project — so reopening an old chat after a
+    // project switch puts Iris, the git/Hub views, AND any task we create back on the right
+    // repo, not whatever the picker last showed. (The engine independently enforces the right
+    // project for chat; this keeps the rest of the UI consistent.) Skip if its project is gone.
+    const conv = conversations.find((c) => c.id === id);
+    if (conv?.projectId && projects.some((p) => p.id === conv.projectId)) setActiveId(conv.projectId);
     setProposal(loadProposal(id)); // restore a pending proposal for this thread
     setGitOp(loadGitOp(id)); // …and a pending git-op proposal
     const savedRuns = loadRuns(id); // rehydrate finished command transcripts (static)
@@ -109,7 +115,7 @@ export default function AssistantPage() {
     } catch {
       setLog(loadNotes(id));
     }
-  }, []);
+  }, [conversations, projects, setActiveId]);
 
   const newChat = useCallback(() => {
     setConvId(null);
@@ -120,6 +126,17 @@ export default function AssistantPage() {
     setError(null);
     inputRef.current?.focus();
   }, []);
+
+  // The "owner/name" label for a thread's project — shown on each rail row so the CEO can see
+  // which repo a conversation belongs to (and spot a mismatch). Only when >1 project exists.
+  const projectLabel = useCallback(
+    (pid: string | null): string | null => {
+      if (!pid || projects.length < 2) return null;
+      const p = projects.find((x) => x.id === pid);
+      return p ? `${p.owner}/${p.name}` : null;
+    },
+    [projects]
+  );
 
   // A note's "Ask Iris" deep-link (?ask=) pre-fills the composer.
   useEffect(() => {
@@ -267,7 +284,12 @@ export default function AssistantPage() {
     setBusy(true);
     setError(null);
     try {
-      const task = await createTask(proposal, activeId ?? undefined);
+      // A task born from a thread targets the THREAD's project, not whatever the picker shows —
+      // so a proposal made on repo P can't land on repo Q after a project switch. Falls back to
+      // the picker for a brand-new (unsaved) thread or if the thread's project was removed.
+      const conv = conversations.find((c) => c.id === convId);
+      const projectForTask = conv?.projectId && projects.some((p) => p.id === conv.projectId) ? conv.projectId : activeId ?? undefined;
+      const task = await createTask(proposal, projectForTask);
       const title = proposal.title;
       setProposal(null);
       persistProposal(convId, null);
@@ -299,7 +321,7 @@ export default function AssistantPage() {
 
   return (
     <div className="flex h-full">
-      <ConversationsRail conversations={conversations} activeId={convId} onSelect={selectConv} onNew={newChat} onDelete={removeConv} />
+      <ConversationsRail conversations={conversations} activeId={convId} onSelect={selectConv} onNew={newChat} onDelete={removeConv} projectLabel={projectLabel} />
 
       <div className="flex min-w-0 flex-1 flex-col">
         <div className="flex-1 overflow-y-auto">

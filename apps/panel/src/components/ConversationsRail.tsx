@@ -11,12 +11,15 @@ export function ConversationsRail({
   onSelect,
   onNew,
   onDelete,
+  projectLabel,
 }: {
   conversations: Conversation[];
   activeId: string | null;
   onSelect: (id: string) => void;
   onNew: () => void;
   onDelete: (id: string) => void;
+  /** "owner/name" for a thread's project, or null to hide it (e.g. single-project setups). */
+  projectLabel?: (projectId: string | null) => string | null;
 }) {
   return (
     <div className="flex h-full w-60 shrink-0 flex-col border-r bg-background/40">
@@ -37,6 +40,7 @@ export function ConversationsRail({
           <div className="space-y-0.5">
             {conversations.map((c) => {
               const active = c.id === activeId;
+              const proj = projectLabel?.(c.projectId) ?? null;
               return (
                 <div
                   key={c.id}
@@ -47,7 +51,10 @@ export function ConversationsRail({
                 >
                   <button onClick={() => onSelect(c.id)} className="flex min-w-0 flex-1 items-center gap-2 text-left">
                     <MessageSquare className={cn("h-3.5 w-3.5 shrink-0", active ? "text-primary" : "text-muted-foreground")} />
-                    <span className="truncate">{c.title}</span>
+                    <span className="flex min-w-0 flex-1 flex-col">
+                      <span className="truncate">{c.title}</span>
+                      {proj && <span className="truncate text-[10px] leading-tight text-muted-foreground">{proj}</span>}
+                    </span>
                   </button>
                   <button
                     onClick={() => onDelete(c.id)}

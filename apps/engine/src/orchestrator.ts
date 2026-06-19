@@ -24,9 +24,10 @@ import type {
   HumanDecision,
 } from "@bureau/core";
 import type { CapabilityRegistry } from "@bureau/capabilities";
+import { runCurator } from "@bureau/capabilities";
 import type { Provider } from "@bureau/providers";
-import type { Message, TaskProposal, ChatResponse, Project, CreateProjectRequest, Conversation, EngineInfo, Hub, Note, NoteSummary, UsageSummary, CostEstimate, Notification, NotificationKind, GitInfo, Attachment, GitOpRequest, GitOpResult, GitTree, GitFileContent, GithubAccount, PullRequest, Issue, TreeCommits, CommitDetail, FileList, FileHistory } from "@bureau/contracts";
-import { DESTRUCTIVE_GIT_OPS } from "@bureau/contracts";
+import type { Message, TaskProposal, ChatResponse, Project, CreateProjectRequest, Conversation, EngineInfo, Hub, Note, NoteSummary, UsageSummary, CostEstimate, Notification, NotificationKind, GitInfo, Attachment, GitOpRequest, GitOpResult, GitTree, GitFileContent, GithubAccount, PullRequest, Issue, TreeCommits, CommitDetail, FileList, FileHistory, CurationPlan, CurateRequest, ApplyCurationRequest, CurationStatus } from "@bureau/contracts";
+import { DESTRUCTIVE_GIT_OPS, CurationPlanDto } from "@bureau/contracts";
 import type { ProjectRepo } from "@bureau/db";
 import { join, resolve, sep } from "node:path";
 import { tmpdir } from "node:os";
@@ -35,11 +36,14 @@ import { mkdir, writeFile, rm } from "node:fs/promises";
 
 import type { TaskStore, VcsPort, EventSink, MessageLog, ConversationStore, MemoryPort, UsagePort, NotificationStore, RepoView, GitAdminOp } from "./ports.js";
 import { ProjectRegistry, toProjectDto, buildProjectConfig, type ProjectConfig } from "./projects.js";
-import { defaultModelPolicy, resolveModel, isKnownModel, MODEL_SCOPES, type ModelPolicy } from "./models.js";
+import {
+  defaultModelPolicy, resolveModel, isKnownModel, MODEL_SCOPES, type ModelPolicy,
+  defaultEffortPolicy, resolveEffort, isKnownEffort, type EffortPolicy, type Effort,
+} from "./models.js";
 import { OrchestratorError } from "./errors.js";
-import { irisRespond } from "./iris.js";
+import { irisRespond, extractJsonObject } from "./iris.js";
 import { buildHub } from "./hub.js";
-import { journalPath, journalMarkdown, journalRepo, notePath } from "./memory.js";
+import { journalPath, journalMarkdown, notePath, slug, JOURNAL_DIR } from "./memory.js";
 import { estimateTaskCost, type ScopeAverage } from "./estimate.js";
 import { costUsd } from "./usage.js";
 import { ASSIGNEE, prOpen, prUrl, isMerged } from "./summary.js";
@@ -78,6 +82,9 @@ export interface OrchestratorDeps {
   readonly notifications: NotificationStore;
   /** Per-scope model policy (iris + each worker). Defaults to all-Opus when omitted. */
   readonly models?: ModelPolicy;
+  /** Per-scope reasoning-effort policy (iris + each worker). Defaults to EMPTY when omitted —
+   *  an unset scope rides the model's built-in effort (no behavior change). */
+  readonly efforts?: EffortPolicy;
   /** Per-task USD spend cap — a running task aborts before its next step once it crosses
    *  this. 0 / omitted = no cap (the historical default). */
   readonly budgetUsd?: number;
@@ -94,12 +101,28 @@ export class Orchestrator {
   private readonly merging = new Set<string>();
   /** Which model each scope runs on — mutable (the CEO can change it in Settings). */
   private readonly modelPolicy: ModelPolicy;
+  /** How hard each scope reasons — mutable (the CEO can change it in Settings). Empty by
+   *  default: an absent scope uses the model's built-in effort. */
+  private readonly effortPolicy: EffortPolicy;
   /** Per-task USD cap — mutable (the CEO sets it in Settings). 0 = no cap. */
   private budgetUsd: number;
+  /** Finished tasks since the last memory curation — drives the auto-curation nudge. */
+  private tasksSinceCuration = 0;
+  /** Task ids already counted toward the nudge — one task is journaled on several terminal
+   *  paths (open-PR, then merge-the-PR, retries), but it adds only ONE vault file, so it must
+   *  advance the counter only once. Cleared when a curation re-arms the nudge. */
+  private journaledTaskIds = new Set<string>();
+  /** When the vault was last curated (ISO), or null. In-memory: a nudge heuristic, not durable. */
+  private lastCuratedAt: string | null = null;
+  /** Auto-nudge after this many finished tasks (BUREAU_CURATE_EVERY, default 10). */
+  private readonly curateEvery: number;
 
   constructor(private readonly d: OrchestratorDeps) {
     this.modelPolicy = { ...(d.models ?? defaultModelPolicy()) };
+    this.effortPolicy = { ...(d.efforts ?? defaultEffortPolicy()) };
     this.budgetUsd = Math.max(0, d.budgetUsd ?? 0);
+    const every = Number(process.env.BUREAU_CURATE_EVERY);
+    this.curateEvery = Number.isInteger(every) && every > 0 ? every : 10;
   }
 
   /** Set the per-task USD budget cap (0 = no cap). Returns the clamped value in effect. */
@@ -449,6 +472,77 @@ export class Orchestrator {
     return this.d.memory.delete(path);
   }
 
+  // ── Memory curation (the Archivist) ─────────────────────────────────────────
+
+  /** Produce a curation PLAN over the whole vault (preview — mutates NOTHING). One read-only
+   *  Archivist call over a digest of every note + journal; the CEO reviews + approves actions.
+   *  The vault is GLOBAL across repos, so the digest is cross-repo (don't scope it per project). */
+  async curate(_req?: CurateRequest): Promise<CurationPlan> {
+    const all = await this.d.memory.list();
+    const digest = buildVaultDigest(all);
+    const effort = resolveEffort(this.effortPolicy, "iris");
+    const res = await runCurator(this.d.provider, {
+      digest,
+      model: resolveModel(this.modelPolicy, "iris"),
+      ...(effort !== undefined ? { effort } : {}),
+    });
+    this.recordUsage("iris", null, { inputTokens: res.inputTokens, outputTokens: res.outputTokens, model: res.model ?? this.d.provider.name });
+    const json = extractJsonObject(res.content);
+    if (json === null) return { summary: "Couldn't produce a valid curation plan — nothing was changed.", actions: [] };
+    try {
+      const parsed = CurationPlanDto.safeParse(JSON.parse(json));
+      return parsed.success ? parsed.data : { summary: "Couldn't produce a valid curation plan — nothing was changed.", actions: [] };
+    } catch {
+      return { summary: "Couldn't produce a valid curation plan — nothing was changed.", actions: [] };
+    }
+  }
+
+  /** Apply the CEO-approved subset of a plan, deterministically. Destructive ops ARCHIVE
+   *  originals (reversible — files move to archive/, never hard-deleted). NEVER touches git. */
+  async applyCuration(req: ApplyCurationRequest): Promise<CurationStatus> {
+    const accept = new Set(req.accept);
+    for (let i = 0; i < req.plan.actions.length; i++) {
+      if (!accept.has(i)) continue;
+      const a = req.plan.actions[i]!;
+      try {
+        if (a.kind === "compact") {
+          // Only fold the sources away once the consolidating digest is actually written — a
+          // compact missing its digest must NOT silently become a prune (that would erase the
+          // journals with no replacement). No digest ⇒ skip the whole action.
+          if (a.digestTitle && a.digestBody) {
+            const path = `${JOURNAL_DIR}/digest-${slug(a.digestTitle)}-${this.d.ids().slice(0, 8)}.md`;
+            await this.d.memory.writeJournal(path, digestMarkdown(a.digestTitle, a.digestBody, this.d.clock()));
+            for (const p of a.paths) await this.d.memory.archive(p); // fold sources away (reversible)
+          }
+        } else if (a.kind === "prune") {
+          for (const p of a.paths) await this.d.memory.archive(p);
+        } else if (a.kind === "promote") {
+          // Route through the guarded saveNote so a title collision is REFUSED (caught below +
+          // skipped) rather than silently overwriting an existing pinned note's body.
+          if (a.noteTitle && a.noteBody) await this.saveNote(a.noteTitle, a.noteBody);
+        }
+        // audit: advisory only — no mutation.
+      } catch (err) {
+        console.warn(`[engine] curation action ${i} (${a.kind}) failed: ${errMessage(err)}`);
+      }
+    }
+    this.tasksSinceCuration = 0; // re-arm the nudge
+    this.journaledTaskIds.clear();
+    this.lastCuratedAt = this.d.clock();
+    return this.curationStatus();
+  }
+
+  /** Lightweight curation status for the Memory header (last curated + how due). */
+  async curationStatus(): Promise<CurationStatus> {
+    const c = await this.d.memory.count();
+    return {
+      lastCuratedAt: this.lastCuratedAt,
+      tasksSinceCuration: this.tasksSinceCuration,
+      vaultNoteCount: c.notes + c.journals,
+      curateEvery: this.curateEvery,
+    };
+  }
+
   /** Auto-write a finished task's journal to the vault. Best-effort — a vault
    *  write must never fail a merge/stop/abort. */
   private async journalTask(task: Task): Promise<void> {
@@ -456,6 +550,17 @@ export class Orchestrator {
       await this.d.memory.writeJournal(journalPath(task), journalMarkdown(task, this.d.clock()));
     } catch (err) {
       console.warn(`[engine] could not journal task ${task.id}: ${errMessage(err)}`);
+    }
+    // Every finished task adds ONE journal file — nudge the CEO to curate once the vault grows
+    // by `curateEvery`. A task journals on multiple terminal paths (open-PR, merge, retries) but
+    // counts ONCE (dedupe by id). Fires EXACTLY at the crossing, so it never spams; applyCuration
+    // resets it. PREVIEW only — apply always stays CEO-gated.
+    if (!this.journaledTaskIds.has(task.id)) {
+      this.journaledTaskIds.add(task.id);
+      this.tasksSinceCuration++;
+      if (this.tasksSinceCuration === this.curateEvery) {
+        this.d.events.emit({ type: "curation_due", tasksSince: this.tasksSinceCuration });
+      }
     }
   }
 
@@ -471,6 +576,7 @@ export class Orchestrator {
       projectCount: this.d.projects.list().length,
       inflightTasks: this.running.size,
       models: { ...this.modelPolicy },
+      efforts: { ...this.effortPolicy },
       budgetUsd: this.budgetUsd,
     };
   }
@@ -492,11 +598,43 @@ export class Orchestrator {
     return { ...this.modelPolicy };
   }
 
+  /** Set the reasoning effort for one or more scopes (Settings). An empty-string value CLEARS
+   *  a scope back to default effort (the model's built-in). Validates each non-empty level so
+   *  an unsupported effort can't be selected. In-memory for the session — env (BUREAU_EFFORT_*)
+   *  is the durable set. */
+  setEfforts(efforts: Record<string, string>): Record<string, Effort> {
+    // Validate the WHOLE batch before mutating — all-or-nothing (mirrors setModels). "" is the
+    // explicit "clear" sentinel and is always allowed; any other value must be a known level.
+    for (const level of Object.values(efforts)) {
+      if (level !== "" && !isKnownEffort(level)) {
+        throw new OrchestratorError(`Unknown effort "${level}" — choose low, medium, high, or xhigh.`, 422);
+      }
+    }
+    for (const [scope, level] of Object.entries(efforts)) {
+      if (!(MODEL_SCOPES as readonly string[]).includes(scope)) continue;
+      if (level === "") delete this.effortPolicy[scope];
+      else if (isKnownEffort(level)) this.effortPolicy[scope] = level;
+    }
+    return { ...this.effortPolicy };
+  }
+
   /** A conversation turn with Iris, scoped to a project + conversation thread.
    *  Creates a new conversation when none is given. */
   async chat(content: string, projectId?: string, conversationId?: string, attachments?: readonly Attachment[]): Promise<ChatResponse> {
-    const project = this.d.projects.resolve(projectId);
+    let project = this.d.projects.resolve(projectId);
     const conversation = this.ensureConversation(conversationId, project);
+    // An existing thread is BOUND to its own project (stamped at creation). Honor that over the
+    // request's projectId — the panel sends the currently-selected project, which can differ
+    // after the CEO switches projects. Without this, reopening an old chat would silently feed
+    // Iris the wrong repo + wrong project's memory. New threads stamp this == project, so the
+    // override is a no-op for them. Falls back to the resolved project if the thread's was removed.
+    if (conversation.projectId && conversation.projectId !== project.id) {
+      try {
+        project = this.d.projects.get(conversation.projectId);
+      } catch {
+        /* the thread's project was removed — keep the resolved one */
+      }
+    }
 
     // Inline text attachments into the message; save images so Iris can Read (view) them.
     const { messageContent, images, imagesDir } = await this.prepareAttachments(content, attachments, conversation.id);
@@ -538,7 +676,7 @@ export class Orchestrator {
       turn = await irisRespond(
         this.d.provider, recent, irisProject, cwd, context, images, resolveModel(this.modelPolicy, "iris"),
         (summary) => this.d.events.emit({ type: "iris_activity", summary }),
-        this.memoryReadDirs()
+        this.memoryReadDirs(), resolveEffort(this.effortPolicy, "iris")
       );
     } finally {
       // The agent has Read the images during the turn — drop the temp dir so image
@@ -549,10 +687,11 @@ export class Orchestrator {
     const reply = this.appendChatMessage(conversation.id, "iris", turn.reply);
     this.recordUsage("iris", null, turn.usage);
     this.d.conversations.touch(conversation.id, this.d.clock());
-    // When the thread FIRST crosses the compaction threshold, nudge the CEO once to start a
-    // fresh chat for a new topic — past task findings persist in Memory, so nothing is lost.
+    // When the thread FIRST crosses the compaction threshold, nudge the CEO once — and be
+    // HONEST about what survives: finished-task findings persist in Memory (journals), but a
+    // decision made only in chat does NOT carry into a new chat unless it's pinned as a note.
     const notice = firstFold
-      ? "This thread is getting long — older turns are now summarized to keep it fast. Consider a New chat for a new topic; past task findings stay in Memory."
+      ? "This thread is getting long — older turns are now condensed into a running summary, so some detail is lost. Finished-task findings persist in Memory, but a decision made only in chat won't carry into a new chat unless you pin it as a System Memory note."
       : undefined;
     const base = { reply, conversationId: conversation.id, ...(notice ? { notice } : {}) };
     if (turn.proposal) return { ...base, proposal: turn.proposal };
@@ -608,7 +747,7 @@ export class Orchestrator {
       turn = await irisRespond(
         this.d.provider, msgs, irisProject, cwd, context, images, resolveModel(this.modelPolicy, "iris"),
         (summary) => this.d.events.emit({ type: "iris_activity", summary }),
-        this.memoryReadDirs()
+        this.memoryReadDirs(), resolveEffort(this.effortPolicy, "iris")
       );
     } finally {
       if (imagesDir) await rm(imagesDir, { recursive: true, force: true }).catch(() => {});
@@ -659,17 +798,19 @@ export class Orchestrator {
       // its repo in the body) — otherwise other projects' task titles leak into this chat.
       const root = this.d.memory.root();
       const repoKey = `${project.owner}/${project.name}`;
-      const candidates = all.filter((n) => n.kind === "journal").slice(0, 24); // bound the scan
-      const lines: string[] = [];
-      for (const j of candidates) {
-        if (lines.length >= 12) break;
-        const full = await this.d.memory.get(j.path);
-        const repo = full ? journalRepo(full.body) : null;
-        if (repo !== null && repo !== repoKey) continue; // a different project's journal — skip
-        const date = j.updatedAt.slice(0, 10); // YYYY-MM-DD, so same-goal tasks are distinguishable
-        const outcome = j.excerpt.trim(); // the journal's Outcome line — shallow recall without a Read
-        lines.push(`- "${j.title}"${/^\d{4}-\d\d-\d\d$/.test(date) ? ` (${date})` : ""}${outcome ? ` — ${outcome}` : ""} — ${root ? join(root, j.path) : j.path}`);
-      }
+      // Scope to THIS project BEFORE limiting — in a busy multi-repo vault, taking a global
+      // top-N first would let other projects' newer tasks crowd this one's journals out of the
+      // window. `repo` rides on the summary (parsed once in list()), so this needs no extra
+      // per-file read. A journal with no Repo line (repo null) predates the tag — keep it
+      // visible everywhere. `all` is already updatedAt-DESC, so this is the 12 most recent.
+      const lines = all
+        .filter((n) => n.kind === "journal" && (n.repo == null || n.repo === repoKey))
+        .slice(0, 12)
+        .map((j) => {
+          const date = j.updatedAt.slice(0, 10); // YYYY-MM-DD, so same-goal tasks are distinguishable
+          const outcome = j.excerpt.trim(); // the journal's Outcome line — shallow recall without a Read
+          return `- "${j.title}"${/^\d{4}-\d\d-\d\d$/.test(date) ? ` (${date})` : ""}${outcome ? ` — ${outcome}` : ""} — ${root ? join(root, j.path) : j.path}`;
+        });
       if (lines.length > 0) {
         sections.push(
           `Past task records for ${repoKey} in System Memory — each is a finished task's journal (its plan, research findings under a "## Reports" section, review, and outcome; the one-line outcome is shown). When the CEO refers to earlier work, a past task, or a research finding — OR asks a fresh question a journal below likely already answers — READ the matching file with your Read tool and answer from its ACTUAL contents (cite it); never guess what a journal says. This lists the most recent; older journals live under journals/ — Glob/Grep there if you don't see a match:\n\n${lines.join("\n")}`
@@ -1047,6 +1188,7 @@ export class Orchestrator {
         const reviewDiff =
           step.capability === "review" ? await vcs.reviewDiff(worktreePath, `origin/${project.baseBranch}`) : undefined;
         const testCommand = step.capability === "test" ? project.testCommand : undefined;
+        const stepEffort = resolveEffort(this.effortPolicy, step.capability);
         const out = await this.withStepTimeout(
           step.capability,
           this.d.capabilities.get(step.capability).execute({
@@ -1054,6 +1196,7 @@ export class Orchestrator {
             worktreePath,
             context: this.stepContext(taskId, planned.id),
             model: resolveModel(this.modelPolicy, step.capability),
+            ...(stepEffort !== undefined ? { effort: stepEffort } : {}),
             ...(reviewDiff !== undefined ? { diff: reviewDiff } : {}),
             ...(testCommand !== undefined ? { testCommand } : {}),
             // Pipe the worker's live output to the panel as it works.
@@ -1190,6 +1333,7 @@ export class Orchestrator {
         const reviewDiff =
           step.capability === "review" ? await vcs.reviewDiff(worktreePath, `origin/${project.baseBranch}`) : undefined;
         const testCommand = step.capability === "test" ? project.testCommand : undefined;
+        const stepEffort = resolveEffort(this.effortPolicy, step.capability);
         const out = await this.withStepTimeout(
           step.capability,
           this.d.capabilities.get(step.capability).execute({
@@ -1197,6 +1341,7 @@ export class Orchestrator {
             worktreePath,
             context: this.stepContext(taskId, planned.id, changeRequest),
             model: resolveModel(this.modelPolicy, step.capability),
+            ...(stepEffort !== undefined ? { effort: stepEffort } : {}),
             ...(reviewDiff !== undefined ? { diff: reviewDiff } : {}),
             ...(testCommand !== undefined ? { testCommand } : {}),
             onChunk: (chunk) =>
@@ -1726,6 +1871,42 @@ function boundInlineHistory(msgs: Message[], budget: number): Message[] {
   }
   while (from > 0 && msgs[from]?.role !== "user") from--;
   return msgs.slice(from);
+}
+
+/** A compact, cross-repo index of the whole vault for the Archivist — one line per note +
+ *  journal (kind, path, date, repo, title, excerpt), bounded so a big vault can't blow the
+ *  prompt. The curator proposes a plan from this; the CEO reviews every action before apply. */
+function buildVaultDigest(all: NoteSummary[]): string {
+  const CAP = 16_000;
+  const lines: string[] = [];
+  let total = 0;
+  for (const n of all) {
+    const date = /^\d{4}-\d\d-\d\d/.test(n.updatedAt) ? n.updatedAt.slice(0, 10) : "—";
+    const repo = n.repo ? `, ${n.repo}` : "";
+    const excerpt = n.excerpt.trim() ? ` — ${n.excerpt.trim()}` : "";
+    const line = `[${n.kind}] ${n.path} — (${date}${repo}) ${n.title}${excerpt}`;
+    if (total + line.length > CAP) break;
+    lines.push(line);
+    total += line.length;
+  }
+  return lines.join("\n") || "(the vault is empty)";
+}
+
+/** The journal markdown for a curator COMPACT digest — a faithful merge of old journals,
+ *  written under journals/ (no Repo line ⇒ visible across all projects' indexes). */
+function digestMarkdown(title: string, body: string, at: string): string {
+  return [
+    `# ${title}`,
+    "",
+    `- **Status:** digest`,
+    `- **Recorded:** ${at}`,
+    "",
+    body.trim(),
+    "",
+    "---",
+    "_Memory digest written by Bureau's Archivist (compacted from older journals)._",
+    "",
+  ].join("\n");
 }
 
 /** A file extension for a saved image attachment, derived from its media type — so
