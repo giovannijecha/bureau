@@ -96,6 +96,15 @@ export default function AssistantPage() {
     }
   }, []);
 
+  // Mirror conversations + projects into refs so selectConv can read the LATEST without
+  // listing them as deps. Otherwise selectConv's identity changes on every list refresh, and
+  // the mount/auto-select effect (deps [selectConv]) re-runs — re-opening the thread, resetting
+  // stickToBottom, and yanking the scroll back to the bottom while the CEO is reading older turns.
+  const conversationsRef = useRef(conversations);
+  conversationsRef.current = conversations;
+  const projectsRef = useRef(projects);
+  projectsRef.current = projects;
+
   const selectConv = useCallback(async (id: string) => {
     setConvId(id);
     stickToBottom.current = true; // opening a thread shows its latest message
@@ -103,8 +112,8 @@ export default function AssistantPage() {
     // project switch puts Iris, the git/Hub views, AND any task we create back on the right
     // repo, not whatever the picker last showed. (The engine independently enforces the right
     // project for chat; this keeps the rest of the UI consistent.) Skip if its project is gone.
-    const conv = conversations.find((c) => c.id === id);
-    if (conv?.projectId && projects.some((p) => p.id === conv.projectId)) setActiveId(conv.projectId);
+    const conv = conversationsRef.current.find((c) => c.id === id);
+    if (conv?.projectId && projectsRef.current.some((p) => p.id === conv.projectId)) setActiveId(conv.projectId);
     setProposal(loadProposal(id)); // restore a pending proposal for this thread
     setGitOp(loadGitOp(id)); // …and a pending git-op proposal
     const savedRuns = loadRuns(id); // rehydrate finished command transcripts (static)
@@ -120,7 +129,7 @@ export default function AssistantPage() {
     } catch {
       setLog(loadNotes(id));
     }
-  }, [conversations, projects, setActiveId]);
+  }, [setActiveId]); // STABLE (setActiveId is a useCallback([])) so the mount effect runs once
 
   const newChat = useCallback(() => {
     setConvId(null);
@@ -161,6 +170,7 @@ export default function AssistantPage() {
       .then((cs) => {
         if (!alive) return;
         setConversations(cs);
+        conversationsRef.current = cs; // so the auto-opened thread can re-pin its project now
         if (cs.length > 0) void selectConv(cs[0]!.id);
       })
       .catch(() => {});
