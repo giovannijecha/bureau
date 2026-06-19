@@ -320,7 +320,7 @@ export default function AssistantPage() {
   }
 
   return (
-    <div className="flex h-full">
+    <div className="flex min-h-0 flex-1">
       <ConversationsRail conversations={conversations} activeId={convId} onSelect={selectConv} onNew={newChat} onDelete={removeConv} projectLabel={projectLabel} />
 
       <div className="flex min-h-0 min-w-0 flex-1 flex-col">
@@ -342,18 +342,7 @@ export default function AssistantPage() {
                 <ChatBubble key={m.id} message={m} onRun={runInChat} />
               ))}
               {busy && <TypingIndicator activity={activity} />}
-              {proposal && (
-                <ProposalCard
-                  proposal={proposal}
-                  busy={busy}
-                  onCreate={create}
-                  onRefine={refine}
-                  onKeep={() => {
-                    setProposal(null);
-                    persistProposal(convId, null);
-                  }}
-                />
-              )}
+              {proposal && <ProposalCard proposal={proposal} />}
               {gitOp && (
                 <GitOpProposalCard
                   gitOp={gitOp}
@@ -400,6 +389,23 @@ export default function AssistantPage() {
         </div>
 
         <div className="shrink-0 px-6 pb-4 pt-2 lg:px-10">
+          {proposal ? (
+            // A pending proposal docks its decision here, in place of the composer — actions
+            // are always reachable without scrolling the (tall) brief, and the chat input
+            // returns the moment you Refine or Keep chatting.
+            <ProposalDock
+              proposal={proposal}
+              busy={busy}
+              onCreate={create}
+              onRefine={refine}
+              onKeep={() => {
+                setProposal(null);
+                persistProposal(convId, null);
+                inputRef.current?.focus();
+              }}
+            />
+          ) : (
+          <>
           <div className="w-full rounded-2xl border bg-card shadow-sm transition-all focus-within:border-primary/50 focus-within:shadow-md focus-within:ring-1 focus-within:ring-primary/15">
             <textarea
               ref={inputRef}
@@ -479,6 +485,8 @@ export default function AssistantPage() {
             <kbd className="rounded border px-1 py-px font-sans text-[10px]">Shift</kbd>+
             <kbd className="rounded border px-1 py-px font-sans text-[10px]">Enter</kbd> for a new line
           </p>
+          </>
+          )}
         </div>
       </div>
     </div>
@@ -596,37 +604,9 @@ function fmtCost(n: number): string {
   return `$${n.toFixed(2)}`;
 }
 
-function ProposalCard({
-  proposal,
-  busy,
-  onCreate,
-  onRefine,
-  onKeep,
-}: {
-  proposal: TaskProposal;
-  busy: boolean;
-  onCreate: () => void;
-  onRefine: () => void;
-  onKeep: () => void;
-}) {
-  // Forecast the pipeline's token + cost BEFORE the CEO commits to running it, and flag
-  // when that forecast would blow the per-task budget cap (a runtime guard stops it anyway).
-  const [est, setEst] = useState<CostEstimate | null>(null);
-  const [budget, setBudget] = useState(0);
-  useEffect(() => {
-    let alive = true;
-    estimateCost(proposal.steps.map((s) => s.capability))
-      .then((e) => alive && setEst(e))
-      .catch(() => alive && setEst(null));
-    getConfig()
-      .then((c) => alive && setBudget(c.budgetUsd))
-      .catch(() => {});
-    return () => {
-      alive = false;
-    };
-  }, [proposal]);
-  const overBudget = budget > 0 && est !== null && est.totalCostUsd > budget;
-
+function ProposalCard({ proposal }: { proposal: TaskProposal }) {
+  // The brief + pipeline only (the "what") — its decision (cost + Create/Refine/Keep) is
+  // docked at the bottom in <ProposalDock> so the actions stay reachable without scrolling.
   return (
     <div className="rounded-xl border border-primary/30 bg-card p-4">
       <div className="mb-1 flex items-center gap-2">
@@ -655,8 +635,54 @@ function ProposalCard({
           </div>
         ))}
       </div>
+    </div>
+  );
+}
+
+/** The docked decision bar for a pending proposal — sits where the composer is, so the CEO
+ *  can act without scrolling the (tall) brief. Carries the cost forecast + the three actions. */
+function ProposalDock({
+  proposal,
+  busy,
+  onCreate,
+  onRefine,
+  onKeep,
+}: {
+  proposal: TaskProposal;
+  busy: boolean;
+  onCreate: () => void;
+  onRefine: () => void;
+  onKeep: () => void;
+}) {
+  // Forecast the pipeline's token + cost BEFORE the CEO commits, and flag when it would blow
+  // the per-task budget cap (a runtime guard stops it anyway).
+  const [est, setEst] = useState<CostEstimate | null>(null);
+  const [budget, setBudget] = useState(0);
+  useEffect(() => {
+    let alive = true;
+    estimateCost(proposal.steps.map((s) => s.capability))
+      .then((e) => alive && setEst(e))
+      .catch(() => alive && setEst(null));
+    getConfig()
+      .then((c) => alive && setBudget(c.budgetUsd))
+      .catch(() => {});
+    return () => {
+      alive = false;
+    };
+  }, [proposal]);
+  const overBudget = budget > 0 && est !== null && est.totalCostUsd > budget;
+
+  return (
+    <div className="w-full rounded-2xl border border-primary/30 bg-card px-4 py-3 shadow-sm">
+      <div className="mb-2 flex items-center gap-2">
+        <Workflow className="h-4 w-4 shrink-0 text-primary" />
+        <span className="min-w-0 truncate text-sm font-medium">{proposal.title}</span>
+        <span className="ml-auto shrink-0 rounded-full border border-primary/30 bg-primary/10 px-2 py-0.5 text-[10px] font-medium uppercase tracking-wide text-primary">
+          Proposed task
+        </span>
+      </div>
       {est && (
-        <div className={cn("mb-4 flex flex-wrap items-center gap-x-1.5 gap-y-1 text-xs", overBudget ? "text-amber-600 dark:text-amber-500" : "text-muted-foreground")}>
+        <div className={cn("mb-2.5 flex flex-wrap items-center gap-x-1.5 gap-y-1 text-xs", overBudget ? "text-amber-600 dark:text-amber-500" : "text-muted-foreground")}>
           <Coins className="h-3.5 w-3.5 shrink-0" />
           <span>≈ {fmtTokens(est.totalInputTokens + est.totalOutputTokens)} tokens</span>
           <span aria-hidden>·</span>
@@ -664,13 +690,11 @@ function ProposalCard({
           {overBudget ? (
             <span className="font-medium">⚠ over your {fmtCost(budget)} cap — it&apos;ll stop mid-run</span>
           ) : (
-            <span className="text-muted-foreground/70">
-              · {est.perStep.some((p) => p.basis === "history") ? "from your past runs" : "rough estimate"}
-            </span>
+            <span className="text-muted-foreground/70">· {est.perStep.some((p) => p.basis === "history") ? "from your past runs" : "rough estimate"}</span>
           )}
         </div>
       )}
-      <div className="flex flex-wrap gap-2">
+      <div className="flex flex-wrap items-center gap-2">
         <button
           onClick={onCreate}
           disabled={busy}
@@ -690,7 +714,7 @@ function ProposalCard({
         <button
           onClick={onKeep}
           disabled={busy}
-          className="inline-flex h-9 items-center gap-1.5 rounded-md px-3.5 text-sm font-medium text-muted-foreground transition-colors hover:bg-accent hover:text-foreground disabled:opacity-50"
+          className="ml-auto inline-flex h-9 items-center gap-1.5 rounded-md px-3 text-sm font-medium text-muted-foreground transition-colors hover:bg-accent hover:text-foreground disabled:opacity-50"
         >
           <MessageSquare className="h-4 w-4" />
           Keep chatting
