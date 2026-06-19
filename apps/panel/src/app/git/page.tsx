@@ -367,7 +367,7 @@ export default function GitPage() {
                             <span className="min-w-0 flex-1 truncate text-sm">{t.goal}</span>
                           </Link>
                           <span className={cn("shrink-0 rounded-full border px-2 py-0.5 text-xs font-medium", badge)}>{label}</span>
-                          {!inFlight && (
+                          {!inFlight ? (
                             <button
                               onClick={() => void removeBranch(t)}
                               disabled={deleting === branch}
@@ -377,6 +377,13 @@ export default function GitPage() {
                             >
                               {deleting === branch ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <Trash2 className="h-3.5 w-3.5" />}
                             </button>
+                          ) : (
+                            // An in-flight task's branch can't be deleted — reserve the button's
+                            // exact slot (p-1 + a 3.5 box) so its status badge stays right-aligned
+                            // with the deletable rows instead of sitting flush to the edge.
+                            <span aria-hidden className="shrink-0 p-1">
+                              <span className="block h-3.5 w-3.5" />
+                            </span>
                           )}
                         </div>
                       );
