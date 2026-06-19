@@ -61,6 +61,9 @@ export interface VcsPort {
    *  run from the canonical clone after a fetch — the recovery path when the worktree is
    *  already gone. Behind canPush() like mergePr(). */
   establishBaseFromOrigin(branch: string): Promise<void>;
+  /** Pin the repo's GitHub default branch to the base — so a task branch that landed on
+   *  origin first isn't left as the default (which is also undeletable). Behind canPush(). */
+  setDefaultBranch(): Promise<void>;
   /** Tear down a worktree (force = remove even if dirty, for aborts). */
   removeWorktree(ref: WorktreeRef, force: boolean): Promise<void>;
   /** The directory Iris reads from in chat: the project's canonical clone if it

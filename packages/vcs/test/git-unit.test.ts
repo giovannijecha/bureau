@@ -1,7 +1,7 @@
 import { describe, it, expect } from "vitest";
 
 import { run, assertSafeRef, assertSafeRepoUrl, assertSafeRepoId, parseGithubRepo, VcsError, type Runner, type ExecResult } from "../src/exec.js";
-import { push, openPr, mergePr, baseExists, establishBase, commitAll, getDiff, cloneRepo, freshBase } from "../src/git.js";
+import { push, openPr, mergePr, baseExists, establishBase, setDefaultBranch, commitAll, getDiff, cloneRepo, freshBase } from "../src/git.js";
 import { createWorktree, removeWorktree, resetWorktreeToBase } from "../src/worktree.js";
 import { squashAllAndForcePush } from "../src/git-admin.js";
 
@@ -171,6 +171,19 @@ describe("establishBase", () => {
     // assertSafeRef rejects ':' (refspec syntax), so a refspec is never validated whole.
     await expect(establishBase("/wt", "a:refs/heads/main", "main", makeRunner().run)).rejects.toThrow(/Unsafe/);
     await expect(establishBase("/wt", "bureau/task-1", "ma:in", makeRunner().run)).rejects.toThrow(/Unsafe/);
+  });
+});
+
+describe("setDefaultBranch", () => {
+  it("PATCHes the repo's default_branch via gh api", async () => {
+    const { run: r, calls } = makeRunner();
+    await setDefaultBranch("o/r", "main", r);
+    expect(calls[0]!.cmd).toBe("gh");
+    expect(calls[0]!.args).toEqual(["api", "-X", "PATCH", "repos/o/r", "-f", "default_branch=main"]);
+  });
+
+  it("rejects an unsafe base branch", async () => {
+    await expect(setDefaultBranch("o/r", "--foo", makeRunner().run)).rejects.toThrow(/Unsafe default branch/);
   });
 });
 

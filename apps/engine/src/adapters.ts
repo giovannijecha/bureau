@@ -19,6 +19,7 @@ import {
   mergePr,
   baseExists,
   establishBase,
+  setDefaultBranch,
   removeWorktree,
   recentCommits,
   remoteBranches,
@@ -157,6 +158,10 @@ export class RealVcs implements VcsPort {
   async establishBaseFromOrigin(branch: string): Promise<void> {
     await fetchOrigin(this.cfg.canonicalPath, this.runner);
     await establishBase(this.cfg.canonicalPath, `origin/${branch}`, this.cfg.baseBranch, this.runner);
+  }
+
+  setDefaultBranch(): Promise<void> {
+    return setDefaultBranch(this.ownerRepo, this.cfg.baseBranch, this.runner);
   }
 
   async removeWorktree(ref: WorktreeRef, force: boolean): Promise<void> {

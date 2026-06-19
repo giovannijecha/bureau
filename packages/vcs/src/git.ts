@@ -356,6 +356,19 @@ export async function baseExists(
   return out.code === 0; // 0 = ref present; 2 = absent; other = transient (treated as absent → safe establish/PR retry)
 }
 
+/** Set the repo's DEFAULT branch on GitHub (`gh api PATCH repos/<owner/repo>`). After an
+ *  empty repo is initialized, the default may be whatever branch landed on origin first —
+ *  this pins it to the real base (main), so the task branch is no longer the default and
+ *  becomes deletable. `ownerRepo` is "owner/repo". Call only behind the canPush wall. */
+export async function setDefaultBranch(
+  ownerRepo: string,
+  baseBranch: string,
+  runner: Runner = defaultRunner
+): Promise<void> {
+  assertSafeRef(baseBranch, "default branch");
+  await run(runner, "gh", ["api", "-X", "PATCH", `repos/${ownerRepo}`, "-f", `default_branch=${baseBranch}`]);
+}
+
 /** Create the base branch on origin from `srcRef` — the FIRST task on an empty repo, where
  *  there's no base to open a PR against, so the branch's content IS the initial main. Pushes
  *  `srcRef:refs/heads/<baseBranch>` (NO --force, so an existing main can never be clobbered —

@@ -1376,8 +1376,11 @@ export class Orchestrator {
           this.notify("merged", task.id, "Merged to main", `“${truncate(task.goal)}” is merged — ${url}`);
         } else {
           // Still empty — establish the base from the pushed branch (the worktree is gone,
-          // so push origin/<branch> from the canonical clone).
+          // so push origin/<branch> from the canonical clone). The task branch was pushed
+          // first under the old flow, so it may be origin's default: pin the default to main
+          // FIRST, which both fixes the default and makes the task branch deletable.
           await vcs.establishBaseFromOrigin(branch);
+          await vcs.setDefaultBranch().catch(() => {});
           task = this.addArtifacts(task, [{ id: this.d.ids() as ArtifactId, kind: "base_established", ref: `https://github.com/${task.repoOwner}/${task.repoName}`, producedByStep: lastStep, createdAt: this.d.clock() }]);
           await vcs.deleteBranch(branch).catch(() => {});
           this.notify("merged", task.id, "Initialized main", `“${truncate(task.goal)}” established ${project.baseBranch} on an empty repo — your work is its first commit.`);
@@ -1429,20 +1432,22 @@ export class Orchestrator {
     const lastStep = task.steps[task.steps.length - 1]!.id;
     let prUrl: string | undefined;
     try {
-      await vcs.push(worktreePath, branch);
       if (!(await vcs.baseExists())) {
         // First task on an EMPTY repo: origin has no base branch, so there's nothing to
-        // open a PR against — the branch's content IS the initial main. Establish it
-        // directly (still behind the canPush wall above; establishBase is push-only, no
-        // --force, so it can never clobber an existing main). Both confirm-merge and
-        // open-PR collapse here — a review PR is impossible without a base.
+        // open a PR against — the branch's content IS the initial main. Push it STRAIGHT to
+        // the base branch (its FIRST branch on origin → GitHub's default), then pin the
+        // default explicitly. Deliberately NOT push()ing the task branch first: that would
+        // make IT origin's default (and an undeletable leftover). No --force, so an existing
+        // main can never be clobbered. Both confirm-merge and open-PR collapse here — a
+        // review PR is impossible without a base.
         await vcs.establishBase(worktreePath, branch);
+        await vcs.setDefaultBranch().catch(() => {}); // belt-and-suspenders: main IS the default
         task = this.addArtifacts(task, [
           { id: this.d.ids() as ArtifactId, kind: "base_established", ref: `https://github.com/${task.repoOwner}/${task.repoName}`, producedByStep: lastStep, createdAt: this.d.clock() },
         ]);
-        await vcs.deleteBranch(branch).catch(() => {}); // main now equals this commit; the task branch is noise (best-effort)
         this.notify("merged", task.id, "Initialized main", `“${truncate(task.goal)}” established ${project.baseBranch} on an empty repo — your work is its first commit.`);
       } else {
+        await vcs.push(worktreePath, branch);
         prUrl = await vcs.openPr(branch, title, prBody(task.goal));
         if (merge) {
           await vcs.mergePr(branch);

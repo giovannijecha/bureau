@@ -47,6 +47,7 @@ function fakeVcs() {
     openPr: [] as { branch: string }[],
     mergePr: [] as { branch: string }[],
     establishBase: [] as { worktreePath?: string; branch: string; fromOrigin: boolean }[],
+    setDefaultBranch: 0,
     removeWorktree: [] as { force: boolean }[],
     gitAdmin: [] as string[],
   };
@@ -109,6 +110,9 @@ function fakeVcs() {
       calls.establishBase.push({ branch, fromOrigin: true });
       if (mergeError !== null) throw new Error(mergeError);
       baseEmpty = false;
+    },
+    async setDefaultBranch() {
+      calls.setDefaultBranch++;
     },
     async removeWorktree(_ref, force) {
       calls.removeWorktree.push({ force });
@@ -1149,10 +1153,11 @@ describe("decideGate", () => {
     await orch.settle(draft.id);
 
     const detail = toTaskDetail(await orch.confirmMerge(draft.id));
-    expect(vcs.calls.push).toHaveLength(1); // the branch was pushed
+    expect(vcs.calls.push).toHaveLength(0); // the task branch is NOT pushed first (it'd become origin's default)
     expect(vcs.calls.openPr).toHaveLength(0); // NO PR attempted — there was no base to target
-    expect(vcs.calls.establishBase).toHaveLength(1); // main was established from the branch
-    expect(vcs.calls.establishBase[0]!.fromOrigin).toBe(false); // straight from the worktree
+    expect(vcs.calls.establishBase).toHaveLength(1); // main established straight from the worktree branch
+    expect(vcs.calls.establishBase[0]!.fromOrigin).toBe(false);
+    expect(vcs.calls.setDefaultBranch).toBe(1); // the default is pinned to main
     expect(detail.merged).toBe(true); // the work genuinely landed on main
     expect(detail.prUrl).toBeNull(); // …with NO fabricated PR link
     expect(detail.mergeError).toBeNull();
