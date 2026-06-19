@@ -14,6 +14,7 @@
 //   POST /api/tasks/:id/discard   abort + tear down an interrupted task's worktree
 //   POST /api/tasks/:id/merge     the final confirm: push → PR → squash-merge
 //   POST /api/tasks/:id/open-pr   push → open a PR for review on GitHub, NO merge
+//   POST /api/tasks/:id/establish-base  recover a land that failed on an empty repo (no base)
 
 import { createServer, type IncomingMessage, type ServerResponse, type Server } from "node:http";
 import { SendMessageRequestDto, CreateTaskRequestDto, SaveNoteRequestDto, GateDecisionRequestDto, GitOpRequestDto, SetModelsRequestDto, CreateProjectRequestDto, EstimateRequestDto, SetBudgetRequestDto } from "@bureau/contracts";
@@ -389,7 +390,7 @@ async function handle(deps: HttpDeps, req: IncomingMessage, res: ServerResponse)
   }
 
   // POST /api/tasks/:id/(start|stop|resume|discard|merge|open-pr|merge-pr)
-  const actionMatch = /^\/api\/tasks\/([^/]+)\/(start|stop|resume|discard|merge|open-pr|merge-pr)$/.exec(path);
+  const actionMatch = /^\/api\/tasks\/([^/]+)\/(start|stop|resume|discard|merge|open-pr|merge-pr|establish-base)$/.exec(path);
   if (method === "POST" && actionMatch) {
     const id = decodeURIComponent(actionMatch[1]!);
     const action = actionMatch[2];
@@ -406,7 +407,9 @@ async function handle(deps: HttpDeps, req: IncomingMessage, res: ServerResponse)
                 ? await deps.orchestrator.openPrForReview(id)
                 : action === "merge-pr"
                   ? await deps.orchestrator.mergeOpenPr(id)
-                  : await deps.orchestrator.confirmMerge(id);
+                  : action === "establish-base"
+                    ? await deps.orchestrator.establishBaseForTask(id)
+                    : await deps.orchestrator.confirmMerge(id);
     sendJson(res, 200, toTaskDetail(task));
     return;
   }

@@ -105,4 +105,20 @@ describe("toTaskSummary — mergeError distinguishes a failed merge from a clean
     expect(s.merged).toBe(false);
     expect(s.mergeError).toBe("conflict");
   });
+
+  it("a base_established task is merged with NO pr link — the first task that became main on an empty repo", () => {
+    const s = toTaskSummary(completedTask([artifact("base_established", "https://github.com/acme/widget")]));
+    expect(s.merged).toBe(true);
+    expect(s.prOpen).toBe(false);
+    expect(s.mergeError).toBeNull();
+  });
+
+  it("base_established is authoritative — a stale merge_error from an earlier attempt is suppressed once landed", () => {
+    // The dante recovery shape: an earlier land left a merge_error, then establishBase succeeded.
+    const s = toTaskSummary(
+      completedTask([artifact("merge_error", "can't be blank"), artifact("base_established", "https://github.com/acme/widget")])
+    );
+    expect(s.merged).toBe(true);
+    expect(s.mergeError).toBeNull(); // the resolved error is no longer surfaced
+  });
 });

@@ -29,7 +29,9 @@ export function toTaskSummary(task: Task): TaskSummary {
     pendingGates: task.gates.filter((g) => g.status === "pending" || g.status === "open").length,
     merged: isMerged(task),
     prOpen: prOpen(task),
-    mergeError: mergeError(task),
+    // Only the UNRESOLVED failure: once the task actually landed (recovery established the
+    // base / a retry merged after an earlier failure), the stale merge_error is moot.
+    mergeError: unresolvedMergeError(task),
   };
 }
 
@@ -44,11 +46,35 @@ export function mergeError(task: Task): string | null {
   return null;
 }
 
-/** True only when the task genuinely landed on main: completed, has a MERGED PR URL
- *  (pr_url), and no recorded merge error. A PR merely OPENED for review (pr_open) does
- *  NOT count as merged. Distinguishes a real merge from a confirmed-but-failed one. */
+/** The task's MOST RECENT terminal land outcome — which of pr_url / base_established /
+ *  merge_error was recorded LAST. The land flow can retry (a failed merge then a successful
+ *  one, or a failed first attempt then an establish), so the outcome is decided by RECENCY:
+ *  a stale earlier merge_error never masks a later success, and vice-versa. */
+function lastLand(task: Task): "merged" | "established" | "failed" | null {
+  for (let i = task.artifacts.length - 1; i >= 0; i--) {
+    const k = task.artifacts[i]!.kind;
+    if (k === "pr_url") return "merged";
+    if (k === "base_established") return "established";
+    if (k === "merge_error") return "failed";
+  }
+  return null;
+}
+
+/** True only when the task genuinely landed on main: completed, and its LATEST land
+ *  outcome was a merge (pr_url) or a base-establish (the first task on an empty repo,
+ *  whose branch became `main` directly — no PR). A PR merely OPENED for review (pr_open)
+ *  does NOT count. Recency-based, so a successful retry after an earlier merge_error reads
+ *  as merged (and an unresolved failure never reads as merged). */
 export function isMerged(task: Task): boolean {
-  return task.status === "completed" && mergedPrUrl(task) !== null && mergeError(task) === null;
+  if (task.status !== "completed") return false;
+  const land = lastLand(task);
+  return land === "merged" || land === "established";
+}
+
+/** The UNRESOLVED merge failure (the panel's red "didn't land"), or null. Only when the
+ *  task's latest land outcome was a failure — a failure later fixed by a retry is moot. */
+export function unresolvedMergeError(task: Task): string | null {
+  return lastLand(task) === "failed" ? mergeError(task) : null;
 }
 
 /** True when the task's branch was pushed and a PR OPENED for review, but NOT merged —
@@ -158,7 +184,7 @@ export function describe(task: Task, entry: DecisionEntry): { kind: string; labe
       // failed merge "didn't land". Never claim a merge that never happened.
       if (isMerged(task)) return { kind: entry.type, label: "Merged to main" };
       if (prOpen(task)) return { kind: entry.type, label: "PR opened for review" };
-      if (mergeError(task) !== null) return { kind: entry.type, label: "Completed — merge didn't land" };
+      if (unresolvedMergeError(task) !== null) return { kind: entry.type, label: "Completed — merge didn't land" };
       return { kind: entry.type, label: "Task completed" };
     case "task_aborted":
       return { kind: entry.type, label: `Aborted — ${entry.reason}` };

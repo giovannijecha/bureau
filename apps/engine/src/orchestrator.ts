@@ -1335,6 +1335,65 @@ export class Orchestrator {
     }
   }
 
+  /** Recovery for a task whose land FAILED before any base existed (the first task on an
+   *  empty repo: its branch is already on origin, but `gh pr create` had no base to target).
+   *  Re-lands from origin — establishes the base from the pushed branch, or, if a base
+   *  appeared meanwhile, opens + squash-merges a PR. canPush()-gated exactly like every
+   *  merge; the branch is recomputed from the task id (never from request input). */
+  async establishBaseForTask(taskId: string): Promise<Task> {
+    let task = this.requireTask(taskId);
+    if (isMerged(task)) return task; // idempotent — a racing 2nd call must not double-land
+    if (this.merging.has(taskId)) {
+      throw new OrchestratorError(`Task ${taskId} is already being landed.`, 409); // serialize
+    }
+    if (task.status !== "completed") {
+      throw new OrchestratorError(`Task ${taskId} isn't completed — nothing to land.`, 409);
+    }
+    if (prOpen(task)) {
+      throw new OrchestratorError(`Task ${taskId} has an open PR — merge that instead.`, 409); // use mergeOpenPr
+    }
+    // ── THE SECURITY WALL ── (every origin write stays behind canPush)
+    if (!canPush(task)) {
+      throw new OrchestratorError(`Task ${taskId} isn't authorized to land.`, 409);
+    }
+    this.merging.add(taskId);
+    try {
+      const project = this.resolveProject(task);
+      const vcs = this.d.vcs(project);
+      const branch = this.branchFor(task.id);
+      const lastStep = task.steps[task.steps.length - 1]!.id;
+      try {
+        if (await vcs.baseExists()) {
+          // A base exists now (the repo was initialized meanwhile) — open + squash-merge a
+          // PR against the already-pushed branch: the normal land. Record pr_open the INSTANT
+          // the PR exists, BEFORE mergePr — so a mergePr failure leaves the task in the prOpen
+          // state (→ the in-Bureau "Merge to main" retry via mergeOpenPr), never a dead end
+          // that would re-open an already-open PR on the next click.
+          const url = await vcs.openPr(branch, `Bureau: ${truncate(task.goal)}`, prBody(task.goal));
+          task = this.addArtifacts(task, [{ id: this.d.ids() as ArtifactId, kind: "pr_open", ref: url, producedByStep: lastStep, createdAt: this.d.clock() }]);
+          await vcs.mergePr(branch);
+          task = this.addArtifacts(task, [{ id: this.d.ids() as ArtifactId, kind: "pr_url", ref: url, producedByStep: lastStep, createdAt: this.d.clock() }]);
+          this.notify("merged", task.id, "Merged to main", `“${truncate(task.goal)}” is merged — ${url}`);
+        } else {
+          // Still empty — establish the base from the pushed branch (the worktree is gone,
+          // so push origin/<branch> from the canonical clone).
+          await vcs.establishBaseFromOrigin(branch);
+          task = this.addArtifacts(task, [{ id: this.d.ids() as ArtifactId, kind: "base_established", ref: `https://github.com/${task.repoOwner}/${task.repoName}`, producedByStep: lastStep, createdAt: this.d.clock() }]);
+          await vcs.deleteBranch(branch).catch(() => {});
+          this.notify("merged", task.id, "Initialized main", `“${truncate(task.goal)}” established ${project.baseBranch} on an empty repo — your work is its first commit.`);
+        }
+      } catch (err) {
+        this.notify("merge_failed", task.id, "Couldn't land", `“${truncate(task.goal)}” couldn't land: ${errMessage(err)}`);
+        task = this.addArtifacts(task, [{ id: this.d.ids() as ArtifactId, kind: "merge_error", ref: errMessage(err), producedByStep: lastStep, createdAt: this.d.clock() }]);
+      }
+      this.emitTaskUpdated(task);
+      await this.journalTask(task);
+      return task;
+    } finally {
+      this.merging.delete(taskId);
+    }
+  }
+
   /** THE single GitHub-reaching path. Approve the open pr_approval gate, complete the
    *  task, and — only when canPush()===true — push the branch and open its PR; when
    *  `merge`, also squash-merge to main and delete the branch. push()/openPr()/mergePr()
@@ -1371,20 +1430,34 @@ export class Orchestrator {
     let prUrl: string | undefined;
     try {
       await vcs.push(worktreePath, branch);
-      prUrl = await vcs.openPr(branch, title, prBody(task.goal));
-      if (merge) {
-        await vcs.mergePr(branch);
-        // Full success — the change is on main. Record the MERGED PR.
+      if (!(await vcs.baseExists())) {
+        // First task on an EMPTY repo: origin has no base branch, so there's nothing to
+        // open a PR against — the branch's content IS the initial main. Establish it
+        // directly (still behind the canPush wall above; establishBase is push-only, no
+        // --force, so it can never clobber an existing main). Both confirm-merge and
+        // open-PR collapse here — a review PR is impossible without a base.
+        await vcs.establishBase(worktreePath, branch);
         task = this.addArtifacts(task, [
-          { id: this.d.ids() as ArtifactId, kind: "pr_url", ref: prUrl, producedByStep: lastStep, createdAt: this.d.clock() },
+          { id: this.d.ids() as ArtifactId, kind: "base_established", ref: `https://github.com/${task.repoOwner}/${task.repoName}`, producedByStep: lastStep, createdAt: this.d.clock() },
         ]);
-        this.notify("merged", task.id, "Merged to main", `“${truncate(task.goal)}” is merged — ${prUrl}`);
+        await vcs.deleteBranch(branch).catch(() => {}); // main now equals this commit; the task branch is noise (best-effort)
+        this.notify("merged", task.id, "Initialized main", `“${truncate(task.goal)}” established ${project.baseBranch} on an empty repo — your work is its first commit.`);
       } else {
-        // PR opened for review — NOT merged. The branch stays on GitHub for the CEO.
-        task = this.addArtifacts(task, [
-          { id: this.d.ids() as ArtifactId, kind: "pr_open", ref: prUrl, producedByStep: lastStep, createdAt: this.d.clock() },
-        ]);
-        this.notify("review", task.id, "PR opened for review", `“${truncate(task.goal)}” is on GitHub as an open PR — review and merge it there: ${prUrl}`);
+        prUrl = await vcs.openPr(branch, title, prBody(task.goal));
+        if (merge) {
+          await vcs.mergePr(branch);
+          // Full success — the change is on main. Record the MERGED PR.
+          task = this.addArtifacts(task, [
+            { id: this.d.ids() as ArtifactId, kind: "pr_url", ref: prUrl, producedByStep: lastStep, createdAt: this.d.clock() },
+          ]);
+          this.notify("merged", task.id, "Merged to main", `“${truncate(task.goal)}” is merged — ${prUrl}`);
+        } else {
+          // PR opened for review — NOT merged. The branch stays on GitHub for the CEO.
+          task = this.addArtifacts(task, [
+            { id: this.d.ids() as ArtifactId, kind: "pr_open", ref: prUrl, producedByStep: lastStep, createdAt: this.d.clock() },
+          ]);
+          this.notify("review", task.id, "PR opened for review", `“${truncate(task.goal)}” is on GitHub as an open PR — review and merge it there: ${prUrl}`);
+        }
       }
     } catch (err) {
       // The push/PR/merge didn't complete (e.g. conflicts, branch protection). Record an

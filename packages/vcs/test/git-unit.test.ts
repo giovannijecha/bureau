@@ -1,7 +1,7 @@
 import { describe, it, expect } from "vitest";
 
 import { run, assertSafeRef, assertSafeRepoUrl, assertSafeRepoId, parseGithubRepo, VcsError, type Runner, type ExecResult } from "../src/exec.js";
-import { push, openPr, mergePr, commitAll, getDiff, cloneRepo, freshBase } from "../src/git.js";
+import { push, openPr, mergePr, baseExists, establishBase, commitAll, getDiff, cloneRepo, freshBase } from "../src/git.js";
 import { createWorktree, removeWorktree, resetWorktreeToBase } from "../src/worktree.js";
 import { squashAllAndForcePush } from "../src/git-admin.js";
 
@@ -122,17 +122,55 @@ describe("push", () => {
 describe("openPr", () => {
   it("runs `gh pr create ...` and returns the trimmed PR URL", async () => {
     const { run: r, calls } = makeRunner(() => ok("https://github.com/o/r/pull/7\n"));
-    const url = await openPr("o/r", "task/x", "My title", "My body", r);
+    const url = await openPr("o/r", "task/x", "My title", "My body", "main", r);
 
     expect(url).toBe("https://github.com/o/r/pull/7");
     expect(calls[0]!.cmd).toBe("gh");
     expect(calls[0]!.args).toEqual([
       "pr", "create",
       "--repo", "o/r",
+      "--base", "main",
       "--head", "task/x",
       "--title", "My title",
       "--body", "My body",
     ]);
+  });
+});
+
+describe("baseExists", () => {
+  it("queries origin via ls-remote and maps exit code to a boolean", async () => {
+    const present = makeRunner(() => ok("sha\trefs/heads/main\n"));
+    expect(await baseExists("/clone", "main", present.run)).toBe(true);
+    expect(present.calls[0]!.args).toEqual(["-C", "/clone", "ls-remote", "--exit-code", "--heads", "origin", "main"]);
+
+    const absent = makeRunner(() => ({ stdout: "", stderr: "", code: 2 }));
+    expect(await baseExists("/clone", "main", absent.run)).toBe(false);
+  });
+
+  it("rejects an unsafe base branch", async () => {
+    await expect(baseExists("/clone", "--upload-pack=x", makeRunner().run)).rejects.toThrow(/Unsafe base branch/);
+  });
+});
+
+describe("establishBase", () => {
+  it("pushes srcRef to refs/heads/<base> as ONE refspec token, no --force", async () => {
+    const { run: r, calls } = makeRunner();
+    await establishBase("/wt", "bureau/task-1", "main", r);
+    expect(calls[0]!.cmd).toBe("git");
+    expect(calls[0]!.args).toEqual(["-C", "/wt", "push", "origin", "bureau/task-1:refs/heads/main"]);
+    expect(calls[0]!.args).not.toContain("--force"); // never clobbers an existing main
+  });
+
+  it("accepts an origin/<branch> source (the recovery path)", async () => {
+    const { run: r, calls } = makeRunner();
+    await establishBase("/clone", "origin/bureau/task-1", "main", r);
+    expect(calls[0]!.args).toEqual(["-C", "/clone", "push", "origin", "origin/bureau/task-1:refs/heads/main"]);
+  });
+
+  it("validates src and base SEPARATELY — a colon-bearing ref never slips through", async () => {
+    // assertSafeRef rejects ':' (refspec syntax), so a refspec is never validated whole.
+    await expect(establishBase("/wt", "a:refs/heads/main", "main", makeRunner().run)).rejects.toThrow(/Unsafe/);
+    await expect(establishBase("/wt", "bureau/task-1", "ma:in", makeRunner().run)).rejects.toThrow(/Unsafe/);
   });
 });
 

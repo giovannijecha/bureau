@@ -47,8 +47,10 @@ export interface Gate {
 // ---------------------------------------------------------------------------
 
 // pr_url = merged PR (landed on main); pr_open = PR opened for review, NOT merged
-// (the branch lives on GitHub, the CEO merges it there).
-export type ArtifactKind = "diff" | "file" | "report" | "pr_url" | "pr_open" | "merge_error";
+// (the branch lives on GitHub, the CEO merges it there). base_established = the FIRST
+// task on an empty repo: its branch became `main` directly (no PR — there was no base to
+// diff against), so the work genuinely landed on main without a pull request.
+export type ArtifactKind = "diff" | "file" | "report" | "pr_url" | "pr_open" | "merge_error" | "base_established";
 
 export interface Artifact {
   readonly id: ArtifactId;

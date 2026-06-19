@@ -342,6 +342,38 @@ export async function push(
   await run(runner, "git", ["-C", worktreePath, "push", "-u", "origin", branch]);
 }
 
+/** Does origin have the base branch? Queries the REMOTE directly (`git ls-remote
+ *  --exit-code --heads origin <base>`), so it's correct even when the local clone is
+ *  stale or was cloned while the repo was empty. false ⇒ a brand-new repo with no base
+ *  to open a PR against — the first task must ESTABLISH the base instead. */
+export async function baseExists(
+  clonePath: string,
+  baseBranch: string,
+  runner: Runner = defaultRunner
+): Promise<boolean> {
+  assertSafeRef(baseBranch, "base branch");
+  const out = await runner("git", ["-C", clonePath, "ls-remote", "--exit-code", "--heads", "origin", baseBranch], {});
+  return out.code === 0; // 0 = ref present; 2 = absent; other = transient (treated as absent → safe establish/PR retry)
+}
+
+/** Create the base branch on origin from `srcRef` — the FIRST task on an empty repo, where
+ *  there's no base to open a PR against, so the branch's content IS the initial main. Pushes
+ *  `srcRef:refs/heads/<baseBranch>` (NO --force, so an existing main can never be clobbered —
+ *  git rejects a non-fast-forward, which correctly routes the caller back to the PR path).
+ *  `srcRef` is a local branch (from a worktree) or `origin/<branch>` (from the clone, on
+ *  recovery). argv-only; both refs validated SEPARATELY, then the refspec is assembled here
+ *  (assertSafeRef rejects the `:` in a refspec, so it can never be validated whole). */
+export async function establishBase(
+  gitDir: string,
+  srcRef: string,
+  baseBranch: string,
+  runner: Runner = defaultRunner
+): Promise<void> {
+  assertSafeRef(srcRef, "establish-base source ref");
+  assertSafeRef(baseBranch, "establish-base target branch");
+  await run(runner, "git", ["-C", gitDir, "push", "origin", `${srcRef}:refs/heads/${baseBranch}`]);
+}
+
 // ── Read-only codebase browser (the embedded-GitHub Git page) ───────────────────
 
 /** A repo-relative path, sanitized to stay inside the tree (no "..", no leading "-",
@@ -622,14 +654,20 @@ export async function openPr(
   branch: string,
   title: string,
   body: string,
+  baseBranch: string,
   runner: Runner = defaultRunner
 ): Promise<string> {
   assertSafeRef(branch, "PR head branch");
+  assertSafeRef(baseBranch, "PR base branch");
   const out = await run(runner, "gh", [
     "pr",
     "create",
     "--repo",
     ownerRepo,
+    // Pin the base explicitly — never rely on gh's default-branch guess (which is blank
+    // on an empty repo → "can't be blank", and wrong when the default differs from base).
+    "--base",
+    baseBranch,
     "--head",
     branch,
     "--title",

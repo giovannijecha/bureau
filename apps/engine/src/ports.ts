@@ -51,6 +51,16 @@ export interface VcsPort {
   openPr(branch: string, title: string, body: string): Promise<string>;
   /** Squash-merge the branch's PR into main and delete it (the final merge). */
   mergePr(branch: string): Promise<void>;
+  /** Does origin have the base branch? false ⇒ a brand-new empty repo with no base to
+   *  open a PR against — the first task must establishBase() instead. Read-only. */
+  baseExists(): Promise<boolean>;
+  /** Establish the base branch on origin from a worktree's task branch — the FIRST task
+   *  on an empty repo (its content becomes `main`, no PR). Behind canPush() like push(). */
+  establishBase(worktreePath: string, branch: string): Promise<void>;
+  /** Establish the base on origin from an ALREADY-PUSHED task branch (origin/<branch>),
+   *  run from the canonical clone after a fetch — the recovery path when the worktree is
+   *  already gone. Behind canPush() like mergePr(). */
+  establishBaseFromOrigin(branch: string): Promise<void>;
   /** Tear down a worktree (force = remove even if dirty, for aborts). */
   removeWorktree(ref: WorktreeRef, force: boolean): Promise<void>;
   /** The directory Iris reads from in chat: the project's canonical clone if it

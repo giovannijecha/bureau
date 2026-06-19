@@ -17,6 +17,8 @@ import {
   push,
   openPr,
   mergePr,
+  baseExists,
+  establishBase,
   removeWorktree,
   recentCommits,
   remoteBranches,
@@ -133,11 +135,28 @@ export class RealVcs implements VcsPort {
   }
 
   openPr(branch: string, title: string, body: string): Promise<string> {
-    return openPr(this.ownerRepo, branch, title, body, this.runner);
+    return openPr(this.ownerRepo, branch, title, body, this.cfg.baseBranch, this.runner);
   }
 
   mergePr(branch: string): Promise<void> {
     return mergePr(this.ownerRepo, branch, this.runner);
+  }
+
+  baseExists(): Promise<boolean> {
+    return baseExists(this.cfg.canonicalPath, this.cfg.baseBranch, this.runner);
+  }
+
+  /** First task on an empty repo: push the worktree's task branch straight to origin's
+   *  base — its content becomes `main`. No PR (there was no base to diff against). */
+  establishBase(worktreePath: string, branch: string): Promise<void> {
+    return establishBase(worktreePath, branch, this.cfg.baseBranch, this.runner);
+  }
+
+  /** Recovery: establish the base from an already-pushed branch, run from the canonical
+   *  clone (the worktree is gone). Fetch first so origin/<branch> is current, then push it. */
+  async establishBaseFromOrigin(branch: string): Promise<void> {
+    await fetchOrigin(this.cfg.canonicalPath, this.runner);
+    await establishBase(this.cfg.canonicalPath, `origin/${branch}`, this.cfg.baseBranch, this.runner);
   }
 
   async removeWorktree(ref: WorktreeRef, force: boolean): Promise<void> {

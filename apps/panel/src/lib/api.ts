@@ -311,6 +311,11 @@ export async function openPrForReview(id: string): Promise<TaskDetail> {
 export async function mergeOpenPr(id: string): Promise<TaskDetail> {
   return json(await postJson(`/api/tasks/${encodeURIComponent(id)}/merge-pr`));
 }
+/** Recover a land that failed because the repo was empty (no base to PR against) —
+ *  establishes `main` from the already-pushed branch (or merges a PR if a base appeared). */
+export async function establishBase(id: string): Promise<TaskDetail> {
+  return json(await postJson(`/api/tasks/${encodeURIComponent(id)}/establish-base`));
+}
 
 /** Permanently delete a task (stops it first if it's still live). */
 export async function deleteTask(id: string): Promise<void> {

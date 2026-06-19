@@ -46,11 +46,13 @@ function fakeVcs() {
     push: [] as { path: string; branch: string }[],
     openPr: [] as { branch: string }[],
     mergePr: [] as { branch: string }[],
+    establishBase: [] as { worktreePath?: string; branch: string; fromOrigin: boolean }[],
     removeWorktree: [] as { force: boolean }[],
     gitAdmin: [] as string[],
   };
   let committed = true;
   let mergeError: string | null = null;
+  let baseEmpty = false; // simulate a brand-new repo with no base branch on origin
   const vcs: VcsPort = {
     async ensureClone() {
       calls.ensureClone++;
@@ -94,6 +96,19 @@ function fakeVcs() {
     async mergePr(branch) {
       calls.mergePr.push({ branch });
       if (mergeError !== null) throw new Error(mergeError);
+    },
+    async baseExists() {
+      return !baseEmpty;
+    },
+    async establishBase(worktreePath, branch) {
+      calls.establishBase.push({ worktreePath, branch, fromOrigin: false });
+      if (mergeError !== null) throw new Error(mergeError);
+      baseEmpty = false; // the base now exists
+    },
+    async establishBaseFromOrigin(branch) {
+      calls.establishBase.push({ branch, fromOrigin: true });
+      if (mergeError !== null) throw new Error(mergeError);
+      baseEmpty = false;
     },
     async removeWorktree(_ref, force) {
       calls.removeWorktree.push({ force });
@@ -149,6 +164,7 @@ function fakeVcs() {
     calls,
     setCommitted: (v: boolean) => void (committed = v),
     setMergeError: (v: string | null) => void (mergeError = v),
+    setBaseEmpty: (v: boolean) => void (baseEmpty = v),
   };
 }
 
@@ -1124,6 +1140,87 @@ describe("decideGate", () => {
     expect(detail.mergeError).toBe("merge conflict in README.md");
     expect(detail.prUrl).toBe("https://github.com/acme/widget/pull/1"); // link to resolve
     expect(vcs.calls.removeWorktree.some((c) => c.force)).toBe(true); // still cleaned up
+  });
+
+  it("on an EMPTY repo the first task ESTABLISHES main (no PR) — never the 'base can't be blank' failure", async () => {
+    vcs.setBaseEmpty(true); // origin has no base branch yet (brand-new repo)
+    const draft = orch.createTask(PROPOSAL);
+    await orch.startTask(draft.id);
+    await orch.settle(draft.id);
+
+    const detail = toTaskDetail(await orch.confirmMerge(draft.id));
+    expect(vcs.calls.push).toHaveLength(1); // the branch was pushed
+    expect(vcs.calls.openPr).toHaveLength(0); // NO PR attempted — there was no base to target
+    expect(vcs.calls.establishBase).toHaveLength(1); // main was established from the branch
+    expect(vcs.calls.establishBase[0]!.fromOrigin).toBe(false); // straight from the worktree
+    expect(detail.merged).toBe(true); // the work genuinely landed on main
+    expect(detail.prUrl).toBeNull(); // …with NO fabricated PR link
+    expect(detail.mergeError).toBeNull();
+  });
+});
+
+// ── establishBaseForTask (recovery) ──────────────────────────────────────────
+
+describe("establishBaseForTask", () => {
+  it("lands a task that earlier FAILED on an empty repo — from origin, idempotent, behind the wall", async () => {
+    // Simulate the original failure: empty repo + the land throws once.
+    vcs.setBaseEmpty(true);
+    vcs.setMergeError("pull request create failed: GraphQL: can't be blank");
+    const draft = orch.createTask(PROPOSAL);
+    await orch.startTask(draft.id);
+    await orch.settle(draft.id);
+    let detail = toTaskDetail(await orch.confirmMerge(draft.id));
+    expect(detail.merged).toBe(false); // it didn't land
+    expect(detail.mergeError).not.toBeNull(); // honest failure recorded
+
+    // Recover: the worktree is gone, so establish the base from the pushed branch on origin.
+    vcs.setMergeError(null);
+    await orch.establishBaseForTask(draft.id);
+    expect(vcs.calls.establishBase.some((c) => c.fromOrigin)).toBe(true); // ran from origin, not a worktree
+    detail = toTaskDetail(store.load(draft.id)!);
+    expect(detail.merged).toBe(true); // landed
+    expect(detail.prUrl).toBeNull();
+    expect(detail.mergeError).toBeNull(); // the stale error is suppressed once landed
+
+    // Idempotent — a second call is a no-op (already merged), records no new error.
+    const before = vcs.calls.establishBase.length;
+    await orch.establishBaseForTask(draft.id);
+    expect(vcs.calls.establishBase).toHaveLength(before);
+  });
+
+  it("refuses to land a task that isn't authorized to push (the wall holds)", async () => {
+    const draft = orch.createTask(PROPOSAL); // created, never run/approved → canPush() false
+    await expect(orch.establishBaseForTask(draft.id)).rejects.toMatchObject({ status: 409 });
+    expect(vcs.calls.establishBase).toHaveLength(0);
+  });
+
+  it("if a base APPEARED, records pr_open BEFORE mergePr — a mergePr failure routes to the PR retry, never a re-open loop", async () => {
+    vcs.setBaseEmpty(true);
+    vcs.setMergeError("first land failed");
+    const draft = orch.createTask(PROPOSAL);
+    await orch.startTask(draft.id);
+    await orch.settle(draft.id);
+    await orch.confirmMerge(draft.id); // fails on the empty repo (establishBase throws)
+
+    // A base appeared meanwhile (another task initialized the repo), but the squash-merge now fails.
+    vcs.setBaseEmpty(false);
+    vcs.setMergeError("merge blocked");
+    await orch.establishBaseForTask(draft.id);
+
+    let detail = toTaskDetail(store.load(draft.id)!);
+    expect(vcs.calls.openPr).toHaveLength(1); // a PR was opened against the now-existing base
+    expect(detail.prOpen).toBe(true); // recorded pr_open → NOT a dead end
+    expect(detail.merged).toBe(false);
+
+    // establishBaseForTask now REFUSES (the open PR must be merged via mergeOpenPr) — no re-open loop.
+    await expect(orch.establishBaseForTask(draft.id)).rejects.toMatchObject({ status: 409 });
+    expect(vcs.calls.openPr).toHaveLength(1); // openPr NOT called a second time
+
+    // The in-Bureau "Merge to main" retry lands it.
+    vcs.setMergeError(null);
+    await orch.mergeOpenPr(draft.id);
+    detail = toTaskDetail(store.load(draft.id)!);
+    expect(detail.merged).toBe(true);
   });
 });
 

@@ -28,7 +28,7 @@ import {
   Check,
 } from "lucide-react";
 import type { TaskDetail, PipelineStep, TimelineEntry } from "@bureau/contracts";
-import { getTask, startTask, stopTask, resumeTask, discardTask, mergeTask, openPrForReview, mergeOpenPr, decideGate, deleteTask } from "../../../lib/api";
+import { getTask, startTask, stopTask, resumeTask, discardTask, mergeTask, openPrForReview, mergeOpenPr, establishBase, decideGate, deleteTask } from "../../../lib/api";
 import { useEngineEvents } from "../../../lib/useEngineEvents";
 import { useConfirm } from "../../../components/ConfirmDialog";
 import { DiffView } from "../../../components/DiffView";
@@ -348,17 +348,29 @@ export default function TaskDetailPage({ params }: { params: Promise<{ id: strin
           PR link (if one was opened) so they can resolve it on GitHub. */}
       {/* A genuinely failed merge (NOT a still-open PR — that case shows the retry in
           PrOpenBar above). Honest "nothing landed" with the PR link. */}
-      {task.mergeError && !task.prOpen && (
+      {task.mergeError && !task.prOpen && !task.merged && (
         <div className="mt-4 flex items-start gap-2.5 rounded-xl border border-red-500/30 bg-red-500/5 px-4 py-3 text-sm">
           <XCircle className="mt-0.5 h-4 w-4 shrink-0 text-red-500" />
-          <div className="space-y-1">
+          <div className="min-w-0 space-y-2">
             <p className="text-foreground">The merge didn&apos;t complete — nothing landed on <code className="font-mono text-xs">main</code>.</p>
             <p className="text-xs text-red-400">{task.mergeError}</p>
-            {task.prUrl && (
-              <a href={task.prUrl} target="_blank" rel="noreferrer" className="inline-flex items-center gap-1 text-xs font-medium text-foreground underline underline-offset-2">
-                Open the PR on GitHub <ExternalLink className="h-3 w-3" />
-              </a>
-            )}
+            <div className="flex flex-wrap items-center gap-3">
+              {/* A failure on an EMPTY repo (no base branch to PR against) is recoverable in
+                  one click: establish main from the already-pushed branch. */}
+              <button
+                onClick={() => act(() => establishBase(id))}
+                disabled={busy}
+                className="inline-flex items-center gap-1.5 rounded-md bg-primary px-2.5 py-1.5 text-xs font-medium text-primary-foreground transition-opacity hover:opacity-90 disabled:opacity-50"
+              >
+                {busy ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <GitMerge className="h-3.5 w-3.5" />}
+                Land it on main
+              </button>
+              {task.prUrl && (
+                <a href={task.prUrl} target="_blank" rel="noreferrer" className="inline-flex items-center gap-1 text-xs font-medium text-foreground underline underline-offset-2">
+                  Open the PR on GitHub <ExternalLink className="h-3 w-3" />
+                </a>
+              )}
+            </div>
           </div>
         </div>
       )}
@@ -370,6 +382,14 @@ export default function TaskDetailPage({ params }: { params: Promise<{ id: strin
           <a href={task.prUrl} target="_blank" rel="noreferrer" className="font-medium underline underline-offset-2">
             {task.prUrl}
           </a>
+        </div>
+      )}
+
+      {/* Landed on main WITHOUT a PR — the first task on an empty repo became the initial commit. */}
+      {task.merged && !task.prUrl && (
+        <div className="mt-4 flex items-center gap-2 rounded-xl border bg-green-500/5 px-4 py-3 text-sm text-green-500">
+          <CheckCircle2 className="h-4 w-4 shrink-0" />
+          <span className="text-foreground">Repository initialized — your work is the first commit on <code className="font-mono text-xs">main</code>.</span>
         </div>
       )}
 
