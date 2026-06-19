@@ -150,6 +150,16 @@ describe("TaskRepo — round-trip fidelity", () => {
     expect(repo.load(task.id)).toEqual(task);
   });
 
+  it("round-trips the decided brief (context) — and omits it cleanly when absent", () => {
+    const withBrief = makeTask({ context: "Use OpenTUI/SolidJS on Bun. Do NOT add Supabase." });
+    repo.save(withBrief);
+    expect(repo.load(withBrief.id)).toEqual(withBrief);
+
+    const without = makeTask({ id: tid("task-2") });
+    repo.save(without);
+    expect(repo.load(without.id)!.context).toBeUndefined(); // null column → field omitted, never null
+  });
+
   it("round-trips every decision-log entry variant exactly", () => {
     const task = richTask();
     repo.save(task);

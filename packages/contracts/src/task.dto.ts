@@ -112,6 +112,9 @@ export const TaskDetailDto = TaskSummaryDto.extend({
   prUrl: z.string().nullable(),
   /** A human-readable note when the task stopped (abort reason / failed step). */
   statusNote: z.string().nullable(),
+  /** The decided brief the workers were told to build to — shown so the CEO can judge the
+   *  diff against what was agreed (null when the task had no prior-discussion brief). */
+  context: z.string().nullable(),
   // `mergeError` is inherited from TaskSummaryDto.
   steps: z.array(PipelineStepDto),
   gates: z.array(GateViewDto),
@@ -123,6 +126,11 @@ export const TaskDetailDto = TaskSummaryDto.extend({
 export const TaskProposalDto = z.object({
   title: z.string(),
   summary: z.string(),
+  /** The decided brief — carried INTO EVERY worker's prompt so the pipeline builds what was
+   *  actually decided, not a generic guess. Iris fills it when a substantive discussion or
+   *  research preceded the task: the concrete approach, key constraints + grounding (incl.
+   *  research findings), and an explicit out-of-scope / "do NOT add" list. */
+  context: z.string().optional(),
   steps: z.array(z.object({ capability: CapabilitySchema, description: z.string() })).min(1),
 });
 

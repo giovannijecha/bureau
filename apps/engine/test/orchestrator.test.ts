@@ -595,6 +595,48 @@ describe("chat", () => {
   });
 });
 
+// ── task context (the decided brief reaches the workers) ─────────────────────
+
+describe("proposal context", () => {
+  it("carries the decided brief from the proposal into the worker's prompt — the workers never see the chat", async () => {
+    const draft = orch.createTask({
+      title: "Scaffold Dante",
+      summary: "Lay out the modules",
+      context:
+        "Build a CLI agent on Bun with an OpenTUI/SolidJS TUI, an agent-core loop, and a multi-model provider layer. Do NOT add Supabase or any database.",
+      steps: [{ capability: "edit", description: "Create the module skeleton" }],
+    });
+    expect(draft.context).toContain("OpenTUI/SolidJS"); // persisted on the task
+
+    await orch.startTask(draft.id);
+    await orch.settle(draft.id);
+
+    // The edit worker's context carried the brief — including the explicit exclusion, so it
+    // builds what was decided (not a generic backend, and not Supabase).
+    expect(captured?.context).toContain("OpenTUI/SolidJS");
+    expect(captured?.context).toContain("Do NOT add Supabase");
+  });
+
+  it("omits context cleanly when the proposal has none (older / trivial tasks)", async () => {
+    const draft = orch.createTask(PROPOSAL); // no context field
+    expect(draft.context).toBeUndefined();
+    await orch.startTask(draft.id);
+    await orch.settle(draft.id);
+    expect(captured?.context).not.toContain("decided for this task");
+  });
+
+  it("caps a runaway brief — it's re-sent on every step, so it can't grow unbounded", () => {
+    const draft = orch.createTask({
+      title: "T",
+      summary: "S",
+      context: "X".repeat(20_000),
+      steps: [{ capability: "edit", description: "d" }],
+    });
+    expect(draft.context!.length).toBeLessThan(20_000);
+    expect(draft.context).toContain("[brief truncated]");
+  });
+});
+
 describe("cleanupTaskBranches", () => {
   it("keeps the branches of in-flight tasks and prunes the rest (returns the deleted)", async () => {
     const live = orch.createTask(PROPOSAL);

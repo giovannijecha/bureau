@@ -350,6 +350,11 @@ function DockProposal({
         <span className="text-sm font-semibold">{proposal.title}</span>
       </div>
       <p className="mb-2 text-xs text-muted-foreground">{proposal.summary}</p>
+      {proposal.context && (
+        <div className="mb-2 max-h-32 overflow-y-auto whitespace-pre-wrap rounded-md border bg-muted/40 px-2 py-1.5 text-[11px] text-muted-foreground">
+          <span className="font-medium text-foreground">Brief:</span> {proposal.context}
+        </div>
+      )}
       <div className="mb-2.5 space-y-1">
         {proposal.steps.map((s, i) => (
           <div key={i} className="flex items-center gap-1.5 text-xs">

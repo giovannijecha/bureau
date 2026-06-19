@@ -300,6 +300,15 @@ export default function TaskDetailPage({ params }: { params: Promise<{ id: strin
         </div>
       )}
 
+      {/* The decided brief — what the workers were told to build to. Shown so the CEO can
+          judge the diff against what was agreed. */}
+      {task.context && (
+        <div className="mb-5 overflow-hidden rounded-xl border bg-card">
+          <div className="border-b px-4 py-3 text-sm font-semibold">Brief</div>
+          <p className="max-h-56 overflow-y-auto whitespace-pre-wrap px-4 py-3 text-xs leading-relaxed text-muted-foreground">{task.context}</p>
+        </div>
+      )}
+
       {/* Pipeline */}
       <div className="mb-5 overflow-hidden rounded-xl border bg-card">
         <div className="flex items-center justify-between border-b px-4 py-3">

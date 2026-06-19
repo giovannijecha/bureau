@@ -829,6 +829,15 @@ export class Orchestrator {
     const task: Task = {
       id: taskId as TaskId,
       goal: proposal.title,
+      // The decided brief travels with the task → into every worker's prompt (stepContext),
+      // so a discussion's/research's conclusions aren't lost at the proposal boundary. Capped
+      // (it's re-sent on EVERY step) — a distilled brief fits easily; a runaway one is trimmed.
+      ...(() => {
+        const ctx = proposal.context?.trim();
+        if (!ctx) return {};
+        const CAP = 8000;
+        return { context: ctx.length > CAP ? `${ctx.slice(0, CAP)}\n…[brief truncated]` : ctx };
+      })(),
       projectId: project.id,
       repoOwner: project.owner,
       repoName: project.name,
@@ -1558,12 +1567,17 @@ export class Orchestrator {
     return `bureau/task-${taskId}`;
   }
 
-  /** A step's context: the goal, an optional change request (on a re-run), and the
-   *  summaries of the steps already run in this task — so each worker builds on the
-   *  prior ones (the edit follows the plan; document/review see what changed). */
+  /** A step's context: the goal, the decided BRIEF (what was agreed in chat — the approach,
+   *  constraints, and out-of-scope), an optional change request (on a re-run), and the
+   *  summaries of the steps already run in this task — so each worker builds what was decided
+   *  AND on the prior steps (the edit follows the plan; document/review see what changed). */
   private stepContext(taskId: string, currentStepId: StepId, changeRequest?: string): string {
     const task = this.requireTask(taskId);
     const parts = [task.goal];
+    // The decided brief is foundational — every worker must build to it and NOT beyond it.
+    if (task.context) {
+      parts.push(`What was decided for this task — build to THIS, and do NOT add anything outside it:\n${task.context}`);
+    }
     if (changeRequest) parts.push(changeRequest);
     const idx = task.steps.findIndex((s) => s.id === currentStepId);
     const prior = task.steps.slice(0, Math.max(0, idx)).filter((s) => s.summary !== undefined && s.summary !== "");

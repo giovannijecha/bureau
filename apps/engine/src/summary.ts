@@ -127,6 +127,7 @@ export function toTaskDetail(task: Task): TaskDetail {
     diff: latestDiff(task),
     prUrl: prUrl(task),
     statusNote: statusNote(task),
+    context: task.context ?? null,
     // mergeError is already set by toTaskSummary (spread above).
     steps: task.steps.map((s) => ({
       id: s.id,

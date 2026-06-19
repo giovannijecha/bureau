@@ -120,6 +120,11 @@ export type TaskStatus =
 export interface Task {
   readonly id: TaskId;
   readonly goal: string;
+  /** The decided brief — the concrete approach, constraints + grounding (e.g. research
+   *  findings), and explicit exclusions agreed in chat. Injected into EVERY worker's prompt
+   *  (via stepContext) so the pipeline builds what was decided, not a generic guess. Set
+   *  from the proposal; optional (tasks without a prior discussion, or older rows, have none). */
+  readonly context?: string;
   /** The project (repository) this task belongs to — the registry's stable, unique
    *  key. Resolution downstream MUST use this, not repoOwner/repoName (which are
    *  display-only and not guaranteed unique across forks). Optional only so tasks

@@ -28,6 +28,8 @@ import type {
 export const tasks = sqliteTable("tasks", {
   id: text("id").primaryKey(),
   goal: text("goal").notNull(),
+  /** The decided brief carried to every worker (nullable — older rows / no prior discussion). */
+  context: text("context"),
   projectId: text("project_id"),
   repoOwner: text("repo_owner").notNull(),
   repoName: text("repo_name").notNull(),

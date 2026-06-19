@@ -614,6 +614,13 @@ function ProposalCard({
         </span>
       </div>
       <p className="mb-3 text-sm text-muted-foreground">{proposal.summary}</p>
+      {proposal.context && (
+        <div className="mb-3 max-h-40 overflow-y-auto whitespace-pre-wrap rounded-md border bg-muted/40 px-3 py-2 text-xs text-muted-foreground">
+          <span className="font-medium text-foreground">Brief the workers receive:</span>
+          {"\n"}
+          {proposal.context}
+        </div>
+      )}
       <div className="mb-4 space-y-1.5">
         {proposal.steps.map((s, i) => (
           <div key={i} className="flex items-center gap-2.5 text-sm">
