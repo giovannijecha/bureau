@@ -202,6 +202,9 @@ function fakeMemory() {
     async writeJournal(path, markdown) {
       journals.push({ path, markdown });
     },
+    root() {
+      return null;
+    },
   };
   return { memory, journals, saved };
 }
@@ -238,18 +241,22 @@ const PROPOSAL: TaskProposal = {
 
 function fakeProvider(reply: string) {
   let content = reply;
+  let lastSystem = ""; // the system prompt of the most recent turn (for context assertions)
+  const sysOf = (m: { role: string; content: string }[]) => m.find((x) => x.role === "system")?.content ?? "";
   const provider: Provider = {
     name: "fake",
     authStrategy: { kind: "api-key", isAvailable: () => true },
-    async send() {
+    async send(m) {
+      lastSystem = sysOf(m);
       return { content, inputTokens: 0, outputTokens: 0 };
     },
-    async stream(_m, onChunk) {
+    async stream(m, onChunk) {
+      lastSystem = sysOf(m);
       onChunk(content);
       return { content, inputTokens: 0, outputTokens: 0 };
     },
   };
-  return { provider, setReply: (r: string) => void (content = r) };
+  return { provider, setReply: (r: string) => void (content = r), system: () => lastSystem };
 }
 
 const PROJECT: ProjectConfig = {
@@ -537,6 +544,34 @@ describe("chat", () => {
     const res = await orch.chat("hi");
     expect(res.reply.content).toBe("Tell me more.");
     expect(res.proposal).toBeUndefined();
+  });
+
+  it("folds THIS project's journals into Iris's context as a READABLE, scoped index (research reaches chat)", async () => {
+    // The active project resolves to acme/widget. A journal from ANOTHER repo must NOT leak in.
+    mem.memory.list = async () => [
+      { path: "journals/2026-06-19-research-opencode.md", title: "Research: stack OpenCode", kind: "journal", updatedAt: "2026-06-19T09:54:00.000Z", excerpt: "Status: completed." },
+      { path: "journals/2026-06-18-other.md", title: "Other repo secret task", kind: "journal", updatedAt: "2026-06-18T00:00:00.000Z", excerpt: "Status: completed." },
+    ];
+    mem.memory.get = async (p: string) =>
+      p.includes("opencode")
+        ? { path: p, title: "Research: stack OpenCode", kind: "journal", updatedAt: "t", excerpt: "Status: completed.", body: "# Research: stack OpenCode\n\n- **Repo:** acme/widget\n\n## Reports\n\nOpenTUI + SolidJS." }
+        : { path: p, title: "Other repo secret task", kind: "journal", updatedAt: "t", excerpt: "Status: completed.", body: "# Other\n\n- **Repo:** other/repo\n" };
+
+    await orch.chat("cosa ha trovato la ricerca su OpenCode?");
+    const sys = prov.system();
+    expect(sys).toContain("Past task records for acme/widget"); // scoped heading
+    expect(sys).toContain("Research: stack OpenCode"); // this project's journal — title (Iris knows it exists)
+    expect(sys).toContain("journals/2026-06-19-research-opencode.md"); // its path (so she can Read it)
+    expect(sys).toContain("(2026-06-19)"); // date — disambiguates same-goal tasks
+    expect(sys).toContain("Status: completed."); // outcome excerpt — shallow recall without a Read
+    expect(sys).not.toContain("Other repo secret task"); // a DIFFERENT repo's journal is scoped OUT
+  });
+
+  it("still injects free-form pinned notes in FULL (authoritative facts)", async () => {
+    mem.memory.list = async () => [{ path: "notes/std.md", title: "Coding standards", kind: "note", updatedAt: "t", excerpt: "2-space" }];
+    mem.memory.get = async () => ({ path: "notes/std.md", title: "Coding standards", kind: "note", updatedAt: "t", excerpt: "2-space", body: "Always use 2-space indent." });
+    await orch.chat("hi");
+    expect(prov.system()).toContain("Always use 2-space indent.");
   });
 });
 

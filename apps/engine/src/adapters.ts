@@ -2,7 +2,7 @@
 // satisfies TaskStore directly, so there's no adapter for it.)
 
 import { existsSync, mkdirSync } from "node:fs";
-import { join } from "node:path";
+import { join, resolve } from "node:path";
 import {
   cloneRepo,
   createWorktree,
@@ -395,6 +395,11 @@ function toNotification(r: NotificationRow): Notification {
 export class VaultStore implements MemoryPort {
   constructor(private readonly vaultPath: string) {}
 
+  /** Absolute vault dir, so the chat can grant Iris read access to her journals. */
+  root(): string {
+    return resolve(this.vaultPath);
+  }
+
   async list(query?: string): Promise<NoteSummary[]> {
     const paths = await listNotes(this.vaultPath);
     const notes = await Promise.all(paths.map((p) => this.read(p)));
@@ -444,6 +449,11 @@ export class VaultStore implements MemoryPort {
 export class InMemoryMemory implements MemoryPort {
   private readonly notes = new Map<string, { content: string; updatedAt: string }>();
   constructor(private readonly clock: () => string = () => new Date().toISOString()) {}
+
+  /** No on-disk directory — read-on-demand isn't available for an ephemeral vault. */
+  root(): string | null {
+    return null;
+  }
 
   async list(query?: string): Promise<NoteSummary[]> {
     const q = query?.trim().toLowerCase();

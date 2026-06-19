@@ -191,4 +191,8 @@ export interface MemoryPort {
   delete(path: string): Promise<void>;
   /** Persist a task journal at a deterministic path (best-effort, idempotent). */
   writeJournal(path: string, markdown: string): Promise<void>;
+  /** The absolute on-disk vault directory — lets the chat grant Iris READ access to her
+   *  own past task journals (she opens the relevant one with Read on demand). null for an
+   *  in-memory/ephemeral vault with no real directory (tests). */
+  root(): string | null;
 }

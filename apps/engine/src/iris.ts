@@ -75,7 +75,10 @@ export async function irisRespond(
   modelOverride?: string,
   /** Called with a compact summary each time Iris invokes a tool during the turn (e.g.
    *  "Read src/auth.ts") — lets the engine stream live "what Iris is doing" activity. */
-  onActivity?: (summary: string) => void
+  onActivity?: (summary: string) => void,
+  /** Extra directories Iris's READ-only tools may reach beyond her repo cwd — the System
+   *  Memory vault, so she can open a past task's journal (research findings) on demand. */
+  extraReadDirs?: readonly string[]
 ): Promise<IrisTurn> {
   // Images can't be inlined as text — tell Iris where they are so she Reads (views) them.
   const imgNote =
@@ -95,9 +98,12 @@ You are currently working on the repository ${project.owner}/${project.name} (de
     { role: "system", content: system },
     ...history.map(toProviderMessage),
   ];
-  // Let the CLI read the attachments' directory (outside the repo) so Read can view them.
-  const addDirs =
-    attachmentImages && attachmentImages.length > 0 ? [...new Set(attachmentImages.map((a) => dirname(a.path)))] : undefined;
+  // Let the CLI read dirs OUTSIDE the repo cwd: the attachments' dir (to view images) and
+  // the System Memory vault (to Read a past task's journal). Read-only tools only.
+  const dirs = new Set<string>();
+  for (const a of attachmentImages ?? []) dirs.add(dirname(a.path));
+  for (const d of extraReadDirs ?? []) dirs.add(d);
+  const addDirs = dirs.size > 0 ? [...dirs] : undefined;
   const opts = {
     maxTokens: 4000,
     ...(cwd !== undefined ? { cwd } : {}),

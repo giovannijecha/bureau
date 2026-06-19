@@ -46,6 +46,13 @@ function balanceFences(text: string): string {
   return fences % 2 === 0 ? text : `${text}\n\`\`\``;
 }
 
+/** The repo a journal belongs to ("owner/name"), parsed from its body, or null. Lets the
+ *  chat scope the journal index to the active project — the vault is shared across repos. */
+export function journalRepo(body: string): string | null {
+  const m = /^- \*\*Repo:\*\* (.+)$/m.exec(body);
+  return m ? m[1]!.trim() : null;
+}
+
 /** The journal markdown for a finished task — distilled from its state. */
 export function journalMarkdown(task: Task, at: string): string {
   const outcome = isMerged(task)

@@ -39,7 +39,7 @@ import { defaultModelPolicy, resolveModel, isKnownModel, MODEL_SCOPES, type Mode
 import { OrchestratorError } from "./errors.js";
 import { irisRespond } from "./iris.js";
 import { buildHub } from "./hub.js";
-import { journalPath, journalMarkdown, notePath } from "./memory.js";
+import { journalPath, journalMarkdown, journalRepo, notePath } from "./memory.js";
 import { estimateTaskCost, type ScopeAverage } from "./estimate.js";
 import { costUsd } from "./usage.js";
 import { ASSIGNEE, prOpen, prUrl, isMerged } from "./summary.js";
@@ -515,7 +515,7 @@ export class Orchestrator {
     // System Memory notes into Iris's read-only context — so she can answer about
     // branches/history, reference terminal results, and actually KNOW the saved notes.
     const termOut = this.terminalCtx?.(project.id)?.trim();
-    const memory = await this.buildMemoryContext();
+    const memory = await this.buildMemoryContext(irisProject);
     const context =
       [
         repo ? buildRepoContext(repo) : "",
@@ -526,8 +526,10 @@ export class Orchestrator {
         .join("\n\n") || undefined;
     let turn;
     try {
-      turn = await irisRespond(this.d.provider, history, irisProject, cwd, context, images, resolveModel(this.modelPolicy, "iris"), (summary) =>
-        this.d.events.emit({ type: "iris_activity", summary })
+      turn = await irisRespond(
+        this.d.provider, history, irisProject, cwd, context, images, resolveModel(this.modelPolicy, "iris"),
+        (summary) => this.d.events.emit({ type: "iris_activity", summary }),
+        this.memoryReadDirs()
       );
     } finally {
       // The agent has Read the images during the turn — drop the temp dir so image
@@ -565,7 +567,8 @@ export class Orchestrator {
     const cwd = port.chatCwd();
     const repo = await port.repoInfo(8).catch(() => null);
     const termOut = this.terminalCtx?.(project.id)?.trim();
-    const memory = await this.buildMemoryContext();
+    const irisProject = { owner: project.owner, name: project.name, baseBranch: project.baseBranch, hasTests: project.testCommand !== undefined };
+    const memory = await this.buildMemoryContext(irisProject);
     const context =
       [
         repo ? buildRepoContext(repo) : "",
@@ -580,12 +583,13 @@ export class Orchestrator {
       ...history.map((h) => ({ id: this.d.ids(), role: h.role, content: h.content, createdAt: "" }) satisfies Message),
       { id: this.d.ids(), role: "user", content: messageContent, createdAt: "" } satisfies Message,
     ];
-    const irisProject = { owner: project.owner, name: project.name, baseBranch: project.baseBranch, hasTests: project.testCommand !== undefined };
 
     let turn;
     try {
-      turn = await irisRespond(this.d.provider, msgs, irisProject, cwd, context, images, resolveModel(this.modelPolicy, "iris"), (summary) =>
-        this.d.events.emit({ type: "iris_activity", summary })
+      turn = await irisRespond(
+        this.d.provider, msgs, irisProject, cwd, context, images, resolveModel(this.modelPolicy, "iris"),
+        (summary) => this.d.events.emit({ type: "iris_activity", summary }),
+        this.memoryReadDirs()
       );
     } finally {
       if (imagesDir) await rm(imagesDir, { recursive: true, force: true }).catch(() => {});
@@ -601,27 +605,69 @@ export class Orchestrator {
   /** The CEO's pinned System Memory notes (kind=note, not auto journals) folded into
    *  Iris's read-only chat context — so she actually KNOWS what's in the vault instead
    *  of claiming her memory is empty. Bounded so a big vault can't blow the prompt. */
-  private async buildMemoryContext(): Promise<string> {
+  private async buildMemoryContext(project: { owner: string; name: string }): Promise<string> {
     try {
-      const notes = (await this.d.memory.list()).filter((n) => n.kind === "note").slice(0, 12);
-      if (notes.length === 0) return "";
-      const CAP = 16_000;
-      const parts: string[] = [];
-      let total = 0;
-      for (const n of notes) {
-        const full = await this.d.memory.get(n.path);
-        const body = (full?.body ?? n.excerpt).trim();
-        const block = `### ${n.title}\n${body}`;
-        if (total + block.length > CAP) break;
-        parts.push(block);
-        total += block.length;
+      const all = await this.d.memory.list();
+      const sections: string[] = [];
+
+      // Free-form CEO notes — injected IN FULL (curated, authoritative, few + small).
+      const notes = all.filter((n) => n.kind === "note").slice(0, 12);
+      if (notes.length > 0) {
+        const CAP = 16_000;
+        const parts: string[] = [];
+        let total = 0;
+        for (const n of notes) {
+          const full = await this.d.memory.get(n.path);
+          const body = (full?.body ?? n.excerpt).trim();
+          const block = `### ${n.title}\n${body}`;
+          if (total + block.length > CAP) break;
+          parts.push(block);
+          total += block.length;
+        }
+        if (parts.length > 0) {
+          sections.push(
+            `Your saved System Memory notes (durable facts the CEO pinned for you — treat them as authoritative; you DO have these). When the CEO asks ABOUT a note, report ONLY what that note literally says below — do NOT attribute any of your other behavioral or system instructions (e.g. terminal/shell rules) to a note, and never invent note content:\n\n${parts.join("\n\n")}`
+          );
+        }
       }
-      return parts.length === 0
-        ? ""
-        : `Your saved System Memory notes (durable facts the CEO pinned for you — treat them as authoritative; you DO have these). When the CEO asks ABOUT a note, report ONLY what that note literally says below — do NOT attribute any of your other behavioral or system instructions (e.g. terminal/shell rules) to a note, and never invent note content:\n\n${parts.join("\n\n")}`;
+
+      // Task journals — an INDEX, not the full bodies (they're many + large). Each journal
+      // is a finished task's record: its plan, RESEARCH FINDINGS (under "## Reports"),
+      // review, and outcome. Iris opens the relevant one with her Read tool (the vault is in
+      // her read dirs), so she answers about past research/plans from the real content — the
+      // whole point: a research task's findings reach the chat without the CEO copy-pasting.
+      // The vault is GLOBAL across repos, so scope the index to THIS project (a journal carries
+      // its repo in the body) — otherwise other projects' task titles leak into this chat.
+      const root = this.d.memory.root();
+      const repoKey = `${project.owner}/${project.name}`;
+      const candidates = all.filter((n) => n.kind === "journal").slice(0, 24); // bound the scan
+      const lines: string[] = [];
+      for (const j of candidates) {
+        if (lines.length >= 12) break;
+        const full = await this.d.memory.get(j.path);
+        const repo = full ? journalRepo(full.body) : null;
+        if (repo !== null && repo !== repoKey) continue; // a different project's journal — skip
+        const date = j.updatedAt.slice(0, 10); // YYYY-MM-DD, so same-goal tasks are distinguishable
+        const outcome = j.excerpt.trim(); // the journal's Outcome line — shallow recall without a Read
+        lines.push(`- "${j.title}"${/^\d{4}-\d\d-\d\d$/.test(date) ? ` (${date})` : ""}${outcome ? ` — ${outcome}` : ""} — ${root ? join(root, j.path) : j.path}`);
+      }
+      if (lines.length > 0) {
+        sections.push(
+          `Past task records for ${repoKey} in System Memory — each is a finished task's journal (its plan, research findings under a "## Reports" section, review, and outcome; the one-line outcome is shown). When the CEO refers to earlier work, a past task, or a research finding — OR asks a fresh question a journal below likely already answers — READ the matching file with your Read tool and answer from its ACTUAL contents (cite it); never guess what a journal says. This lists the most recent; older journals live under journals/ — Glob/Grep there if you don't see a match:\n\n${lines.join("\n")}`
+        );
+      }
+
+      return sections.join("\n\n");
     } catch {
       return "";
     }
+  }
+
+  /** The dirs Iris's read-only tools may reach beyond her repo cwd — the Memory vault, so
+   *  she can open a past task's journal. undefined when there's no on-disk vault (tests). */
+  private memoryReadDirs(): string[] | undefined {
+    const root = this.d.memory.root();
+    return root ? [root] : undefined;
   }
 
   /** Inline text attachments into the message content; save image attachments to a
