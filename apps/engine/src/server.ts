@@ -12,7 +12,13 @@
 // Optional:     BUREAU_BASE_BRANCH (main), BUREAU_DB (./bureau.db), PORT (4319),
 //               ANTHROPIC_API_KEY (else falls back to the `claude` CLI),
 //               BUREAU_AUTHOR_NAME, BUREAU_AUTHOR_EMAIL, BUREAU_GIT_PATH, BUREAU_GH_PATH,
-//               BUREAU_CLI_TIMEOUT (read-only call ms), BUREAU_EDIT_TIMEOUT (edit worker ms)
+//               BUREAU_CLI_TIMEOUT (chat/send flat ms), BUREAU_EDIT_TIMEOUT (send-edit flat ms),
+//               BUREAU_STEP_IDLE (worker inactivity watchdog ms, default 5min — reset on output),
+//               BUREAU_STEP_EDIT_IDLE (edit-worker idle ms, default 15min — edits can't retry),
+//               BUREAU_STEP_MAX (worker absolute ceiling ms, default 60min),
+//               BUREAU_STEP_HARD_CAP (orchestrator per-step backstop ms, default 75min),
+//               BUREAU_CHAT_TIMEOUT (interactive Iris chat-turn ceiling ms, default 6min),
+//               BUREAU_TASK_BUDGET_USD (per-task spend cap), BUREAU_CURATE_EVERY (auto-curate after N tasks)
 
 import { randomUUID } from "node:crypto";
 import Anthropic from "@anthropic-ai/sdk";
@@ -67,14 +73,22 @@ function buildProvider(): Provider {
   if (!strategy.isAvailable()) {
     throw new Error("No provider available: set ANTHROPIC_API_KEY or install the `claude` CLI on PATH.");
   }
-  // Tunable subprocess timeouts (ms): BUREAU_CLI_TIMEOUT (read-only calls) and
-  // BUREAU_EDIT_TIMEOUT (the edit worker — raise it for big changes on a slower model).
+  // Worker liveness (ms). The STREAM path (every worker step) uses an inactivity watchdog +
+  // ceiling: BUREAU_STEP_IDLE (kill after no output for this long — reset on every streamed byte;
+  // default 5 min) and BUREAU_STEP_MAX (absolute ceiling; default 60 min). The flat SEND path
+  // (chat json) keeps BUREAU_CLI_TIMEOUT (default 4 min) / BUREAU_EDIT_TIMEOUT.
   const cliTimeout = envMs("BUREAU_CLI_TIMEOUT");
   const editTimeout = envMs("BUREAU_EDIT_TIMEOUT");
+  const idle = envMs("BUREAU_STEP_IDLE");
+  const editIdle = envMs("BUREAU_STEP_EDIT_IDLE");
+  const ceiling = envMs("BUREAU_STEP_MAX");
   return new ClaudeCliProvider({
     authStrategy: strategy,
     ...(cliTimeout !== undefined ? { timeoutMs: cliTimeout } : {}),
     ...(editTimeout !== undefined ? { editTimeoutMs: editTimeout } : {}),
+    ...(idle !== undefined ? { idleMs: idle } : {}),
+    ...(editIdle !== undefined ? { editIdleMs: editIdle } : {}),
+    ...(ceiling !== undefined ? { ceilingMs: ceiling } : {}),
   });
 }
 
@@ -200,6 +214,7 @@ async function main(): Promise<void> {
   let hub: WsHub | undefined;
   const events: EventSink = { emit: (event: WsEvent) => hub?.emit(event) };
 
+  const stepHardCap = envMs("BUREAU_STEP_HARD_CAP");
   const orchestrator = new Orchestrator({
     store,
     capabilities,
@@ -217,6 +232,7 @@ async function main(): Promise<void> {
     models: modelPolicyFromEnv(),
     efforts: effortPolicyFromEnv(),
     budgetUsd: Number(process.env.BUREAU_TASK_BUDGET_USD) || 0,
+    ...(stepHardCap !== undefined ? { stepHardCapMs: stepHardCap } : {}),
     ids: () => randomUUID(),
     clock: () => new Date().toISOString(),
   });

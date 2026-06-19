@@ -29,8 +29,11 @@ export {
   defaultCliRunner,
   renderCliPrompt,
   parseCliJson,
+  DEFAULT_CLI_IDLE_MS,
+  DEFAULT_CLI_CEILING_MS,
   type CliRunner,
   type CliResult,
+  type CliWatchdog,
   type ClaudeCliProviderOptions,
 } from "./claude-cli.js";
 

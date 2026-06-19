@@ -15,11 +15,26 @@ import { withRetry } from "./retry.js";
 /** Stderr prefix the runner stamps on a timeout, so the retry layer can classify a
  *  timed-out run as transient (retryable for read-only calls) vs a real CLI error. */
 export const CLI_TIMEOUT_SENTINEL = "BUREAU_CLI_TIMEOUT ";
+/** A run killed by the INACTIVITY watchdog (no output for idleMs) — a likely-transient hang,
+ *  so read-only calls retry it. Extends the base sentinel so existing startsWith() checks match. */
+export const CLI_IDLE_SENTINEL = `${CLI_TIMEOUT_SENTINEL}idle `;
+/** A run killed by the ABSOLUTE ceiling (it streamed for the whole ceilingMs) — it already
+ *  burned the full budget, so it is PERMANENT (never retried; a retry would burn another full
+ *  ceiling). Extends the base sentinel too. Test this BEFORE the idle one in classification. */
+export const CLI_CEILING_SENTINEL = `${CLI_TIMEOUT_SENTINEL}ceiling `;
 
 export interface CliResult {
   readonly stdout: string;
   readonly stderr: string;
   readonly code: number;
+}
+
+/** Liveness config for the STREAM path: an inactivity watchdog (reset on every byte of output)
+ *  + an absolute ceiling (never reset). When omitted, the runner uses the flat `timeoutMs`
+ *  (the SEND path, whose JSON output arrives only at the end — an idle timer would false-kill it). */
+export interface CliWatchdog {
+  readonly idleMs?: number;
+  readonly ceilingMs?: number;
 }
 
 export type CliRunner = (
@@ -29,46 +44,91 @@ export type CliRunner = (
   cwd?: string,
   timeoutMs?: number,
   /** Called with each raw stdout chunk as it arrives — for incremental streaming. */
-  onStdout?: (chunk: string) => void
+  onStdout?: (chunk: string) => void,
+  /** When present, use an inactivity watchdog + ceiling instead of the flat `timeoutMs`. */
+  watchdog?: CliWatchdog
 ) => Promise<CliResult>;
 
 /** Default runner: spawn the CLI, feed the prompt on stdin, collect stdout. The
  *  CLI runs in `cwd` (the task's worktree for edits) so its tools can't reach
  *  outside it. A wedged subprocess is killed after `timeoutMs` so a hung edit can
  *  never block a pipeline forever. */
-export const defaultCliRunner: CliRunner = (cli, args, input, cwd, timeoutMs, onStdout) =>
+export const defaultCliRunner: CliRunner = (cli, args, input, cwd, timeoutMs, onStdout, watchdog) =>
   new Promise<CliResult>((resolve) => {
     const child = spawn(cli, args, { stdio: ["pipe", "pipe", "pipe"], ...(cwd !== undefined ? { cwd } : {}) });
     let stdout = "";
     let stderr = "";
-    let timedOut = false;
-    const timer =
-      timeoutMs !== undefined && timeoutMs > 0
-        ? setTimeout(() => {
-            timedOut = true;
-            child.kill("SIGTERM");
-            setTimeout(() => child.kill("SIGKILL"), 2000).unref(); // hard-kill if it ignores SIGTERM
-          }, timeoutMs)
+    // What (if anything) killed the child — drives the stderr sentinel so the retry layer
+    // classifies it: "flat"/"idle" = transient (retry), "ceiling" = permanent (never retry).
+    let killKind: "flat" | "idle" | "ceiling" | undefined;
+
+    const kill = (): void => {
+      child.kill("SIGTERM");
+      setTimeout(() => child.kill("SIGKILL"), 2000).unref(); // hard-kill if it ignores SIGTERM
+    };
+
+    // Liveness: either a flat wall-clock timeout (SEND path, no watchdog) OR an inactivity
+    // watchdog + absolute ceiling (STREAM path). The watchdog resets on every byte of output,
+    // so a worker actively streaming progress is NEVER killed; the ceiling is the last-resort cap.
+    const idleMs = watchdog?.idleMs;
+    const ceilingMs = watchdog?.ceilingMs;
+    // Each kill is TERMINAL: the first timer to fire sets killKind and kills; the others no-op,
+    // and bumpIdle stops re-arming. So a ceiling kill can't be downgraded to "idle" if the dying
+    // child emits during the 2s SIGTERM→SIGKILL grace (which would wrongly mark it retryable).
+    const flatTimer =
+      watchdog === undefined && timeoutMs !== undefined && timeoutMs > 0
+        ? setTimeout(() => { if (killKind) return; killKind = "flat"; kill(); }, timeoutMs)
         : undefined;
+    const ceilingTimer =
+      ceilingMs !== undefined && ceilingMs > 0
+        ? setTimeout(() => { if (killKind) return; killKind = "ceiling"; kill(); }, ceilingMs) // never reset
+        : undefined;
+    let idleTimer: ReturnType<typeof setTimeout> | undefined;
+    const bumpIdle = (): void => {
+      if (killKind !== undefined) return; // a kill is already underway — don't re-arm
+      if (idleMs === undefined || idleMs <= 0) return;
+      if (idleTimer) clearTimeout(idleTimer);
+      idleTimer = setTimeout(() => { if (killKind) return; killKind = "idle"; kill(); }, idleMs);
+    };
+    bumpIdle(); // arm at start — a child that never emits anything is idle-killed after idleMs
+
+    const clearTimers = (): void => {
+      if (flatTimer) clearTimeout(flatTimer);
+      if (ceilingTimer) clearTimeout(ceilingTimer);
+      if (idleTimer) clearTimeout(idleTimer);
+    };
+    const stamp = (kind: "flat" | "idle" | "ceiling", msg: string): string =>
+      `${kind === "ceiling" ? CLI_CEILING_SENTINEL : kind === "idle" ? CLI_IDLE_SENTINEL : CLI_TIMEOUT_SENTINEL}${msg}`;
+
     child.stdout.on("data", (d: Buffer) => {
       const s = d.toString();
       stdout += s;
       onStdout?.(s);
+      bumpIdle(); // output = progress → reset the inactivity watchdog
     });
-    child.stderr.on("data", (d: Buffer) => (stderr += d.toString()));
+    child.stderr.on("data", (d: Buffer) => {
+      stderr += d.toString();
+      bumpIdle(); // stderr progress counts as alive too
+    });
     child.on("error", (err: Error) => {
-      if (timer) clearTimeout(timer);
-      // If we already fired the kill timer, this error is the teardown of a TIMEOUT —
-      // stamp the sentinel so it's classified transient (retryable), like the close path.
-      resolve(timedOut ? { stdout, stderr: `${CLI_TIMEOUT_SENTINEL}${String(err)}`, code: -1 } : { stdout: "", stderr: String(err), code: -1 });
+      clearTimers();
+      // If we already fired a kill, this error is the teardown of a TIMEOUT — stamp the matching
+      // sentinel so it's classified (transient/permanent) like the close path.
+      resolve(killKind ? { stdout, stderr: stamp(killKind, String(err)), code: -1 } : { stdout: "", stderr: String(err), code: -1 });
     });
     child.on("close", (code: number | null) => {
-      if (timer) clearTimeout(timer);
-      resolve(
-        timedOut
-          ? { stdout, stderr: `${CLI_TIMEOUT_SENTINEL}claude CLI timed out after ${timeoutMs}ms`, code: -1 }
-          : { stdout, stderr, code: code ?? -1 }
-      );
+      clearTimers();
+      if (killKind === undefined) {
+        resolve({ stdout, stderr, code: code ?? -1 });
+        return;
+      }
+      const msg =
+        killKind === "ceiling"
+          ? `claude CLI exceeded its ${ceilingMs}ms ceiling`
+          : killKind === "idle"
+            ? `claude CLI idle ${idleMs}ms with no progress`
+            : `claude CLI timed out after ${timeoutMs}ms`;
+      resolve({ stdout, stderr: stamp(killKind, msg), code: -1 });
     });
     child.stdin.end(input);
   });
@@ -89,11 +149,17 @@ export interface ClaudeCliProviderOptions {
   readonly name?: string;
   /** Override the tool allowlist (tests). Defaults to read-only — do NOT add write tools. */
   readonly tools?: readonly string[];
-  /** Kill the CLI subprocess after this many ms (0 disables) for READ-ONLY calls. Default 4 min. */
+  /** Flat SEND-path timeout (ms, 0 disables) for non-streaming json calls (chat). Default 4 min. */
   readonly timeoutMs?: number;
-  /** Same, for the EDIT worker (acceptEdits). It never retries and a big edit needs more —
-   *  default 10 min. Kept under the orchestrator's per-step backstop. */
+  /** Flat SEND-path timeout for an acceptEdits send (rare — edits stream). Default 10 min. */
   readonly editTimeoutMs?: number;
+  /** STREAM-path inactivity watchdog for READ-ONLY calls (ms, reset on output). Default 5 min. */
+  readonly idleMs?: number;
+  /** STREAM-path inactivity watchdog for the EDIT (acceptEdits) path. Larger — edits can't retry.
+   *  Default 15 min. */
+  readonly editIdleMs?: number;
+  /** STREAM-path absolute ceiling (ms, never reset). Default 60 min. */
+  readonly ceilingMs?: number;
 }
 
 /** Default subprocess timeout for READ-ONLY calls (plan/review/research/chat) — these
@@ -106,6 +172,22 @@ export const DEFAULT_CLI_TIMEOUT_MS = 240_000;
  *  under the orchestrator's per-step backstop (STEP_TIMEOUT_MS, 15 min) since it never retries. */
 export const DEFAULT_EDIT_TIMEOUT_MS = 600_000;
 
+/** STREAM-path inactivity watchdog: kill the subprocess after this long with NO output. Reset on
+ *  every byte streamed, so a worker actively emitting tool calls runs as long as it stays alive;
+ *  a genuinely hung worker dies fast. 5 min is generous for stream-json tool granularity. */
+export const DEFAULT_CLI_IDLE_MS = 300_000;
+/** STREAM-path absolute ceiling: the last-resort hard cap on a worker that streams forever
+ *  (a tool loop) where the idle watchdog never trips. Never reset. 60 min. */
+export const DEFAULT_CLI_CEILING_MS = 3_600_000;
+/** Idle budget for the EDIT (acceptEdits) path — larger than read-only because an edit is NEVER
+ *  retried, so a falsely idle-killed edit LOSES work with no recovery. A big edit (or a high-effort
+ *  model thinking before its next tool) can be stdout-silent for a while; 15 min absorbs that. */
+export const DEFAULT_CLI_EDIT_IDLE_MS = 900_000;
+
+/** A positive ms value, or the default — so a misconfigured 0/negative never disables a watchdog
+ *  timer (which, on the stream path, would leave a hung subprocess with no liveness backstop). */
+const pos = (v: number | undefined, dflt: number): number => (typeof v === "number" && v > 0 ? v : dflt);
+
 export class ClaudeCliProvider implements Provider {
   readonly name: string;
   readonly authStrategy: AuthStrategy;
@@ -116,6 +198,9 @@ export class ClaudeCliProvider implements Provider {
   private readonly tools: readonly string[];
   private readonly timeoutMs: number;
   private readonly editTimeoutMs: number;
+  private readonly idleMs: number;
+  private readonly editIdleMs: number;
+  private readonly ceilingMs: number;
 
   constructor(opts: ClaudeCliProviderOptions) {
     this.authStrategy = opts.authStrategy;
@@ -125,12 +210,24 @@ export class ClaudeCliProvider implements Provider {
     this.tools = opts.tools ?? READONLY_TOOLS;
     this.timeoutMs = opts.timeoutMs ?? DEFAULT_CLI_TIMEOUT_MS;
     this.editTimeoutMs = opts.editTimeoutMs ?? DEFAULT_EDIT_TIMEOUT_MS;
+    // For the STREAM watchdog, a non-positive value means "use the default", NOT "disable" — the
+    // stream path has no other backstop that kills the child, so it must always have a live timer.
+    this.idleMs = pos(opts.idleMs, DEFAULT_CLI_IDLE_MS);
+    this.editIdleMs = pos(opts.editIdleMs, DEFAULT_CLI_EDIT_IDLE_MS);
+    this.ceilingMs = pos(opts.ceilingMs, DEFAULT_CLI_CEILING_MS);
     this.name = opts.name ?? `claude-cli:${this.model}`;
   }
 
   /** The edit worker (acceptEdits, no retry) gets the longer budget; read-only the shorter. */
   private timeoutFor(options?: SendOptions): number {
     return options?.acceptEdits ? this.editTimeoutMs : this.timeoutMs;
+  }
+
+  /** The stream-path idle budget for this call: a per-call override, else the edit budget for a
+   *  mutating call (it can't retry), else the read-only budget. */
+  private idleFor(options?: SendOptions): number {
+    if (options?.idleMs !== undefined && options.idleMs > 0) return options.idleMs;
+    return options?.acceptEdits ? this.editIdleMs : this.idleMs;
   }
 
   async send(messages: Message[], options?: SendOptions): Promise<ProviderResponse> {
@@ -206,7 +303,13 @@ export class ClaudeCliProvider implements Provider {
           emitStreamChunk(line, onChunk, options?.onToolUse);
         }
       };
-      const { stdout, stderr, code } = await this.run(this.cli, args, prompt, options?.cwd, this.timeoutFor(options), onStdout);
+      // STREAM path: NO flat timeout — liveness is the inactivity watchdog (reset on every
+      // streamed byte) + the absolute ceiling. A worker emitting progress runs as long as it stays
+      // alive; a hung one is idle-killed fast; a forever-looping one is ceiling-killed.
+      const { stdout, stderr, code } = await this.run(this.cli, args, prompt, options?.cwd, undefined, onStdout, {
+        idleMs: this.idleFor(options),
+        ceilingMs: pos(options?.ceilingMs, this.ceilingMs), // per-call override (e.g. a tighter chat ceiling)
+      });
       if (code !== 0) throw cliExitError(code, stderr);
       return parseStreamJson(stdout, model);
     };
@@ -220,10 +323,15 @@ export class ClaudeCliProvider implements Provider {
  *  TRANSIENT (retryable for read-only calls); any other non-zero exit is PERMANENT
  *  (a real CLI error/refusal the retry layer must not re-run). */
 function cliExitError(code: number, stderr: string): ProviderError {
-  const timedOut = stderr.startsWith(CLI_TIMEOUT_SENTINEL);
+  // Check the SPECIFIC sentinels first — both extend CLI_TIMEOUT_SENTINEL, so a startsWith on
+  // the base would match them too. A CEILING kill is PERMANENT (it already ran the full budget —
+  // retrying would burn another whole ceiling); an IDLE kill (and the legacy flat timeout) is
+  // TRANSIENT (a hang may clear on retry, for read-only calls).
+  const ceiling = stderr.startsWith(CLI_CEILING_SENTINEL);
+  const timedOut = ceiling || stderr.startsWith(CLI_IDLE_SENTINEL) || stderr.startsWith(CLI_TIMEOUT_SENTINEL);
   return new ProviderError(
     `claude CLI ${timedOut ? "timed out" : `exited with code ${code}`}: ${stderr.trim() || "(no stderr)"}`,
-    { kind: timedOut ? "transient" : "permanent" }
+    { kind: ceiling ? "permanent" : timedOut ? "transient" : "permanent" }
   );
 }
 

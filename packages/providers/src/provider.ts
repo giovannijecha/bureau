@@ -42,6 +42,10 @@ export interface SendOptions {
   readonly tools?: readonly string[];
   /** Auto-accept file edits inside cwd (CLI provider) — for the agentic edit worker. */
   readonly acceptEdits?: boolean;
+  /** Per-call override of the STREAM-path inactivity watchdog (ms) — e.g. an interactive chat
+   *  turn passes a tighter ceiling than a worker step. Falls back to the provider's defaults. */
+  readonly idleMs?: number;
+  readonly ceilingMs?: number;
   /** Extra directories the CLI may READ from (--add-dir), beyond cwd — used to let
    *  Iris view chat image attachments saved outside the repo. Completion providers ignore it. */
   readonly addDirs?: readonly string[];

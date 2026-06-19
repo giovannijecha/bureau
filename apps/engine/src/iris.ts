@@ -64,6 +64,11 @@ export interface IrisProject {
 const RETRY_NUDGE =
   "Your last response was not valid JSON. Reply again with ONLY the JSON object specified in your instructions — the first character must be { and the last must be }, with no other text, reasoning, or markdown.";
 
+/** Absolute cap on a single interactive Iris chat turn (the panel holds the HTTP request open
+ *  for the whole turn). Tighter than the 60-min worker ceiling so a runaway turn fails fast
+ *  instead of leaving the spinner up for an hour. The 5-min idle watchdog still bounds a hang. */
+const CHAT_CEILING_MS = Number(process.env.BUREAU_CHAT_TIMEOUT) || 360_000; // 6 min
+
 export async function irisRespond(
   provider: Provider,
   history: Message[],
@@ -118,6 +123,9 @@ You are currently working on the repository ${project.owner}/${project.name} (de
     ...(modelOverride !== undefined ? { model: modelOverride } : {}),
     ...(effortOverride !== undefined ? { effort: effortOverride } : {}),
     ...(onActivity ? { onToolUse: onActivity } : {}),
+    // A chat turn is INTERACTIVE (the panel holds the request open) — it must be snappy-or-fail,
+    // not run to the 60-min worker ceiling. Cap it tighter; the 5-min idle watchdog still applies.
+    ceilingMs: CHAT_CEILING_MS,
   };
 
   // Stream the turn so the agent's live tool calls (Read/Glob/…) surface via onToolUse

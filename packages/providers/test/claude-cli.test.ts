@@ -8,10 +8,16 @@ import {
   parseStreamJson,
   emitStreamChunk,
   CLI_TIMEOUT_SENTINEL,
+  CLI_IDLE_SENTINEL,
+  CLI_CEILING_SENTINEL,
   DEFAULT_CLI_TIMEOUT_MS,
   DEFAULT_EDIT_TIMEOUT_MS,
+  DEFAULT_CLI_IDLE_MS,
+  DEFAULT_CLI_CEILING_MS,
+  DEFAULT_CLI_EDIT_IDLE_MS,
   type CliRunner,
   type CliResult,
+  type CliWatchdog,
 } from "../src/claude-cli.js";
 import { DEFAULT_MODEL } from "../src/anthropic.js";
 import type { Message } from "../src/provider.js";
@@ -32,11 +38,11 @@ const stubStrategy = { kind: "cli-delegation" as const, isAvailable: () => true 
 
 function fakeRunner(result: CliResult): {
   run: CliRunner;
-  calls: { cli: string; args: string[]; input: string; cwd?: string; timeoutMs?: number }[];
+  calls: { cli: string; args: string[]; input: string; cwd?: string; timeoutMs?: number; watchdog?: CliWatchdog }[];
 } {
-  const calls: { cli: string; args: string[]; input: string; cwd?: string; timeoutMs?: number }[] = [];
-  const run: CliRunner = async (cli, args, input, cwd, timeoutMs, onStdout) => {
-    calls.push({ cli, args, input, cwd, timeoutMs });
+  const calls: { cli: string; args: string[]; input: string; cwd?: string; timeoutMs?: number; watchdog?: CliWatchdog }[] = [];
+  const run: CliRunner = async (cli, args, input, cwd, timeoutMs, onStdout, watchdog) => {
+    calls.push({ cli, args, input, cwd, timeoutMs, watchdog });
     onStdout?.(result.stdout); // simulate the CLI emitting its stdout (one chunk)
     return result;
   };
@@ -184,6 +190,45 @@ describe("ClaudeCliProvider — stream", () => {
     expect(calls[0]!.timeoutMs).toBe(900_000);
   });
 
+  it("STREAM uses the inactivity watchdog (no flat timeout); SEND keeps the flat timeout (no watchdog)", async () => {
+    // The whole point: a streaming worker's liveness is the watchdog, not a wall-clock cap.
+    const s = fakeRunner({ stdout: streamJson([{ text: "ok" }], "done"), stderr: "", code: 0 });
+    const sp = new ClaudeCliProvider({ authStrategy: stubStrategy, run: s.run });
+    await sp.stream([{ role: "user", content: "read" }], () => {});
+    expect(s.calls[0]!.timeoutMs).toBeUndefined(); // no flat cap on the stream path
+    expect(s.calls[0]!.watchdog).toEqual({ idleMs: DEFAULT_CLI_IDLE_MS, ceilingMs: DEFAULT_CLI_CEILING_MS });
+
+    const j = fakeRunner({ stdout: okJson("ok"), stderr: "", code: 0 });
+    const jp = new ClaudeCliProvider({ authStrategy: stubStrategy, run: j.run });
+    await jp.send([{ role: "user", content: "read" }]); // chat/send: one json blob at the end
+    expect(j.calls[0]!.timeoutMs).toBe(DEFAULT_CLI_TIMEOUT_MS); // flat — an idle watchdog would false-kill it
+    expect(j.calls[0]!.watchdog).toBeUndefined();
+  });
+
+  it("honors configured idleMs/ceilingMs on the stream watchdog (BUREAU_STEP_IDLE / BUREAU_STEP_MAX)", async () => {
+    const { run, calls } = fakeRunner({ stdout: streamJson([{ text: "ok" }], "done"), stderr: "", code: 0 });
+    const provider = new ClaudeCliProvider({ authStrategy: stubStrategy, run, idleMs: 1234, ceilingMs: 5678 });
+    await provider.stream([{ role: "user", content: "x" }], () => {});
+    expect(calls[0]!.watchdog).toEqual({ idleMs: 1234, ceilingMs: 5678 });
+  });
+
+  it("the EDIT (acceptEdits) stream uses the LARGER editIdleMs (edits can't retry); a per-call ceilingMs overrides", async () => {
+    const { run, calls } = fakeRunner({ stdout: streamJson([{ text: "ok" }], "done"), stderr: "", code: 0 });
+    const provider = new ClaudeCliProvider({ authStrategy: stubStrategy, run });
+    await provider.stream([{ role: "user", content: "edit" }], () => {}, { acceptEdits: true, cwd: "/wt" });
+    expect(calls[0]!.watchdog).toEqual({ idleMs: DEFAULT_CLI_EDIT_IDLE_MS, ceilingMs: DEFAULT_CLI_CEILING_MS });
+
+    await provider.stream([{ role: "user", content: "chat" }], () => {}, { ceilingMs: 360_000 });
+    expect(calls[1]!.watchdog).toEqual({ idleMs: DEFAULT_CLI_IDLE_MS, ceilingMs: 360_000 }); // chat's tighter ceiling
+  });
+
+  it("treats a non-positive idle/ceiling as 'use the default' — never disables stream liveness (no leaked subprocess)", async () => {
+    const { run, calls } = fakeRunner({ stdout: streamJson([{ text: "ok" }], "done"), stderr: "", code: 0 });
+    const provider = new ClaudeCliProvider({ authStrategy: stubStrategy, run, idleMs: 0, ceilingMs: 0, editIdleMs: -5 });
+    await provider.stream([{ role: "user", content: "x" }], () => {});
+    expect(calls[0]!.watchdog).toEqual({ idleMs: DEFAULT_CLI_IDLE_MS, ceilingMs: DEFAULT_CLI_CEILING_MS });
+  });
+
   it("requires at least one non-system message", async () => {
     const { run } = fakeRunner({ stdout: "", stderr: "", code: 0 });
     const provider = new ClaudeCliProvider({ authStrategy: stubStrategy, run });
@@ -238,6 +283,36 @@ describe("ClaudeCliProvider — retry & reliability", () => {
       provider.stream([{ role: "user", content: "edit" }], () => {}, { acceptEdits: true, cwd: "/wt" })
     ).rejects.toThrow(/timed out/);
     expect(count()).toBe(1); // ran exactly once
+  });
+
+  const idleTimeout = (): CliResult => ({ stdout: "", stderr: `${CLI_IDLE_SENTINEL}claude CLI idle 300000ms with no progress`, code: -1 });
+  const ceilingTimeout = (): CliResult => ({ stdout: "", stderr: `${CLI_CEILING_SENTINEL}claude CLI exceeded its 3600000ms ceiling`, code: -1 });
+
+  it("retries a read-only call after an IDLE-watchdog kill (transient — a hang may clear)", async () => {
+    const { run, count } = seqRunner([idleTimeout(), { stdout: okJson("recovered"), stderr: "", code: 0 }]);
+    const provider = new ClaudeCliProvider({ authStrategy: stubStrategy, run });
+    const res = await provider.send([{ role: "user", content: "read" }]);
+    expect(res.content).toBe("recovered");
+    expect(count()).toBe(2); // retried
+  });
+
+  it("does NOT retry after a CEILING kill (permanent — it already burned the full budget)", async () => {
+    // The guarantee against 3×ceiling = 180min: a ceiling kill is permanent, so retries stop.
+    const { run, count } = seqRunner([ceilingTimeout(), { stdout: okJson("late"), stderr: "", code: 0 }]);
+    const provider = new ClaudeCliProvider({ authStrategy: stubStrategy, run });
+    await expect(provider.send([{ role: "user", content: "read" }])).rejects.toThrow(/timed out/);
+    expect(count()).toBe(1); // ran exactly once — NOT retried
+  });
+
+  it("NEVER retries the edit worker on an idle OR a ceiling kill either", async () => {
+    for (const t of [idleTimeout, ceilingTimeout]) {
+      const { run, count } = seqRunner([t(), { stdout: okJson("late"), stderr: "", code: 0 }]);
+      const provider = new ClaudeCliProvider({ authStrategy: stubStrategy, run });
+      await expect(
+        provider.stream([{ role: "user", content: "edit" }], () => {}, { acceptEdits: true, cwd: "/wt" })
+      ).rejects.toThrow(/timed out/);
+      expect(count()).toBe(1);
+    }
   });
 
   it("honors a per-call model override on the CLI --model arg", async () => {
@@ -304,11 +379,46 @@ describe("emitStreamChunk", () => {
 });
 
 describe("defaultCliRunner — timeout", () => {
-  it("kills a wedged subprocess after timeoutMs and reports a timeout", async () => {
+  it("kills a wedged subprocess after timeoutMs and reports a timeout (flat, no watchdog)", async () => {
     // node sleeps far longer than the timeout; the runner must kill it and report.
     const res = await defaultCliRunner("node", ["-e", "setTimeout(() => {}, 60000)"], "", undefined, 300);
     expect(res.code).toBe(-1);
     expect(res.stderr).toMatch(/timed out after 300ms/);
+  });
+});
+
+describe("defaultCliRunner — inactivity watchdog", () => {
+  it("the idle timer RESETS on output — a steadily-printing child finishes cleanly, never idle-killed", async () => {
+    // prints every 20ms for ~400ms then exits 0. The idle budget (600ms) is 30× the print interval,
+    // so it survives CPU contention from parallel test workers; a SILENT child would die at 600ms,
+    // but each print resets the timer, so the child outlives it and exits cleanly. Proves reset-on-output.
+    const script = "let n=0;const t=setInterval(()=>{process.stdout.write('.');if(++n>=20){clearInterval(t);process.exit(0);}},20);";
+    const res = await defaultCliRunner("node", ["-e", script], "", undefined, undefined, undefined, { idleMs: 600, ceilingMs: 60_000 });
+    expect(res.code).toBe(0);
+    expect(res.stderr).not.toMatch(/BUREAU_CLI_TIMEOUT/);
+  });
+
+  it("idle-kills a child that goes SILENT (CLI_IDLE_SENTINEL → transient)", async () => {
+    const script = "process.stdout.write('hi');setTimeout(()=>{},60000);"; // emit once, then hang
+    const res = await defaultCliRunner("node", ["-e", script], "", undefined, undefined, undefined, { idleMs: 250, ceilingMs: 60_000 });
+    expect(res.code).toBe(-1);
+    expect(res.stderr.startsWith(CLI_IDLE_SENTINEL)).toBe(true);
+    expect(res.stderr).toMatch(/idle/);
+  });
+
+  it("the ceiling is NEVER reset — a forever-streaming child is ceiling-killed despite output (CLI_CEILING_SENTINEL → permanent)", async () => {
+    const script = "setInterval(()=>process.stdout.write('.'),30);setTimeout(()=>{},60000);"; // continuous output
+    const res = await defaultCliRunner("node", ["-e", script], "", undefined, undefined, undefined, { idleMs: 60_000, ceilingMs: 300 });
+    expect(res.code).toBe(-1);
+    expect(res.stderr.startsWith(CLI_CEILING_SENTINEL)).toBe(true);
+    expect(res.stderr).toMatch(/ceiling/);
+  });
+
+  it("clears both timers on a clean exit — no sentinel, no late kill", async () => {
+    const res = await defaultCliRunner("node", ["-e", "process.stdout.write('done');process.exit(0);"], "", undefined, undefined, undefined, { idleMs: 5_000, ceilingMs: 60_000 });
+    expect(res.code).toBe(0);
+    expect(res.stdout).toBe("done");
+    expect(res.stderr).toBe("");
   });
 });
 

@@ -5,6 +5,7 @@ import type { Task } from "@bureau/core";
 import { CapabilityRegistry } from "@bureau/capabilities";
 import type { CapabilityInput } from "@bureau/capabilities";
 import type { Provider } from "@bureau/providers";
+import { DEFAULT_CLI_IDLE_MS, DEFAULT_CLI_CEILING_MS } from "@bureau/providers";
 import type { WsEvent, Message, TaskProposal, Conversation } from "@bureau/contracts";
 
 import { mkdtempSync, mkdirSync, rmSync } from "node:fs";
@@ -1612,5 +1613,81 @@ describe("memory curation (the Archivist)", () => {
     st = await orch.curationStatus();
     expect(st.tasksSinceCuration).toBe(0); // re-armed
     expect(st.lastCuratedAt).not.toBeNull();
+  });
+});
+
+describe("step hard-cap backstop", () => {
+  it("kills a worker whose promise NEVER settles, and aborts the task", async () => {
+    // The CLI watchdog reaps a hung subprocess; this orchestrator backstop only catches a
+    // worker PROMISE that never settles (a buggy/non-CLI provider). Inject a tiny cap to exercise it.
+    const reg = new CapabilityRegistry();
+    reg.register({ kind: "edit", execute: () => new Promise(() => {}) }); // never resolves
+    let n = 0;
+    const o = new Orchestrator({
+      store,
+      capabilities: reg,
+      provider: prov.provider,
+      projects: new ProjectRegistry([PROJECT]),
+      projectRepo,
+      reposRoot: "/repos",
+      vcs: () => vcs.vcs,
+      events: { emit: () => {} },
+      messages: fakeMessages(),
+      conversations: fakeConversations(),
+      memory: mem.memory,
+      usage: usage.usage,
+      notifications: notifs.store,
+      stepHardCapMs: 25, // fires fast
+      ids: () => `hc-${++n}`,
+      clock: () => "2026-06-13T00:00:00.000Z",
+    });
+    const draft = o.createTask(PROPOSAL, "widget");
+    await o.startTask(draft.id);
+    await o.settle(draft.id);
+    const final = store.load(draft.id)!;
+    expect(final.status).toBe("aborted");
+    expect(final.steps[0]!.status).toBe("failed");
+  });
+
+  it("the default hard cap clears the worst legitimate CLI step (2 idle-kills + 1 ceiling-kill)", () => {
+    // The backstop must never pre-empt a real retrying CLI step. Worst case = 2×idle + 1×ceiling
+    // (ceiling is permanent → no 3×ceiling). The orchestrator's default hard cap is 4_500_000 (75min).
+    expect(4_500_000).toBeGreaterThan(DEFAULT_CLI_CEILING_MS + 2 * DEFAULT_CLI_IDLE_MS); // 75min > 70min
+  });
+
+  it("a non-positive injected hard cap falls back to the default — NOT a 1ms cap that kills every step", async () => {
+    const reg = new CapabilityRegistry();
+    reg.register({
+      kind: "edit",
+      async execute() {
+        await new Promise((r) => setTimeout(r, 20)); // takes 20ms — a buggy 1ms cap would kill it
+        return { artifacts: [], summary: "done", usage: { inputTokens: 1, outputTokens: 1, model: "claude-opus-4-8" } };
+      },
+    });
+    let n = 0;
+    const o = new Orchestrator({
+      store,
+      capabilities: reg,
+      provider: prov.provider,
+      projects: new ProjectRegistry([PROJECT]),
+      projectRepo,
+      reposRoot: "/repos",
+      vcs: () => vcs.vcs,
+      events: { emit: () => {} },
+      messages: fakeMessages(),
+      conversations: fakeConversations(),
+      memory: mem.memory,
+      usage: usage.usage,
+      notifications: notifs.store,
+      stepHardCapMs: 0, // must NOT become Math.max(1,0)=1 — falls back to the 75-min default
+      ids: () => `z-${++n}`,
+      clock: () => "2026-06-13T00:00:00.000Z",
+    });
+    const draft = o.createTask(PROPOSAL, "widget");
+    await o.startTask(draft.id);
+    await o.settle(draft.id);
+    const final = store.load(draft.id)!;
+    expect(final.status).not.toBe("aborted"); // a 1ms cap would have aborted it
+    expect(final.steps[0]!.status).not.toBe("failed"); // the 20ms edit ran (parked at the gate), not killed
   });
 });

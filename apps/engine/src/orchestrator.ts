@@ -50,11 +50,19 @@ import { ASSIGNEE, prOpen, prUrl, isMerged } from "./summary.js";
 
 export { OrchestratorError };
 
-// Per-step wall-clock backstop. Set ABOVE each worker's OWN self-timeout AND its retry
-// budget so a normal slow-but-retrying run never trips it — this only catches a hung
-// promise that never settles (e.g. a wedged stream). A read-only CLI step retries ≤2×,
-// each capped at the 240s CLI self-kill → ≤3 × 240s ≈ 12min worst case, so 15min headroom.
-const STEP_TIMEOUT_MS = 900_000; // 15 min — > 3 × the 240s CLI cap (retries:2)
+// Per-step wall-clock HARD CAP — pure defense-in-depth. Liveness is now the CLI subprocess's
+// own inactivity watchdog (idle 5 min, reset on every streamed byte) + absolute ceiling (60 min);
+// THAT is what actually kills a hung or runaway worker. This backstop only catches a worker
+// PROMISE that never settles (a non-CLI provider hang, or a wedged runner). It must sit ABOVE the
+// worst legitimate step: a read-only step retries ≤2× and a ceiling-kill is permanent (no retry),
+// so the worst real run is 2 idle-kills (≈5min each) + 1 ceiling-kill (60min) ≈ 70min → 75min here.
+// Env-overridable (BUREAU_STEP_HARD_CAP) and dep-injectable (tests pass a tiny value). Validate
+// strictly: a negative/zero/non-numeric env falls back to the default (a negative would otherwise
+// be truthy → a 1ms cap that kills every step), never a footgun.
+const STEP_TIMEOUT_MS = ((): number => {
+  const v = Number(process.env.BUREAU_STEP_HARD_CAP);
+  return Number.isFinite(v) && v > 0 ? v : 4_500_000; // 75 min
+})();
 const TEST_STEP_TIMEOUT_MS = 660_000; // 11 min — > the test runner's 600s self-timeout (no retries)
 
 // Chat compaction: keep Iris's context bounded (and turns fast) on a long thread. The most
@@ -88,6 +96,9 @@ export interface OrchestratorDeps {
   /** Per-task USD spend cap — a running task aborts before its next step once it crosses
    *  this. 0 / omitted = no cap (the historical default). */
   readonly budgetUsd?: number;
+  /** Per-step wall-clock hard cap (ms) — defense-in-depth above the CLI watchdog. Defaults to
+   *  STEP_TIMEOUT_MS (75 min / BUREAU_STEP_HARD_CAP). Tests pass a tiny value to exercise it. */
+  readonly stepHardCapMs?: number;
   readonly ids: () => string;
   readonly clock: () => string;
 }
@@ -116,6 +127,8 @@ export class Orchestrator {
   private lastCuratedAt: string | null = null;
   /** Auto-nudge after this many finished tasks (BUREAU_CURATE_EVERY, default 10). */
   private readonly curateEvery: number;
+  /** Per-step wall-clock hard cap (ms) — the never-settling-promise backstop above the CLI watchdog. */
+  private readonly stepHardCapMs: number;
 
   constructor(private readonly d: OrchestratorDeps) {
     this.modelPolicy = { ...(d.models ?? defaultModelPolicy()) };
@@ -123,6 +136,8 @@ export class Orchestrator {
     this.budgetUsd = Math.max(0, d.budgetUsd ?? 0);
     const every = Number(process.env.BUREAU_CURATE_EVERY);
     this.curateEvery = Number.isInteger(every) && every > 0 ? every : 10;
+    // A non-positive injected value means "use the default", not "1ms cap that kills every step".
+    this.stepHardCapMs = d.stepHardCapMs && d.stepHardCapMs > 0 ? d.stepHardCapMs : STEP_TIMEOUT_MS;
   }
 
   /** Set the per-task USD budget cap (0 = no cap). Returns the clamped value in effect. */
@@ -1120,10 +1135,13 @@ export class Orchestrator {
    *  catch fails the step + aborts. The underlying promise (and any CLI subprocess,
    *  which self-kills sooner) is left to settle/clean up on its own. */
   private withStepTimeout<T>(capability: string, p: Promise<T>): Promise<T> {
-    const ms = capability === "test" ? TEST_STEP_TIMEOUT_MS : STEP_TIMEOUT_MS;
+    // The 'test' step runs a subprocess via run-command.ts (its own SIGKILL, no CLI watchdog), so
+    // it keeps a flat cap. Every other step is a CLI worker whose liveness the subprocess watchdog
+    // already enforces — here the cap is just the never-settling-promise backstop (hard cap).
+    const ms = capability === "test" ? TEST_STEP_TIMEOUT_MS : this.stepHardCapMs;
     let timer: ReturnType<typeof setTimeout> | undefined;
     const timeout = new Promise<never>((_resolve, reject) => {
-      timer = setTimeout(() => reject(new Error(`Step "${capability}" exceeded its time budget (${Math.round(ms / 1000)}s).`)), ms);
+      timer = setTimeout(() => reject(new Error(`Step "${capability}" exceeded its hard cap (${Math.round(ms / 1000)}s).`)), ms);
     });
     return Promise.race([p, timeout]).finally(() => clearTimeout(timer));
   }
