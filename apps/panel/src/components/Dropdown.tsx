@@ -94,7 +94,9 @@ export function Dropdown<T extends string>({
           <div
             ref={popRef}
             style={{ position: "fixed", top: pos.top, left: pos.left, minWidth: pos.minWidth, maxHeight: pos.maxHeight }}
-            className="z-50 w-max min-w-[12rem] max-w-[22rem] overflow-y-auto rounded-lg border bg-popover p-1 shadow-lg"
+            // Above the app's modal layer (z-[100]: Settings/Confirm/ProjectSwitcher) so the
+            // menu opens IN FRONT of the modal it's rendered inside, not hidden behind it.
+            className="z-[110] w-max min-w-[12rem] max-w-[22rem] overflow-y-auto rounded-lg border bg-popover p-1 shadow-lg"
           >
             {options.map((o) => {
               const selected = o.value === value;
