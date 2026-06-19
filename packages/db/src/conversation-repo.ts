@@ -48,6 +48,18 @@ export class ConversationRepo {
     this.db.update(conversations).set({ updatedAt }).where(eq(conversations.id, id)).run();
   }
 
+  /** The rolling-compaction state (summary of the oldest `count` messages), or null if the
+   *  conversation doesn't exist. summary is null + count 0 until the thread first overflows. */
+  summaryOf(id: string): { summary: string | null; count: number } | null {
+    const r = this.db.select().from(conversations).where(eq(conversations.id, id)).get();
+    return r ? { summary: r.summary, count: r.summaryCount ?? 0 } : null;
+  }
+
+  /** Persist the rolling summary + how many of the oldest messages it folds in. */
+  setSummary(id: string, summary: string, count: number): void {
+    this.db.update(conversations).set({ summary, summaryCount: count }).where(eq(conversations.id, id)).run();
+  }
+
   delete(id: string): void {
     this.db.delete(messages).where(eq(messages.conversationId, id)).run();
     this.db.delete(conversations).where(eq(conversations.id, id)).run();

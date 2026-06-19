@@ -42,6 +42,14 @@ describe("ConversationRepo", () => {
     expect(repo.get("a")?.updatedAt).toBe("2026-06-14T02:00:00.000Z");
   });
 
+  it("persists + reads the rolling chat summary (null/0 until set; null for an unknown id)", () => {
+    repo.create(c({ id: "a" }));
+    expect(repo.summaryOf("a")).toEqual({ summary: null, count: 0 }); // fresh thread
+    repo.setSummary("a", "decided: OpenTUI/SolidJS on Bun; no Supabase", 8);
+    expect(repo.summaryOf("a")).toEqual({ summary: "decided: OpenTUI/SolidJS on Bun; no Supabase", count: 8 });
+    expect(repo.summaryOf("missing")).toBeNull();
+  });
+
   it("delete removes the conversation AND its messages, leaving others intact", () => {
     repo.create(c({ id: "a" }));
     repo.create(c({ id: "b" }));

@@ -71,6 +71,13 @@
       "when": 1781872578329,
       "tag": "0009_stiff_vector",
       "breakpoints": true
+    },
+    {
+      "idx": 10,
+      "version": "6",
+      "when": 1781879211462,
+      "tag": "0010_minor_human_torch",
+      "breakpoints": true
     }
   ]
 }

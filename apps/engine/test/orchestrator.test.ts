@@ -188,6 +188,7 @@ function fakeMessages(): MessageLog {
 
 function fakeConversations(): ConversationStore {
   const map = new Map<string, Conversation>();
+  const summaries = new Map<string, { summary: string | null; count: number }>();
   return {
     create: (c) => void map.set(c.id, c),
     get: (id) => map.get(id) ?? null,
@@ -200,7 +201,9 @@ function fakeConversations(): ConversationStore {
       const c = map.get(id);
       if (c) map.set(id, { ...c, updatedAt });
     },
-    delete: (id) => void map.delete(id),
+    summaryOf: (id) => (map.has(id) ? (summaries.get(id) ?? { summary: null, count: 0 }) : null),
+    setSummary: (id, summary, count) => void summaries.set(id, { summary, count }),
+    delete: (id) => void (map.delete(id), summaries.delete(id)),
   };
 }
 
@@ -564,6 +567,26 @@ describe("chat", () => {
     const res = await orch.chat("hi");
     expect(res.reply.content).toBe("Tell me more.");
     expect(res.proposal).toBeUndefined();
+  });
+
+  it("leaves a SHORT thread uncompacted — full history verbatim, no summary, no nudge", async () => {
+    const res = await orch.chat("hi");
+    expect(res.notice).toBeUndefined();
+    expect(prov.system()).not.toContain("Conversation so far"); // no summary injected
+  });
+
+  it("COMPACTS a long thread — folds older turns into a summary, keeps recent verbatim, nudges ONCE", async () => {
+    const big = "x".repeat(7000);
+    prov.setReply(JSON.stringify({ reply: big })); // each turn adds ~14k chars (user + iris)
+    let res = await orch.chat(big); // turn 1 — under budget
+    const convId = res.conversationId;
+    let notices = 0;
+    for (let i = 0; i < 5; i++) {
+      res = await orch.chat(big, undefined, convId); // grow well past the 24k budget
+      if (res.notice) notices++;
+    }
+    expect(notices).toBe(1); // nudged exactly once (first crossing), never spammed
+    expect(prov.system()).toContain("Conversation so far"); // the rolling summary rode into Iris's context
   });
 
   it("folds THIS project's journals into Iris's context as a READABLE, scoped index (research reaches chat)", async () => {

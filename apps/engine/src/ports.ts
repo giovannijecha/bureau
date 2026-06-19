@@ -162,6 +162,10 @@ export interface ConversationStore {
   rename(id: string, title: string, updatedAt: string): void;
   touch(id: string, updatedAt: string): void;
   delete(id: string): void;
+  /** Rolling chat-compaction state (kept out of the panel-facing Conversation DTO — it's
+   *  an internal context-budget mechanism). `count` = how many oldest messages `summary` folds. */
+  summaryOf(id: string): { summary: string | null; count: number } | null;
+  setSummary(id: string, summary: string, count: number): void;
 }
 
 /** One recorded provider round-trip's token spend (Iris chat or a worker step). */

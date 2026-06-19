@@ -368,6 +368,12 @@ export class DbConversationStore implements ConversationStore {
   touch(id: string, updatedAt: string): void {
     this.repo.touch(id, updatedAt);
   }
+  summaryOf(id: string): { summary: string | null; count: number } | null {
+    return this.repo.summaryOf(id);
+  }
+  setSummary(id: string, summary: string, count: number): void {
+    this.repo.setSummary(id, summary, count);
+  }
   delete(id: string): void {
     this.repo.delete(id);
   }

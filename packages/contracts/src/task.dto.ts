@@ -145,6 +145,9 @@ export const ChatResponseDto = z.object({
   /** A git history/branch/tag operation Iris proposes — the CEO authorizes (and, for
    *  destructive ops, type-to-confirms) it inline; the panel never auto-runs it. */
   gitOp: GitOpRequestDto.optional(),
+  /** A non-blocking heads-up for the CEO (e.g. the thread was compacted — consider a New
+   *  chat). Shown as a subtle banner; not part of the conversation. */
+  notice: z.string().optional(),
 });
 
 export const CreateTaskRequestDto = z.object({

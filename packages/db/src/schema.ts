@@ -126,6 +126,11 @@ export const conversations = sqliteTable("conversations", {
   id: text("id").primaryKey(),
   title: text("title").notNull(),
   projectId: text("project_id"),
+  /** Rolling compaction (so Iris's context stays bounded on a long thread): a distilled
+   *  summary of the OLDEST `summaryCount` messages, which are then dropped from what's sent
+   *  to Iris (recent turns ride verbatim). Both null/0 until a thread first overflows. */
+  summary: text("summary"),
+  summaryCount: integer("summary_count"),
   createdAt: text("created_at").notNull(),
   updatedAt: text("updated_at").notNull(),
 });

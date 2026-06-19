@@ -53,6 +53,12 @@ export { OrchestratorError };
 const STEP_TIMEOUT_MS = 900_000; // 15 min — > 3 × the 240s CLI cap (retries:2)
 const TEST_STEP_TIMEOUT_MS = 660_000; // 11 min — > the test runner's 600s self-timeout (no retries)
 
+// Chat compaction: keep Iris's context bounded (and turns fast) on a long thread. The most
+// recent turns ride verbatim up to CHAT_VERBATIM_BUDGET chars; older turns are folded into a
+// rolling summary capped at CHAT_SUMMARY_CAP. Short threads never overflow → zero overhead.
+const CHAT_VERBATIM_BUDGET = 24_000; // chars of recent turns sent verbatim (~6k tokens)
+const CHAT_SUMMARY_CAP = 3_000; // chars the rolling summary is bounded to
+
 export interface OrchestratorDeps {
   readonly store: TaskStore;
   readonly capabilities: CapabilityRegistry;
@@ -509,11 +515,13 @@ export class Orchestrator {
     // Hand Iris the repo's git state (branches + recent commits) — she has no shell,
     // so without this she can't answer about branches/history.
     const repo = await port.repoInfo(8).catch(() => null);
-    const history = this.d.messages.listByConversation(conversation.id);
+    const allMessages = this.d.messages.listByConversation(conversation.id);
     const irisProject = { owner: project.owner, name: project.name, baseBranch: project.baseBranch, hasTests: project.testCommand !== undefined };
-    // Fold the repo's git state, recent Bureau-terminal output, AND the CEO's pinned
-    // System Memory notes into Iris's read-only context — so she can answer about
-    // branches/history, reference terminal results, and actually KNOW the saved notes.
+    // Compact the thread so Iris's context stays bounded (and turns stay fast) no matter how
+    // long the conversation grows: recent turns ride verbatim, older ones as a rolling summary.
+    const { recent, summaryNote, firstFold } = await this.compactChatHistory(conversation.id, allMessages);
+    // Fold the repo's git state, recent Bureau-terminal output, the CEO's pinned System Memory
+    // notes, AND the conversation-so-far summary into Iris's read-only context.
     const termOut = this.terminalCtx?.(project.id)?.trim();
     const memory = await this.buildMemoryContext(irisProject);
     const context =
@@ -521,13 +529,14 @@ export class Orchestrator {
         repo ? buildRepoContext(repo) : "",
         termOut ? `Recent Bureau-terminal output (the CEO ran these — read-only, for your reference):\n${termOut}` : "",
         memory,
+        summaryNote ?? "",
       ]
         .filter((s) => s !== "")
         .join("\n\n") || undefined;
     let turn;
     try {
       turn = await irisRespond(
-        this.d.provider, history, irisProject, cwd, context, images, resolveModel(this.modelPolicy, "iris"),
+        this.d.provider, recent, irisProject, cwd, context, images, resolveModel(this.modelPolicy, "iris"),
         (summary) => this.d.events.emit({ type: "iris_activity", summary }),
         this.memoryReadDirs()
       );
@@ -540,7 +549,12 @@ export class Orchestrator {
     const reply = this.appendChatMessage(conversation.id, "iris", turn.reply);
     this.recordUsage("iris", null, turn.usage);
     this.d.conversations.touch(conversation.id, this.d.clock());
-    const base = { reply, conversationId: conversation.id };
+    // When the thread FIRST crosses the compaction threshold, nudge the CEO once to start a
+    // fresh chat for a new topic — past task findings persist in Memory, so nothing is lost.
+    const notice = firstFold
+      ? "This thread is getting long — older turns are now summarized to keep it fast. Consider a New chat for a new topic; past task findings stay in Memory."
+      : undefined;
+    const base = { reply, conversationId: conversation.id, ...(notice ? { notice } : {}) };
     if (turn.proposal) return { ...base, proposal: turn.proposal };
     if (turn.gitOp) return { ...base, gitOp: turn.gitOp };
     return base;
@@ -578,11 +592,16 @@ export class Orchestrator {
         .filter((s) => s !== "")
         .join("\n\n") || undefined;
 
-    // Build the turn from the inline history + this message — nothing from the DB.
-    const msgs: Message[] = [
-      ...history.map((h) => ({ id: this.d.ids(), role: h.role, content: h.content, createdAt: "" }) satisfies Message),
-      { id: this.d.ids(), role: "user", content: messageContent, createdAt: "" } satisfies Message,
-    ];
+    // Build the turn from the inline history + this message — nothing from the DB. The dock
+    // is ephemeral (no persisted rolling summary), so just BOUND the inline history to the
+    // verbatim budget — a long inspection session can't grow the prompt unboundedly.
+    const msgs: Message[] = boundInlineHistory(
+      [
+        ...history.map((h) => ({ id: this.d.ids(), role: h.role, content: h.content, createdAt: "" }) satisfies Message),
+        { id: this.d.ids(), role: "user", content: messageContent, createdAt: "" } satisfies Message,
+      ],
+      CHAT_VERBATIM_BUDGET
+    );
 
     let turn;
     try {
@@ -668,6 +687,84 @@ export class Orchestrator {
   private memoryReadDirs(): string[] | undefined {
     const root = this.d.memory.root();
     return root ? [root] : undefined;
+  }
+
+  /** Bound Iris's chat context on a long thread: keep the most recent turns verbatim (within
+   *  a char budget) and fold everything older into a rolling, persisted summary. Most turns
+   *  pay nothing; a fold (one read-only LLM call) happens only when the verbatim window
+   *  overflows. `recent` is what's sent as messages; `summaryNote` rides in the system context. */
+  private async compactChatHistory(
+    conversationId: string,
+    all: Message[]
+  ): Promise<{ recent: Message[]; summaryNote?: string; firstFold: boolean }> {
+    const stored = this.d.conversations.summaryOf(conversationId) ?? { summary: null, count: 0 };
+    let summary = stored.summary;
+    let count = Math.min(Math.max(0, stored.count), all.length); // guard a stale/out-of-range count
+
+    // Verbatim window: walk back from the newest, keeping turns until the char budget — but
+    // always keep the current turn so a turn is never sent summary-only.
+    let chars = 0;
+    let keepFrom = 0;
+    for (let i = all.length - 1; i >= 0; i--) {
+      chars += all[i]!.content.length;
+      if (chars > CHAT_VERBATIM_BUDGET && all.length - i >= 2) {
+        keepFrom = i + 1;
+        break;
+      }
+    }
+    // `recent` MUST begin with a user turn: the Anthropic API rejects a leading assistant
+    // message (the CLI provider tolerates it, but keep both paths correct). Snap the boundary
+    // back to the most recent user message at/before it — never below what's already summarized.
+    while (keepFrom > count && all[keepFrom]?.role !== "user") keepFrom--;
+
+    let folded = false;
+    if (keepFrom > count) {
+      // Fold the turns that just fell out of the window into the rolling summary.
+      summary = await this.summarizeChat(summary, all.slice(count, keepFrom));
+      count = keepFrom;
+      this.d.conversations.setSummary(conversationId, summary, count);
+      folded = true;
+    }
+
+    const recent = all.slice(count); // never re-send what the summary already covers
+    const summaryNote = summary
+      ? `Conversation so far (earlier turns of THIS thread, summarized — background only; the verbatim recent turns follow as messages):\n${summary}`
+      : undefined;
+    // Nudge only on the FIRST compaction (count went 0 → >0), not on every later fold — else
+    // a long thread would toast "start a New chat" on essentially every turn.
+    const firstFold = folded && stored.count === 0;
+    return { recent, firstFold, ...(summaryNote !== undefined ? { summaryNote } : {}) };
+  }
+
+  /** Fold older turns into the rolling summary — one provider call on the iris model (a
+   *  READ-ONLY agentic CLI invocation on the claude-cli provider; maxTokens applies only to
+   *  the API adapter). Runs ONLY on an overflow turn. Output is re-truncated to
+   *  CHAT_SUMMARY_CAP so the bound holds regardless of provider; ANY failure falls back to a
+   *  bounded truncation, so compaction can never wedge or unbound the chat. */
+  private async summarizeChat(prior: string | null, msgs: Message[]): Promise<string> {
+    const transcript = msgs.map((m) => `${m.role === "iris" ? "Iris" : "CEO"}: ${m.content}`).join("\n\n");
+    try {
+      const res = await this.d.provider.send(
+        [
+          {
+            role: "system",
+            content:
+              "You compress a CEO↔Iris (the Bureau orchestrator) conversation into a concise running brief for continuity. PRESERVE decisions made, the current direction/goal, open questions, and any facts needed to continue; drop pleasantries and superseded detail. Output ONLY the updated brief — no preamble.",
+          },
+          {
+            role: "user",
+            content: `${prior ? `Existing brief:\n${prior}\n\n` : ""}New turns to fold in:\n${transcript}\n\nReturn the updated brief (≤ ${CHAT_SUMMARY_CAP} characters).`,
+          },
+        ],
+        { maxTokens: 1200, model: resolveModel(this.modelPolicy, "iris") }
+      );
+      this.recordUsage("iris", null, { inputTokens: res.inputTokens, outputTokens: res.outputTokens, model: res.model ?? "unknown" });
+      const s = res.content.trim();
+      return s.length > CHAT_SUMMARY_CAP ? s.slice(0, CHAT_SUMMARY_CAP) : s;
+    } catch {
+      const concat = `${prior ?? ""}\n${transcript}`.trim();
+      return concat.length > CHAT_SUMMARY_CAP ? `…${concat.slice(concat.length - CHAT_SUMMARY_CAP)}` : concat;
+    }
   }
 
   /** Inline text attachments into the message content; save image attachments to a
@@ -1611,6 +1708,24 @@ function titleFrom(content: string): string {
 
 function prBody(goal: string): string {
   return `${goal}\n\n🤖 Opened by Bureau.`;
+}
+
+/** Bound an EPHEMERAL (un-summarized) inline chat history to a char budget: keep the most
+ *  recent messages that fit (always the final/current turn), then ensure the result begins
+ *  with a user turn (the Anthropic API rejects a leading assistant message). Older turns are
+ *  simply dropped — the dock is short-lived, so there's no rolling summary to fold them into. */
+function boundInlineHistory(msgs: Message[], budget: number): Message[] {
+  let chars = 0;
+  let from = 0;
+  for (let i = msgs.length - 1; i >= 0; i--) {
+    chars += msgs[i]!.content.length;
+    if (chars > budget && msgs.length - i >= 2) {
+      from = i + 1;
+      break;
+    }
+  }
+  while (from > 0 && msgs[from]?.role !== "user") from--;
+  return msgs.slice(from);
 }
 
 /** A file extension for a saved image attachment, derived from its media type — so

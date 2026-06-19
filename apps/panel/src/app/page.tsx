@@ -50,7 +50,7 @@ const ASSIGNEE: Record<string, string> = {
 export default function AssistantPage() {
   const { projects, active, activeId, setActiveId, loading: projectsLoading, error: projectsError, refresh: refreshProjects } = useProjects();
   const confirm = useConfirm();
-  const { success: toastSuccess, error: toastError } = useToast();
+  const { success: toastSuccess, error: toastError, info: toastInfo } = useToast();
   const { open: openSettings } = useSettingsModal();
   const [input, setInput] = useState("");
   const [log, setLog] = useState<Message[]>([]);
@@ -189,6 +189,7 @@ export default function AssistantPage() {
       persistProposal(res.conversationId, res.proposal ?? null);
       setGitOp(res.gitOp ?? null);
       persistGitOp(res.conversationId, res.gitOp ?? null);
+      if (res.notice) toastInfo("Heads-up", res.notice); // e.g. thread compacted — consider New chat
       void refreshConversations();
     } catch (e) {
       setError(errMsg(e));
