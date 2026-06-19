@@ -48,7 +48,7 @@ export default function MemoryPage() {
   // New journals land as tasks finish — refresh the list on any lifecycle event.
   useEngineEvents((e) => {
     if (e.type === "task_updated") void load(q);
-  });
+  }, () => void load(q)); // re-sync on reconnect / tab-return
 
   const open = useCallback(
     async (path: string) => {

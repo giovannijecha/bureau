@@ -49,7 +49,7 @@ export function NotificationBell() {
 
   useEngineEvents((e) => {
     if (e.type === "notification" || e.type === "task_updated") void load();
-  });
+  }, load); // re-sync on reconnect / tab-return
 
   async function readOne(id: string) {
     setItems((prev) => prev?.map((n) => (n.id === id ? { ...n, readAt: n.readAt ?? "now" } : n)) ?? prev);

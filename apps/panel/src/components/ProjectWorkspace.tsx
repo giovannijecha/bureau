@@ -70,7 +70,7 @@ export function ProjectWorkspace({ projectId }: { projectId: string | null }) {
   }, [load]);
   useEngineEvents((e) => {
     if (e.type === "task_updated") void load();
-  });
+  }, load); // re-sync on reconnect / tab-return
 
   // No project to show — either none configured, or none picked yet.
   if (!project) {

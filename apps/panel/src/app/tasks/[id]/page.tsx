@@ -95,7 +95,7 @@ export default function TaskDetailPage({ params }: { params: Promise<{ id: strin
       });
     }
     void load();
-  });
+  }, load); // re-sync on WS reconnect / tab-return — heal task state missed while away
 
   async function act(fn: () => Promise<TaskDetail>) {
     if (busy) return;

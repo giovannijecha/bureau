@@ -85,12 +85,18 @@ export default function GitPage() {
         .then((i) => alive.current && setIssues(i))
         .catch(() => alive.current && setIssues([]));
   }, [tab, prs, issues, activeId]);
-  useEngineEvents((e) => {
-    if (e.type === "task_updated") {
+  useEngineEvents(
+    (e) => {
+      if (e.type === "task_updated") {
+        void loadTasks();
+        void loadGit(activeId ?? undefined);
+      }
+    },
+    () => {
       void loadTasks();
       void loadGit(activeId ?? undefined);
     }
-  });
+  ); // re-sync on reconnect / tab-return
 
   async function cleanup() {
     if (cleaning) return;

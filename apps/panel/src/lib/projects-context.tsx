@@ -67,7 +67,7 @@ export function ProjectsProvider({ children }: { children: ReactNode }) {
   // The engine signals add/remove (incl. from another tab) — refetch live.
   useEngineEvents((e) => {
     if (e.type === "projects_changed") void refresh();
-  });
+  }, () => void refresh()); // re-sync on reconnect / tab-return
 
   const active = projects.find((p) => p.id === activeId) ?? null;
   return (
