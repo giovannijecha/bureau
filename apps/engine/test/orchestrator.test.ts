@@ -1068,6 +1068,9 @@ describe("decideGate", () => {
     expect(mem.journals[0]!.path).toMatch(/^journals\/.*\.md$/);
     expect(mem.journals[0]!.markdown).toContain(draft.goal);
     expect(mem.journals[0]!.markdown).toContain("Merged to main");
+    // The worker's report is persisted in full — the deliverable, not just metadata.
+    expect(mem.journals[0]!.markdown).toContain("## Reports");
+    expect(mem.journals[0]!.markdown).toContain("Added a Status section.");
   });
 
   it("records an honest merge error (and keeps the PR link) when the squash-merge fails — never a false 'merged'", async () => {
@@ -1196,6 +1199,12 @@ describe("read-only task (no mutating step)", () => {
     expect(final.steps[0]!.status).toBe("completed"); // the review step ran + completed (not blocked_on_gate)
     expect(vcs.calls.commitAll).toHaveLength(0); // nothing to commit
     expect(vcs.calls.push).toHaveLength(0); // canPush untouched — nothing pushed
+
+    // A read-only task's report IS the deliverable — it must land in the Memory journal
+    // (there's no commit/PR/branch carrying it). This is the exact path the fix restores.
+    expect(mem.journals).toHaveLength(1);
+    expect(mem.journals[0]!.markdown).toContain("## Reports");
+    expect(mem.journals[0]!.markdown).toContain("Looks good.");
   });
 });
 

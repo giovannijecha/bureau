@@ -936,8 +936,11 @@ export class Orchestrator {
       const gate = this.requireTask(taskId).gates[0];
       if (gate === undefined) {
         task = this.drive(this.requireTask(taskId), { type: "COMPLETE_TASK" });
-        this.emitTaskUpdated(task);
+        // Journal BEFORE the task_updated emit: the Memory tab refreshes on that event,
+        // so the note must already be on disk or the refresh races ahead of the write
+        // (journalTask is best-effort — it never throws, so the emit always follows).
         await this.journalTask(task);
+        this.emitTaskUpdated(task);
         return;
       }
 

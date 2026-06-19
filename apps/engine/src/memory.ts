@@ -37,6 +37,15 @@ export function noteSummary(path: string, content: string, updatedAt: string): N
   return { path, title: titleOf(path, content), kind: noteKind(path), updatedAt, excerpt: excerptOf(content) };
 }
 
+/** Close a dangling code fence in embedded worker text. A brief truncated mid-fence (or a
+ *  worker that emits an unmatched ```) would otherwise run to end-of-document in the Memory
+ *  viewer, swallowing the rest of the journal (Pipeline, Changed files) into one code block.
+ *  Appending a closing fence keeps the journal's own sections intact. */
+function balanceFences(text: string): string {
+  const fences = (text.match(/^```/gm) ?? []).length;
+  return fences % 2 === 0 ? text : `${text}\n\`\`\``;
+}
+
 /** The journal markdown for a finished task — distilled from its state. */
 export function journalMarkdown(task: Task, at: string): string {
   const outcome = isMerged(task)
@@ -50,6 +59,15 @@ export function journalMarkdown(task: Task, at: string): string {
   const pipeline = task.steps
     .map((s, i) => `${i + 1}. **${ASSIGNEE[s.capability]}** (${s.capability}) — ${s.description} — _${s.status.replace(/_/g, " ")}_`)
     .join("\n");
+
+  // Each worker's actual report — the deliverable of a read-only task (research findings,
+  // a plan, a review). Without this the journal recorded only metadata, so a research
+  // task's findings lived nowhere durable: not on GitHub (read-only, no commit) and not
+  // in System Memory. Now they land here, in full, browsable in the Memory tab + Obsidian.
+  const reports = task.steps
+    .filter((s) => (s.summary ?? "").trim() !== "")
+    .map((s) => `### ${ASSIGNEE[s.capability]} — ${s.capability}\n\n${balanceFences(s.summary!.trim())}`)
+    .join("\n\n");
 
   const changed = changedFiles(latestDiff(task));
   const changes = changed.length > 0 ? changed.map((f) => `- \`${f}\``).join("\n") : "_No file changes captured._";
@@ -65,6 +83,10 @@ export function journalMarkdown(task: Task, at: string): string {
     "## Outcome",
     "",
     outcome,
+    "",
+    "## Reports",
+    "",
+    reports || "_No worker reports captured._",
     "",
     "## Pipeline",
     "",

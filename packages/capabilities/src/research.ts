@@ -34,10 +34,14 @@ export class ResearchCapability implements Capability {
       tools: RESEARCH_TOOLS,
       acceptEdits: false,
       prompt: buildResearchPrompt(input),
-      // Keep the WHOLE findings brief (capped) — later steps build on it.
+      // Keep the WHOLE findings brief — it IS the deliverable (a read-only research task
+      // produces no files), so it must survive intact to the task card + the Memory journal.
+      // A generous cap (a grounded brief with citations easily exceeds the old 1500); the
+      // extra downstream context when research feeds a plan/edit is ~2k tokens at the cap —
+      // negligible against an Opus context window.
       summarize: (content) => {
         const brief = content.trim();
-        return brief.length > 1500 ? `${brief.slice(0, 1499)}…` : brief || "Investigated; no notable findings.";
+        return brief.length > 8000 ? `${brief.slice(0, 7999)}…` : brief || "Investigated; no notable findings.";
       },
     });
   }

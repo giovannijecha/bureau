@@ -35,10 +35,13 @@ export class PlanCapability implements Capability {
       tools: PLAN_TOOLS,
       acceptEdits: false,
       prompt: buildPlanPrompt(input),
-      // Keep the WHOLE plan as the summary (capped) — later steps follow it.
+      // Keep the WHOLE plan as the summary — it's the deliverable a read-only plan task
+      // hands back (and the script later steps follow). A generous cap so a real plan isn't
+      // lopped mid-step; it now also lands in full in the Memory journal. The downstream
+      // context cost when a plan feeds an edit is ~2k tokens at the cap — negligible.
       summarize: (content) => {
         const plan = content.trim();
-        return plan.length > 1500 ? `${plan.slice(0, 1499)}…` : plan || "Planned the change.";
+        return plan.length > 8000 ? `${plan.slice(0, 7999)}…` : plan || "Planned the change.";
       },
     });
   }
