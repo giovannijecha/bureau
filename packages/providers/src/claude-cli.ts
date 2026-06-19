@@ -89,13 +89,22 @@ export interface ClaudeCliProviderOptions {
   readonly name?: string;
   /** Override the tool allowlist (tests). Defaults to read-only — do NOT add write tools. */
   readonly tools?: readonly string[];
-  /** Kill the CLI subprocess after this many ms (0 disables). Default 4 minutes. */
+  /** Kill the CLI subprocess after this many ms (0 disables) for READ-ONLY calls. Default 4 min. */
   readonly timeoutMs?: number;
+  /** Same, for the EDIT worker (acceptEdits). It never retries and a big edit needs more —
+   *  default 10 min. Kept under the orchestrator's per-step backstop. */
+  readonly editTimeoutMs?: number;
 }
 
-/** Default subprocess timeout — long enough for a real edit, short enough that a
- *  wedged CLI doesn't park a pipeline indefinitely. */
+/** Default subprocess timeout for READ-ONLY calls (plan/review/research/chat) — these
+ *  retry transient failures, so the orchestrator's per-step backstop must clear 3× this. */
 export const DEFAULT_CLI_TIMEOUT_MS = 240_000;
+
+/** Default subprocess timeout for the EDIT worker. An edit isn't retried (re-running could
+ *  double-apply a partial edit), so it gets ONE shot — and a substantial change (e.g. a full
+ *  scaffold rewrite) legitimately needs more than the read-only budget. Kept comfortably
+ *  under the orchestrator's per-step backstop (STEP_TIMEOUT_MS, 15 min) since it never retries. */
+export const DEFAULT_EDIT_TIMEOUT_MS = 600_000;
 
 export class ClaudeCliProvider implements Provider {
   readonly name: string;
@@ -106,6 +115,7 @@ export class ClaudeCliProvider implements Provider {
   private readonly model: string;
   private readonly tools: readonly string[];
   private readonly timeoutMs: number;
+  private readonly editTimeoutMs: number;
 
   constructor(opts: ClaudeCliProviderOptions) {
     this.authStrategy = opts.authStrategy;
@@ -114,7 +124,13 @@ export class ClaudeCliProvider implements Provider {
     this.model = opts.model ?? DEFAULT_MODEL;
     this.tools = opts.tools ?? READONLY_TOOLS;
     this.timeoutMs = opts.timeoutMs ?? DEFAULT_CLI_TIMEOUT_MS;
+    this.editTimeoutMs = opts.editTimeoutMs ?? DEFAULT_EDIT_TIMEOUT_MS;
     this.name = opts.name ?? `claude-cli:${this.model}`;
+  }
+
+  /** The edit worker (acceptEdits, no retry) gets the longer budget; read-only the shorter. */
+  private timeoutFor(options?: SendOptions): number {
+    return options?.acceptEdits ? this.editTimeoutMs : this.timeoutMs;
   }
 
   async send(messages: Message[], options?: SendOptions): Promise<ProviderResponse> {
@@ -137,7 +153,7 @@ export class ClaudeCliProvider implements Provider {
     if (tools.length > 0) args.push("--tools", ...tools);
 
     const exec = async (): Promise<ProviderResponse> => {
-      const { stdout, stderr, code } = await this.run(this.cli, args, prompt, options?.cwd, this.timeoutMs);
+      const { stdout, stderr, code } = await this.run(this.cli, args, prompt, options?.cwd, this.timeoutFor(options));
       if (code !== 0) throw cliExitError(code, stderr);
       const result = parseCliJson(stdout);
       // The CLI reports the model it used; fall back to the configured one.
@@ -187,7 +203,7 @@ export class ClaudeCliProvider implements Provider {
           emitStreamChunk(line, onChunk, options?.onToolUse);
         }
       };
-      const { stdout, stderr, code } = await this.run(this.cli, args, prompt, options?.cwd, this.timeoutMs, onStdout);
+      const { stdout, stderr, code } = await this.run(this.cli, args, prompt, options?.cwd, this.timeoutFor(options), onStdout);
       if (code !== 0) throw cliExitError(code, stderr);
       return parseStreamJson(stdout, model);
     };

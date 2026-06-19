@@ -11,7 +11,8 @@
 //               BUREAU_REPO_OWNER/NAME/URL.
 // Optional:     BUREAU_BASE_BRANCH (main), BUREAU_DB (./bureau.db), PORT (4319),
 //               ANTHROPIC_API_KEY (else falls back to the `claude` CLI),
-//               BUREAU_AUTHOR_NAME, BUREAU_AUTHOR_EMAIL, BUREAU_GIT_PATH, BUREAU_GH_PATH
+//               BUREAU_AUTHOR_NAME, BUREAU_AUTHOR_EMAIL, BUREAU_GIT_PATH, BUREAU_GH_PATH,
+//               BUREAU_CLI_TIMEOUT (read-only call ms), BUREAU_EDIT_TIMEOUT (edit worker ms)
 
 import { randomUUID } from "node:crypto";
 import Anthropic from "@anthropic-ai/sdk";
@@ -46,6 +47,14 @@ function env(name: string, fallback?: string): string {
   return value;
 }
 
+/** A non-negative integer-ms env var, or undefined when unset/blank/invalid. */
+function envMs(name: string): number | undefined {
+  const raw = process.env[name];
+  if (raw === undefined || raw.trim() === "") return undefined;
+  const n = Number(raw);
+  return Number.isFinite(n) && n >= 0 ? n : undefined;
+}
+
 function buildProvider(): Provider {
   const apiKey = process.env.ANTHROPIC_API_KEY;
   if (apiKey !== undefined && apiKey.trim().length > 0) {
@@ -58,7 +67,15 @@ function buildProvider(): Provider {
   if (!strategy.isAvailable()) {
     throw new Error("No provider available: set ANTHROPIC_API_KEY or install the `claude` CLI on PATH.");
   }
-  return new ClaudeCliProvider({ authStrategy: strategy });
+  // Tunable subprocess timeouts (ms): BUREAU_CLI_TIMEOUT (read-only calls) and
+  // BUREAU_EDIT_TIMEOUT (the edit worker — raise it for big changes on a slower model).
+  const cliTimeout = envMs("BUREAU_CLI_TIMEOUT");
+  const editTimeout = envMs("BUREAU_EDIT_TIMEOUT");
+  return new ClaudeCliProvider({
+    authStrategy: strategy,
+    ...(cliTimeout !== undefined ? { timeoutMs: cliTimeout } : {}),
+    ...(editTimeout !== undefined ? { editTimeoutMs: editTimeout } : {}),
+  });
 }
 
 /** Build the SEED project configs from BUREAU_PROJECTS (JSON) or the legacy single-repo

@@ -8,6 +8,8 @@ import {
   parseStreamJson,
   emitStreamChunk,
   CLI_TIMEOUT_SENTINEL,
+  DEFAULT_CLI_TIMEOUT_MS,
+  DEFAULT_EDIT_TIMEOUT_MS,
   type CliRunner,
   type CliResult,
 } from "../src/claude-cli.js";
@@ -30,11 +32,11 @@ const stubStrategy = { kind: "cli-delegation" as const, isAvailable: () => true 
 
 function fakeRunner(result: CliResult): {
   run: CliRunner;
-  calls: { cli: string; args: string[]; input: string; cwd?: string }[];
+  calls: { cli: string; args: string[]; input: string; cwd?: string; timeoutMs?: number }[];
 } {
-  const calls: { cli: string; args: string[]; input: string; cwd?: string }[] = [];
-  const run: CliRunner = async (cli, args, input, cwd, _timeoutMs, onStdout) => {
-    calls.push({ cli, args, input, cwd });
+  const calls: { cli: string; args: string[]; input: string; cwd?: string; timeoutMs?: number }[] = [];
+  const run: CliRunner = async (cli, args, input, cwd, timeoutMs, onStdout) => {
+    calls.push({ cli, args, input, cwd, timeoutMs });
     onStdout?.(result.stdout); // simulate the CLI emitting its stdout (one chunk)
     return result;
   };
@@ -160,6 +162,26 @@ describe("ClaudeCliProvider — stream", () => {
     expect(args).toContain("stream-json");
     expect(args).toContain("--verbose"); // required with stream-json in -p mode
     expect(args).toContain("--add-dir"); // acceptEdits path keeps the worktree confinement
+  });
+
+  it("gives the EDIT worker the longer timeout, read-only the shorter one", async () => {
+    // The edit (acceptEdits, never retried) needs a bigger budget than a read-only call.
+    const { run, calls } = fakeRunner({ stdout: okJson("ok"), stderr: "", code: 0 });
+    const provider = new ClaudeCliProvider({ authStrategy: stubStrategy, run });
+
+    await provider.send([{ role: "user", content: "read" }]); // read-only
+    expect(calls[0]!.timeoutMs).toBe(DEFAULT_CLI_TIMEOUT_MS);
+
+    await provider.send([{ role: "user", content: "edit" }], { acceptEdits: true, cwd: "/wt" });
+    expect(calls[1]!.timeoutMs).toBe(DEFAULT_EDIT_TIMEOUT_MS);
+    expect(DEFAULT_EDIT_TIMEOUT_MS).toBeGreaterThan(DEFAULT_CLI_TIMEOUT_MS);
+  });
+
+  it("honors a configured editTimeoutMs (e.g. from BUREAU_EDIT_TIMEOUT)", async () => {
+    const { run, calls } = fakeRunner({ stdout: okJson("ok"), stderr: "", code: 0 });
+    const provider = new ClaudeCliProvider({ authStrategy: stubStrategy, run, editTimeoutMs: 900_000 });
+    await provider.send([{ role: "user", content: "edit" }], { acceptEdits: true, cwd: "/wt" });
+    expect(calls[0]!.timeoutMs).toBe(900_000);
   });
 
   it("requires at least one non-system message", async () => {
