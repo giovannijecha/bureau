@@ -75,7 +75,11 @@ export default function AssistantPage() {
   const [attachments, setAttachments] = useState<Attachment[]>([]);
   const [composerErr, setComposerErr] = useState<string | null>(null);
   const inputRef = useRef<HTMLTextAreaElement>(null);
-  const bottomRef = useRef<HTMLDivElement>(null);
+  const scrollerRef = useRef<HTMLDivElement>(null);
+  // Whether to keep pinning the view to the newest message. Becomes false the moment the CEO
+  // scrolls up to read earlier turns, so the steady stream of re-renders (WS activity frames,
+  // the engine-online poll, project-context refreshes) can never yank them back down.
+  const stickToBottom = useRef(true);
   const fileRef = useRef<HTMLInputElement>(null);
 
   // Live "what Iris is doing" — the engine streams a line per tool she invokes during the
@@ -94,6 +98,7 @@ export default function AssistantPage() {
 
   const selectConv = useCallback(async (id: string) => {
     setConvId(id);
+    stickToBottom.current = true; // opening a thread shows its latest message
     // Re-pin the project picker to THIS thread's project — so reopening an old chat after a
     // project switch puts Iris, the git/Hub views, AND any task we create back on the right
     // repo, not whatever the picker last showed. (The engine independently enforces the right
@@ -119,6 +124,7 @@ export default function AssistantPage() {
 
   const newChat = useCallback(() => {
     setConvId(null);
+    stickToBottom.current = true;
     setLog([]);
     setProposal(null);
     setGitOp(null);
@@ -161,9 +167,25 @@ export default function AssistantPage() {
     return () => void (alive = false);
   }, [selectConv]);
 
-  // Keep the newest message in view as the log grows or Iris is replying.
+  // Track whether the CEO is at the bottom — `stickToBottom` is the single source of truth,
+  // derived from the container's OWN scroll position (not from "did we re-render").
   useEffect(() => {
-    bottomRef.current?.scrollIntoView({ behavior: "smooth", block: "end" });
+    const el = scrollerRef.current;
+    if (!el) return;
+    const onScroll = () => {
+      stickToBottom.current = el.scrollHeight - el.scrollTop - el.clientHeight < 80;
+    };
+    el.addEventListener("scroll", onScroll, { passive: true });
+    return () => el.removeEventListener("scroll", onScroll);
+  }, []);
+
+  // Pin the newest message into view as the log grows — but ONLY when already near the bottom,
+  // and INSTANTLY (no smooth animation that a re-render could re-arm and fight the wheel). A
+  // scroll-up flips stickToBottom false, so reading earlier turns is never overridden.
+  useEffect(() => {
+    if (!stickToBottom.current) return;
+    const el = scrollerRef.current;
+    if (el) el.scrollTop = el.scrollHeight;
   }, [log, busy, proposal, gitOp, runs]);
 
   // When Iris proposes a git-op, fetch the repo's branches once so the card can offer
@@ -324,7 +346,7 @@ export default function AssistantPage() {
       <ConversationsRail conversations={conversations} activeId={convId} onSelect={selectConv} onNew={newChat} onDelete={removeConv} projectLabel={projectLabel} />
 
       <div className="flex min-h-0 min-w-0 flex-1 flex-col">
-        <div className="min-h-0 flex-1 overflow-y-auto">
+        <div ref={scrollerRef} className="min-h-0 flex-1 overflow-y-auto">
           {empty ? (
             <div className="flex min-h-full flex-col items-center justify-center gap-3 px-6 py-10 text-center">
               <div className="flex h-12 w-12 items-center justify-center rounded-2xl bg-primary/10 text-primary">
@@ -383,7 +405,6 @@ export default function AssistantPage() {
                   {error}
                 </div>
               )}
-              <div ref={bottomRef} />
             </div>
           )}
         </div>
