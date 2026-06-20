@@ -45,7 +45,7 @@ function fakeVcs() {
     pruneWorktrees: 0,
     commitAll: [] as { path: string; message: string }[],
     push: [] as { path: string; branch: string }[],
-    openPr: [] as { branch: string }[],
+    openPr: [] as { branch: string; title?: string; body?: string }[],
     mergePr: [] as { branch: string }[],
     establishBase: [] as { worktreePath?: string; branch: string; fromOrigin: boolean }[],
     setDefaultBranch: 0,
@@ -91,8 +91,8 @@ function fakeVcs() {
     async push(path, branch) {
       calls.push.push({ path, branch });
     },
-    async openPr(branch) {
-      calls.openPr.push({ branch });
+    async openPr(branch, title, body) {
+      calls.openPr.push({ branch, title, body });
       return "https://github.com/acme/widget/pull/1";
     },
     async mergePr(branch) {
@@ -1599,6 +1599,32 @@ describe("verify loop (closed-loop auto-fix)", () => {
     expect(called).toBe(0); // the runner was never invoked — no command to run
     expect(store.load(draft.id)!.status).toBe("awaiting_human");
     expect(v.calls.commitAll).toHaveLength(1);
+  });
+
+  it("persists an HONEST measured verification status (artifact + PR body) when checks pass", async () => {
+    const { o, v } = setup({ changingDiff: true, runner: async () => ({ stdout: "ok", stderr: "", code: 0, timedOut: false }) });
+    const draft = o.createTask(EDIT_ONLY);
+    await o.startTask(draft.id);
+    await o.settle(draft.id);
+
+    const task = store.load(draft.id)!;
+    const report = task.artifacts.find((a) => a.kind === "report" && a.ref.startsWith("VERIFY::"));
+    expect(report?.ref).toContain("✓ Verified"); // measured, not claimed
+    await o.confirmMerge(draft.id);
+    expect(v.calls.openPr[0]?.body).toContain("✓ Verified"); // the PR body carries the MEASURED status
+  });
+
+  it("is HONEST when nothing was verified — never implies a check ran (no command configured)", async () => {
+    const noCmd: ProjectConfig = { id: "nc2", owner: "acme", name: "bare2", url: "u", baseBranch: "main", canonicalPath: "/n2/repo", worktreesDir: "/n2/wt" };
+    const { o, v } = setup({ project: noCmd, changingDiff: true, runner: async () => ({ stdout: "", stderr: "", code: 0, timedOut: false }) });
+    const draft = o.createTask(EDIT_ONLY);
+    await o.startTask(draft.id);
+    await o.settle(draft.id);
+
+    const task = store.load(draft.id)!;
+    expect(task.artifacts.find((a) => a.kind === "report")?.ref).toContain("Not automatically verified");
+    await o.confirmMerge(draft.id);
+    expect(v.calls.openPr[0]?.body).toContain("Not automatically verified");
   });
 
   it("setProjectTestCommand turns the loop on for an existing project (persisted + live)", () => {

@@ -6,7 +6,7 @@
 
 import type { Task } from "@bureau/core";
 import type { NoteSummary, NoteKind } from "@bureau/contracts";
-import { ASSIGNEE, latestDiff, prUrl, mergeError, isMerged, statusNote } from "./summary.js";
+import { ASSIGNEE, latestDiff, prUrl, mergeError, isMerged, statusNote, verifyStatus } from "./summary.js";
 
 export const JOURNAL_DIR = "journals";
 export const NOTE_DIR = "notes";
@@ -99,7 +99,7 @@ export function journalMarkdown(task: Task, at: string): string {
     "",
     "## Outcome",
     "",
-    outcome,
+    outcome + (verifyStatus(task) ? `\n\n**Verification:** ${verifyStatus(task)}` : ""),
     "",
     "## Reports",
     "",

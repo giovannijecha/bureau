@@ -126,6 +126,9 @@ export const TaskDetailDto = TaskSummaryDto.extend({
   prUrl: z.string().nullable(),
   /** A human-readable note when the task stopped (abort reason / failed step). */
   statusNote: z.string().nullable(),
+  /** The MEASURED verification status (build/tests Bureau actually ran), or null when nothing
+   *  was verified. Shown at the gate so the CEO never merges trusting an unmeasured claim. */
+  verifyStatus: z.string().nullable(),
   /** The decided brief the workers were told to build to — shown so the CEO can judge the
    *  diff against what was agreed (null when the task had no prior-discussion brief). */
   context: z.string().nullable(),

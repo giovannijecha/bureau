@@ -47,7 +47,7 @@ import { journalPath, journalMarkdown, notePath, slug, JOURNAL_DIR } from "./mem
 import { estimateTaskCost, type ScopeAverage } from "./estimate.js";
 import { provision } from "./provision.js";
 import { costUsd } from "./usage.js";
-import { ASSIGNEE, prOpen, prUrl, isMerged } from "./summary.js";
+import { ASSIGNEE, prOpen, prUrl, isMerged, verifyStatus, VERIFY_REPORT_PREFIX } from "./summary.js";
 
 export { OrchestratorError };
 
@@ -1290,9 +1290,14 @@ export class Orchestrator {
     changeRequest: string | undefined,
     spentUsd: number,
     depsReady: boolean
-  ): Promise<number> {
+  ): Promise<{ spentUsd: number; report: string }> {
     const commands = verifyCommandsFor(project);
-    if (commands.length === 0) return spentUsd; // nothing configured — skip (never guess)
+    if (commands.length === 0) {
+      // Honest default: a mutating change with NO configured checks is NOT verified — say so,
+      // so the gate + PR body never imply a verification that didn't happen.
+      return { spentUsd, report: "⚠ Not automatically verified — no check command configured for this project." };
+    }
+    const display = commands.map((c) => c.join(" ")).join(", ");
 
     const goal = (): string => {
       try {
@@ -1307,23 +1312,23 @@ export class Orchestrator {
     // attempt 1 = the initial verify; attempts 2..N+1 = a verify AFTER a fix re-edit.
     for (let attempt = 1; attempt <= VERIFY_MAX_FIX_ATTEMPTS + 1; attempt++) {
       try {
-        if (this.requireTask(taskId).status !== "executing") return spentUsd; // stopped/deleted — bail quietly
+        if (this.requireTask(taskId).status !== "executing") return { spentUsd, report: "" }; // stopped/deleted — bail quietly
       } catch {
-        return spentUsd;
+        return { spentUsd, report: "" };
       }
       emit(attempt === 1 ? "\nVerifying the change…\n" : `\nRe-verifying (attempt ${attempt})…\n`);
       const result = await runVerify(commands, worktreePath, VERIFY_TIMEOUT_MS, this.commandRunner, emit);
 
       if (result.passed) {
         emit("\n✓ All checks passed.\n");
-        return spentUsd;
+        return { spentUsd, report: `✓ Verified — checks passed (\`${display}\`).` };
       }
       // A check that can't even START is a project-CONFIG problem (missing binary, Windows shim),
       // not a code bug — re-editing can't fix it. Surface it and stop; the diff still lands at the gate.
       if (result.failure?.couldNotRun) {
         emit(`\n⚠ ${result.digest}\n`);
         this.notify("failed", taskId, "Couldn't run the checks", `“${goal()}” — ${result.digest} Configure the project's test/verify command.`);
-        return spentUsd;
+        return { spentUsd, report: `⚠ NOT VERIFIED — checks couldn't run (\`${display}\`); configure the project's test/verify command.` };
       }
       // Dependencies weren't installed (provisioning failed) → a check failure is almost certainly
       // module-not-found, not a code bug. Don't burn fix attempts re-editing working code; surface
@@ -1331,20 +1336,20 @@ export class Orchestrator {
       if (!depsReady) {
         emit("\n⚠ Checks failed, but dependencies aren't installed — treating as environmental, not a code issue.\n");
         this.notify("failed", taskId, "Checks couldn't run (no dependencies)", `“${goal()}” — dependencies aren't installed, so the checks can't be trusted. Review with care before merging.`);
-        return spentUsd;
+        return { spentUsd, report: "⚠ NOT VERIFIED — dependencies couldn't be installed, so the checks can't be trusted." };
       }
       // Out of fix attempts → land at the gate with the failing diff for the human to judge.
       if (attempt > VERIFY_MAX_FIX_ATTEMPTS) {
         emit(`\n✗ Checks still failing after ${VERIFY_MAX_FIX_ATTEMPTS} fix attempt(s).\n`);
         this.notify("failed", taskId, "Checks still failing", `“${goal()}” — automated checks still fail after ${VERIFY_MAX_FIX_ATTEMPTS} fix attempt(s). Review carefully before merging.`);
-        return spentUsd;
+        return { spentUsd, report: `✗ NOT merge-clean — checks still FAIL after ${VERIFY_MAX_FIX_ATTEMPTS} auto-fix attempt(s) (\`${display}\`).` };
       }
       // Budget backstop: don't start another PAID re-edit once the cap is crossed. Stop and land
       // what we have rather than discard it (the human decides at the gate).
       if (this.budgetUsd > 0 && spentUsd > this.budgetUsd) {
         emit("\n✗ Checks failing — budget reached, stopping.\n");
         this.notify("failed", taskId, "Checks failing (budget reached)", `“${goal()}” — checks still fail but the task hit its $${this.budgetUsd.toFixed(2)} budget; stopping. Review before merging.`);
-        return spentUsd;
+        return { spentUsd, report: "✗ NOT merge-clean — checks still fail and the task hit its budget cap." };
       }
 
       // Feed the failure back into a re-edit. Snapshot the diff first so we can detect a
@@ -1352,7 +1357,7 @@ export class Orchestrator {
       const before = await vcs.workingDiff(worktreePath);
       emit("\n✗ Checks failed — fixing…\n");
       const editStep = this.requireTask(taskId).steps.find((s) => s.id === editStepId);
-      if (!editStep) return spentUsd; // defensive — caller guarantees it exists
+      if (!editStep) return { spentUsd, report: "" }; // defensive — caller guarantees it exists
       const fixContext = this.stepContext(taskId, editStepId, [changeRequest, result.digest].filter(Boolean).join("\n\n"));
       const fixEffort = resolveEffort(this.effortPolicy, "edit");
       const out = await this.withStepTimeout(
@@ -1373,10 +1378,10 @@ export class Orchestrator {
       if (after === before) {
         emit("\n⚠ The fix changed nothing — stopping.\n");
         this.notify("failed", taskId, "Checks failing (no fix)", `“${goal()}” — checks fail and the auto-fix couldn't change anything. Review before merging.`);
-        return spentUsd;
+        return { spentUsd, report: "✗ NOT merge-clean — checks fail and the auto-fix made no change." };
       }
     }
-    return spentUsd;
+    return { spentUsd, report: "" };
   }
 
   /** The execute phase — run every pending step, enforce the budget cap, then commit +
@@ -1454,11 +1459,16 @@ export class Orchestrator {
       // Closed-loop verify + auto-fix: for a MUTATING task with an edit step, run the project's
       // checks and feed any failure back into a re-edit BEFORE the diff is committed + gated, so
       // the CEO reviews code that builds/passes. No-op for read-only tasks or when none configured.
+      let verifyReport = "";
       {
         const fresh = this.requireTask(taskId);
         const editStep = fresh.steps.filter((s) => s.capability === "edit").pop();
         if (editStep && fresh.gates[0] !== undefined) {
-          spentUsd = await this.verifyAndFix(taskId, project, vcs, worktreePath, editStep.id, undefined, spentUsd, depsReady);
+          const v = await this.verifyAndFix(taskId, project, vcs, worktreePath, editStep.id, undefined, spentUsd, depsReady);
+          spentUsd = v.spentUsd;
+          verifyReport = v.report;
+        } else if (fresh.gates[0] !== undefined) {
+          verifyReport = "⚠ Not automatically verified."; // mutating (document-only) task with no edit step
         }
       }
 
@@ -1488,19 +1498,19 @@ export class Orchestrator {
       if (!committed) {
         throw new Error("The pipeline produced no changes — there is nothing to review. The worker may not have edited any files.");
       }
+      const diffStepId = task.steps[task.steps.length - 1]!.id;
       task = this.addArtifacts(task, [
-        {
-          id: this.d.ids() as ArtifactId,
-          kind: "diff",
-          ref: diff,
-          producedByStep: task.steps[task.steps.length - 1]!.id,
-          createdAt: this.d.clock(),
-        },
+        { id: this.d.ids() as ArtifactId, kind: "diff", ref: diff, producedByStep: diffStepId, createdAt: this.d.clock() },
+        // Persist the MEASURED verification status so it's durable for the gate + the PR body
+        // (the gate-opened notification carries it live; this survives a restart).
+        ...(verifyReport
+          ? [{ id: this.d.ids() as ArtifactId, kind: "report" as const, ref: `${VERIFY_REPORT_PREFIX}${verifyReport}`, producedByStep: diffStepId, createdAt: this.d.clock() }]
+          : []),
       ]);
 
       task = this.drive(task, { type: "OPEN_GATE", gateId: gate.id });
       this.d.events.emit({ type: "gate_opened", taskId, gateId: gate.id, gateKind: "pr_approval" });
-      this.notify("review", taskId, "Ready for your review", `“${truncate(task.goal)}” finished and is waiting for you to review & merge.`);
+      this.notify("review", taskId, "Ready for your review", `“${truncate(task.goal)}” finished${verifyReport ? ` — ${verifyReport}` : ""} Ready to review & merge.`);
       this.emitTaskUpdated(task);
     } catch (err) {
       await this.failPipeline(taskId, currentStepId, err);
@@ -1614,13 +1624,22 @@ export class Orchestrator {
       // Same closed-loop verify + auto-fix as the first run, now also carrying the CEO's change
       // request into any fix re-edit. Runs BEFORE the commit so the re-reviewed diff is verified.
       // Threads the revise pass's running spend so its budget backstop accounts for it (not 0).
+      let verifyReport = "";
       {
         const fresh = this.requireTask(taskId);
         const editStep = fresh.steps.filter((s) => s.capability === "edit").pop();
         if (editStep && fresh.gates[0] !== undefined) {
-          spentUsd = await this.verifyAndFix(taskId, project, vcs, worktreePath, editStep.id, changeRequest, spentUsd, depsReady);
+          const v = await this.verifyAndFix(taskId, project, vcs, worktreePath, editStep.id, changeRequest, spentUsd, depsReady);
+          spentUsd = v.spentUsd;
+          verifyReport = v.report;
+        } else if (fresh.gates[0] !== undefined) {
+          verifyReport = "⚠ Not automatically verified.";
         }
       }
+      const reportArtifact = (stepId: StepId): Artifact[] =>
+        verifyReport
+          ? [{ id: this.d.ids() as ArtifactId, kind: "report", ref: `${VERIFY_REPORT_PREFIX}${verifyReport}`, producedByStep: stepId, createdAt: this.d.clock() }]
+          : [];
 
       if (this.requireTask(taskId).status !== "executing") return; // stopped before commit
       const committed = await vcs.commitAll(worktreePath, `Bureau: ${truncate(this.requireTask(taskId).goal)}`);
@@ -1630,9 +1649,10 @@ export class Orchestrator {
         // The revision made no change. Don't discard the reviewable work — re-open the
         // gate on the UNCHANGED diff so the CEO can still approve it or ask for
         // something different (the latest diff artifact is still the prior one).
+        task = this.addArtifacts(task, reportArtifact(task.steps[task.steps.length - 1]!.id));
         task = this.drive(task, { type: "OPEN_GATE", gateId });
         this.d.events.emit({ type: "gate_opened", taskId, gateId, gateKind: "pr_approval" });
-        this.notify("review", taskId, "No changes made", `“${truncate(task.goal)}” — the revision produced no change. The diff is unchanged; approve it or request something different.`);
+        this.notify("review", taskId, "No changes made", `“${truncate(task.goal)}” — the revision produced no change${verifyReport ? ` (${verifyReport})` : ""}. Approve it or request something different.`);
         this.emitTaskUpdated(task);
         return;
       }
@@ -1642,10 +1662,11 @@ export class Orchestrator {
       const lastStep = task.steps[task.steps.length - 1]!.id;
       task = this.addArtifacts(task, [
         { id: this.d.ids() as ArtifactId, kind: "diff", ref: diff, producedByStep: lastStep, createdAt: this.d.clock() },
+        ...reportArtifact(lastStep),
       ]);
       task = this.drive(task, { type: "OPEN_GATE", gateId });
       this.d.events.emit({ type: "gate_opened", taskId, gateId, gateKind: "pr_approval" });
-      this.notify("review", taskId, "Re-review ready", `“${truncate(task.goal)}” was revised and is ready for your review again.`);
+      this.notify("review", taskId, "Re-review ready", `“${truncate(task.goal)}” was revised${verifyReport ? ` — ${verifyReport}` : ""} Ready for your review again.`);
       this.emitTaskUpdated(task);
     } catch (err) {
       await this.failPipeline(taskId, currentStepId, err);
@@ -1885,7 +1906,7 @@ export class Orchestrator {
           // the PR exists, BEFORE mergePr — so a mergePr failure leaves the task in the prOpen
           // state (→ the in-Bureau "Merge to main" retry via mergeOpenPr), never a dead end
           // that would re-open an already-open PR on the next click.
-          const url = await vcs.openPr(branch, `Bureau: ${truncate(task.goal)}`, prBody(task.goal));
+          const url = await vcs.openPr(branch, `Bureau: ${truncate(task.goal)}`, prBody(task.goal, verifyStatus(task)));
           task = this.addArtifacts(task, [{ id: this.d.ids() as ArtifactId, kind: "pr_open", ref: url, producedByStep: lastStep, createdAt: this.d.clock() }]);
           await vcs.mergePr(branch);
           task = this.addArtifacts(task, [{ id: this.d.ids() as ArtifactId, kind: "pr_url", ref: url, producedByStep: lastStep, createdAt: this.d.clock() }]);
@@ -1964,7 +1985,7 @@ export class Orchestrator {
         this.notify("merged", task.id, "Initialized main", `“${truncate(task.goal)}” established ${project.baseBranch} on an empty repo — your work is its first commit.`);
       } else {
         await vcs.push(worktreePath, branch);
-        prUrl = await vcs.openPr(branch, title, prBody(task.goal));
+        prUrl = await vcs.openPr(branch, title, prBody(task.goal, verifyStatus(task)));
         if (merge) {
           await vcs.mergePr(branch);
           // Full success — the change is on main. Record the MERGED PR.
@@ -2116,8 +2137,11 @@ function titleFrom(content: string): string {
   return oneLine.length > 48 ? `${oneLine.slice(0, 47)}…` : oneLine;
 }
 
-function prBody(goal: string): string {
-  return `${goal}\n\n🤖 Opened by Bureau.`;
+/** The PR body — the goal plus the HONEST machine-measured verification status (never a claim
+ *  Bureau didn't verify). Absent ⇒ explicitly "not automatically verified" so a reviewer knows.
+ *  (VERIFY_REPORT_PREFIX + verifyStatus live in summary.ts — the single source the panel reads.) */
+function prBody(goal: string, status?: string | null): string {
+  return `${goal}\n\n**Verification:** ${status ?? "⚠ Not automatically verified."}\n\n🤖 Opened by Bureau.`;
 }
 
 /** Bound an EPHEMERAL (un-summarized) inline chat history to a char budget: keep the most

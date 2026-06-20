@@ -109,6 +109,19 @@ function artifactRef(task: Task, kind: Task["artifacts"][number]["kind"]): strin
   return null;
 }
 
+/** Sentinel prefix on the verification-status report artifact (written by the verify loop). */
+export const VERIFY_REPORT_PREFIX = "VERIFY::";
+
+/** The latest MEASURED verification status persisted for a task, or null when none ran. Honest
+ *  by construction: it reflects what Bureau actually measured, never a claim a worker wrote. */
+export function verifyStatus(task: Task): string | null {
+  for (let i = task.artifacts.length - 1; i >= 0; i--) {
+    const a = task.artifacts[i]!;
+    if (a.kind === "report" && a.ref.startsWith(VERIFY_REPORT_PREFIX)) return a.ref.slice(VERIFY_REPORT_PREFIX.length);
+  }
+  return null;
+}
+
 /** Why a task stopped — a failed step's reason or the abort reason. Null unless aborted. */
 export function statusNote(task: Task): string | null {
   if (task.status !== "aborted") return null;
@@ -127,6 +140,7 @@ export function toTaskDetail(task: Task): TaskDetail {
     diff: latestDiff(task),
     prUrl: prUrl(task),
     statusNote: statusNote(task),
+    verifyStatus: verifyStatus(task),
     context: task.context ?? null,
     // mergeError is already set by toTaskSummary (spread above).
     steps: task.steps.map((s) => ({

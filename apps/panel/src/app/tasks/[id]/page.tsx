@@ -268,14 +268,26 @@ export default function TaskDetailPage({ params }: { params: Promise<{ id: strin
         </div>
       )}
 
-      {/* Awaiting review banner */}
+      {/* Awaiting review banner — with the MEASURED verification status, so the CEO never
+          merges trusting an unmeasured "tests green" claim. */}
       {reviewable && (
-        <div className="mb-5 flex items-start gap-2.5 rounded-xl border border-amber-500/30 bg-amber-500/5 p-4">
-          <CircleDot className="mt-0.5 h-4 w-4 shrink-0 text-amber-500" />
-          <p className="text-sm text-foreground">
-            The pipeline finished and the branch is ready. Review the changes below, then confirm to squash-merge into{" "}
-            <code className="font-mono text-xs">main</code> — or Stop to discard it.
-          </p>
+        <div className="mb-5 rounded-xl border border-amber-500/30 bg-amber-500/5 p-4">
+          <div className="flex items-start gap-2.5">
+            <CircleDot className="mt-0.5 h-4 w-4 shrink-0 text-amber-500" />
+            <p className="text-sm text-foreground">
+              The pipeline finished and the branch is ready. Review the changes below, then confirm to squash-merge into{" "}
+              <code className="font-mono text-xs">main</code> — or Stop to discard it.
+            </p>
+          </div>
+          {task.verifyStatus && (
+            <p
+              className={`mt-2.5 pl-[26px] text-sm font-medium ${
+                task.verifyStatus.startsWith("✓") ? "text-green-500" : "text-amber-400"
+              }`}
+            >
+              {task.verifyStatus}
+            </p>
+          )}
         </div>
       )}
 
