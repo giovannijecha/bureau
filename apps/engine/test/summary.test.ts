@@ -114,7 +114,7 @@ describe("toTaskSummary — mergeError distinguishes a failed merge from a clean
   });
 
   it("base_established is authoritative — a stale merge_error from an earlier attempt is suppressed once landed", () => {
-    // The dante recovery shape: an earlier land left a merge_error, then establishBase succeeded.
+    // The recovery shape: an earlier land left a merge_error, then establishBase succeeded.
     const s = toTaskSummary(
       completedTask([artifact("merge_error", "can't be blank"), artifact("base_established", "https://github.com/acme/widget")])
     );

@@ -23,7 +23,7 @@ describe("detectProvision", () => {
     expect(detectProvision(dir)).toEqual({ stack: "bun", command: ["bun", "install"] });
   });
 
-  it("detects bun from package.json scripts even without a committed lockfile (the Dante case)", () => {
+  it("detects bun from package.json scripts even without a committed lockfile", () => {
     write("package.json", JSON.stringify({ scripts: { start: "bun --preload @opentui/solid/preload src/index.ts" } }));
     expect(detectProvision(dir)).toEqual({ stack: "bun", command: ["bun", "install"] });
   });

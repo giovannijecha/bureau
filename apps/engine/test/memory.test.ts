@@ -25,8 +25,8 @@ function task(steps: Step[]): Task {
   return {
     id: "task-1" as TaskId,
     goal: "Research stack OpenCode",
-    repoOwner: "giovannijecha",
-    repoName: "dante",
+    repoOwner: "acme",
+    repoName: "demo",
     status: "completed",
     steps,
     gates: [],

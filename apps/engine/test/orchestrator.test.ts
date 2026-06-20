@@ -637,7 +637,7 @@ describe("chat", () => {
 describe("proposal context", () => {
   it("carries the decided brief from the proposal into the worker's prompt — the workers never see the chat", async () => {
     const draft = orch.createTask({
-      title: "Scaffold Dante",
+      title: "Scaffold the service",
       summary: "Lay out the modules",
       context:
         "Build a CLI agent on Bun with an OpenTUI/SolidJS TUI, an agent-core loop, and a multi-model provider layer. Do NOT add Supabase or any database.",

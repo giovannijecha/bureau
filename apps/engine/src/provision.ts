@@ -32,8 +32,8 @@ export interface ProvisionResult {
   readonly output: string;
 }
 
-/** Does package.json signal a Bun project even without a committed lockfile? (Dante doesn't
- *  commit bun.lockb but its scripts run `bun …`.) Best-effort: never throws. */
+/** Does package.json signal a Bun project even without a committed lockfile? (Some repos don't
+ *  commit bun.lockb but their scripts run `bun …`.) Best-effort: never throws. */
 function pkgUsesBun(worktreePath: string): boolean {
   try {
     const pkg = JSON.parse(readFileSync(join(worktreePath, "package.json"), "utf8")) as {
@@ -60,7 +60,7 @@ export function detectProvision(worktreePath: string): DetectedProvision | null 
 
   if (has("package.json")) {
     // Bun first — its lockfile is binary (bun.lockb) or text (bun.lock); also infer from bunfig
-    // or package.json scripts so a repo that doesn't commit a lockfile (e.g. Dante) still works.
+    // or package.json scripts so a repo that doesn't commit a lockfile still works.
     if (has("bun.lockb") || has("bun.lock") || has("bunfig.toml") || pkgUsesBun(worktreePath)) {
       return { stack: "bun", command: ["bun", "install"] };
     }
