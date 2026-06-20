@@ -56,9 +56,11 @@ encode the fixes:
 - **Absolute, native data paths** for `BUREAU_REPOS_ROOT`, `BUREAU_DB`, **and
   `BUREAU_VAULT`** under `~/.bureau-data` — never CWD-relative (which could land the
   SQLite WAL + git worktrees on `/mnt/c` 9p, which is slow and breaks WAL locking).
-- **Persistence** — a terminal/`nohup` engine is SIGKILLed ~60s after its session
-  closes (WSL distro idle-shutdown). A **systemd system service** with `Restart=always`
-  survives session close, restarts on crash, and itself holds the distro open.
+- **Persistence (two layers)** — a `systemd` **system service** with `Restart=always`
+  restarts the engine on crash and auto-starts it on distro boot. But that is **not
+  enough on its own**: a WSL distro itself terminates ~60s after its *last session*
+  closes (verified — the service stops cleanly with the distro), so you also need a
+  **keepalive** holding one session open. See "Keep it running" below.
 - **`better-sqlite3` ABI** — installed and smoke-tested under the *same* Node the engine
   runs (never a Windows/`/mnt/c` node), on the native FS.
 
@@ -77,6 +79,22 @@ networkingMode=mirrored
 then `wsl --shutdown` (restarts WSL; the enabled services auto-start on next boot). The
 engine still binds loopback only, so this is **not** a security change — it stays off the
 LAN. Verify with `curl http://localhost:4319/api/config` from Windows.
+
+## Keep it running (the keepalive)
+
+A WSL2 distro terminates ~60s after its **last session** closes — which stops the
+systemd services with it. So a logon-time **keepalive** holds one hidden session open.
+Put a `.vbs` in the Windows Startup folder
+(`%AppData%\Microsoft\Windows\Start Menu\Programs\Startup\bureau-wsl-keepalive.vbs`):
+
+```vbs
+Set sh = CreateObject("WScript.Shell")
+sh.Run "wsl.exe -d Ubuntu-26.04 -e sleep infinity", 0, False
+```
+
+It runs hidden at every logon; launch it once now with `wscript <path>` so the distro
+stays up immediately. Confirm with `wsl -- pgrep -af 'sleep infinity'`. (If you already
+keep a long-lived WSL session open for other work, you don't need this.)
 
 ## Operating
 
