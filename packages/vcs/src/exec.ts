@@ -90,6 +90,42 @@ export async function run(
   return result.stdout;
 }
 
+/** Is this error likely a TRANSIENT network/availability failure (worth retrying) rather than a
+ *  PERMANENT one (auth, not-found, conflict, protected branch)? Conservative: permanent signals
+ *  win, and only well-known retryable signatures return true — so we never mask a real auth/
+ *  conflict error as "just a network blip". */
+export function isTransient(err: unknown): boolean {
+  const m = (err instanceof Error ? err.message : String(err)).toLowerCase();
+  if (/\b(401|403|404|409|422)\b|unauthorized|forbidden|not found|permission denied|authentication|could not read username|merge conflict|non-fast-forward|protected branch|already exists/.test(m)) {
+    return false; // permanent — retrying won't help (and could duplicate)
+  }
+  return /timed out|etimedout|econnreset|econnrefused|enotfound|eai_again|could not resolve host|temporary failure|temporarily unavailable|rate limit|\b429\b|\b50[0-9]\b|connection (reset|closed|refused|timed out)|network is unreachable|\btls\b|\bssl\b/.test(m);
+}
+
+/** Retry an IDEMPOTENT remote-touching op (clone, fetch, push) on TRANSIENT failures, with bounded
+ *  exponential backoff. Permanent failures throw immediately (no wasted retries). `onRetry` fires
+ *  before each retry for logging. NEVER use on non-idempotent ops (openPr/mergePr) — a retry there
+ *  could duplicate a PR or double-merge. */
+export async function withRetry<T>(
+  fn: () => Promise<T>,
+  opts?: { attempts?: number; baseDelayMs?: number; onRetry?: (attempt: number, err: unknown) => void }
+): Promise<T> {
+  const attempts = opts?.attempts ?? 3;
+  const base = opts?.baseDelayMs ?? 300;
+  let lastErr: unknown;
+  for (let i = 1; i <= attempts; i++) {
+    try {
+      return await fn();
+    } catch (err) {
+      lastErr = err;
+      if (i === attempts || !isTransient(err)) throw err;
+      opts?.onRetry?.(i, err);
+      if (base > 0) await new Promise((r) => setTimeout(r, base * 2 ** (i - 1)));
+    }
+  }
+  throw lastErr;
+}
+
 /**
  * Build a runner that maps the logical command names "git"/"gh" to configured
  * binaries. On Windows the GitHub CLI may not be a bare `gh` on PATH (or may be

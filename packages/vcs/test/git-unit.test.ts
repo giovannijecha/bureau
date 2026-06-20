@@ -1,6 +1,6 @@
 import { describe, it, expect } from "vitest";
 
-import { run, assertSafeRef, assertSafeRepoUrl, assertSafeRepoId, parseGithubRepo, VcsError, type Runner, type ExecResult } from "../src/exec.js";
+import { run, withRetry, isTransient, assertSafeRef, assertSafeRepoUrl, assertSafeRepoId, parseGithubRepo, VcsError, type Runner, type ExecResult } from "../src/exec.js";
 import { push, openPr, mergePr, baseExists, establishBase, setDefaultBranch, commitAll, getDiff, cloneRepo, freshBase } from "../src/git.js";
 import { createWorktree, removeWorktree, resetWorktreeToBase } from "../src/worktree.js";
 import { squashAllAndForcePush } from "../src/git-admin.js";
@@ -288,12 +288,58 @@ describe("createWorktree (args)", () => {
   });
 });
 
+describe("withRetry / isTransient (network resilience)", () => {
+  it("classifies transient vs permanent failures conservatively", () => {
+    expect(isTransient(new Error("could not resolve host: github.com"))).toBe(true);
+    expect(isTransient(new Error("`git push` failed (exit 124): timed out after 600000ms"))).toBe(true);
+    expect(isTransient(new Error("ECONNRESET"))).toBe(true);
+    expect(isTransient(new Error("HTTP 429: rate limit exceeded"))).toBe(true);
+    // permanent — must NOT retry (retrying won't help and could duplicate)
+    expect(isTransient(new Error("remote: Permission denied (403)"))).toBe(false);
+    expect(isTransient(new Error("merge conflict in README.md"))).toBe(false);
+    expect(isTransient(new Error("fatal: repository not found (404)"))).toBe(false);
+    expect(isTransient(new Error("! [rejected] main -> main (non-fast-forward)"))).toBe(false);
+  });
+
+  it("retries a transient failure, then succeeds", async () => {
+    let n = 0;
+    const out = await withRetry(
+      async () => {
+        n++;
+        if (n < 2) throw new Error("ECONNREFUSED");
+        return "landed";
+      },
+      { baseDelayMs: 0 }
+    );
+    expect(out).toBe("landed");
+    expect(n).toBe(2);
+  });
+
+  it("does NOT retry a permanent failure (fails fast on the first attempt)", async () => {
+    let n = 0;
+    await expect(
+      withRetry(async () => { n++; throw new Error("403 forbidden"); }, { baseDelayMs: 0 })
+    ).rejects.toThrow("403");
+    expect(n).toBe(1);
+  });
+
+  it("gives up after the attempt cap on a persistent transient error", async () => {
+    let n = 0;
+    await expect(
+      withRetry(async () => { n++; throw new Error("connection timed out"); }, { attempts: 3, baseDelayMs: 0 })
+    ).rejects.toThrow();
+    expect(n).toBe(3);
+  });
+});
+
 describe("resetWorktreeToBase (args)", () => {
-  it("hard-resets to the base then cleans untracked (NOT -x), in the worktree", async () => {
+  it("hard-resets to the base then cleans ALL untracked incl. ignored (-fdx) for a pristine resume", async () => {
     const { run: r, calls } = makeRunner();
     await resetWorktreeToBase("/wt", "origin/main", r);
     expect(calls[0]!.args).toEqual(["-C", "/wt", "reset", "--hard", "origin/main"]);
-    expect(calls[1]!.args).toEqual(["-C", "/wt", "clean", "-fd"]); // keeps .gitignored build dirs
+    // -fdx (not -fd): drop .gitignored build dirs too, so a resumed run can't trip over a
+    // half-written artifact a crash left behind; the provisioning step re-installs deps.
+    expect(calls[1]!.args).toEqual(["-C", "/wt", "clean", "-fdx"]);
   });
 
   it("rejects an unsafe base ref (argument-injection guard)", async () => {

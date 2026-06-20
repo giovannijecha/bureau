@@ -6,6 +6,8 @@ export {
   defaultRunner,
   makeRunner,
   run,
+  withRetry,
+  isTransient,
   assertSafeRef,
   assertSafeRepoUrl,
   assertSafeRepoId,

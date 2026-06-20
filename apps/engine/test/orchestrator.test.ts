@@ -1222,6 +1222,7 @@ describe("decideGate", () => {
     expect(detail.merged).toBe(false);
     expect(detail.mergeError).toBe("merge conflict in README.md");
     expect(detail.prUrl).toBe("https://github.com/acme/widget/pull/1"); // link to resolve
+    expect(prOpen(task)).toBe(true); // pr_open recorded BEFORE mergePr → the CEO keeps the "Merge to main" retry
     expect(vcs.calls.removeWorktree.some((c) => c.force)).toBe(true); // still cleaned up
   });
 

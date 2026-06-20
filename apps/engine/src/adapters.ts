@@ -6,6 +6,7 @@ import { mkdir, writeFile } from "node:fs/promises";
 import { join, resolve, dirname, relative, isAbsolute } from "node:path";
 import {
   cloneRepo,
+  withRetry,
   createWorktree,
   resetWorktreeToBase,
   pruneWorktrees,
@@ -85,7 +86,11 @@ export class RealVcs implements VcsPort {
 
   async ensureClone(): Promise<void> {
     if (existsSync(join(this.cfg.canonicalPath, ".git"))) return; // already cloned
-    await cloneRepo(this.cfg.repoUrl, this.cfg.canonicalPath, this.runner);
+    // Retry a TRANSIENT clone failure (network blip / rate-limit) so a flaky moment doesn't
+    // abort the whole task at the starting line; a permanent error (bad URL / auth) throws at once.
+    await withRetry(() => cloneRepo(this.cfg.repoUrl, this.cfg.canonicalPath, this.runner), {
+      onRetry: (n, e) => console.warn(`[vcs] clone ${this.ownerRepo} transient failure (retry ${n}): ${e instanceof Error ? e.message : e}`),
+    });
   }
 
   async syncClone(): Promise<void> {
@@ -96,6 +101,10 @@ export class RealVcs implements VcsPort {
   }
 
   async setupWorktree(branch: string, worktreePath: string): Promise<WorktreeRef> {
+    // Prune stale admin entries FIRST — a worktree a crash half-tore-down can leave a
+    // `.git/worktrees/*` entry pointing at a gone path, which makes `worktree add` fail
+    // "already registered". Idempotent + best-effort, so a clean clone is unaffected.
+    await pruneWorktrees(this.cfg.canonicalPath, this.runner).catch(() => {});
     // Branch off the LATEST base (fetched from origin) so the task doesn't start
     // from a stale local main and hit avoidable conflicts at merge time. Falls
     // back to the clone's HEAD when origin is unreachable.
@@ -133,7 +142,11 @@ export class RealVcs implements VcsPort {
   }
 
   push(worktreePath: string, branch: string): Promise<void> {
-    return push(worktreePath, branch, this.runner);
+    // Push is idempotent (a no-op or a clear non-FF error on re-run), so a transient network
+    // failure at land time is safe to retry — don't lose the work's landing to a blip.
+    return withRetry(() => push(worktreePath, branch, this.runner), {
+      onRetry: (n, e) => console.warn(`[vcs] push ${branch} transient failure (retry ${n}): ${e instanceof Error ? e.message : e}`),
+    });
   }
 
   openPr(branch: string, title: string, body: string): Promise<string> {

@@ -1544,6 +1544,11 @@ export class Orchestrator {
           } catch (cleanupErr) {
             console.warn(`[engine] could not remove worktree for task ${taskId} (orphaned): ${errMessage(cleanupErr)}`);
           }
+          // Free the task branch too: a setup that crashed mid-create can leave the bureau/task-*
+          // branch pinning the admin entry, failing the NEXT run with "already registered". The
+          // branch is local-only + unpushed pre-gate (no commit yet on a step failure) → dropping
+          // it loses nothing. Namespace-constrained (only bureau/task-*), best-effort.
+          await vcs.deleteBranch(this.branchFor(taskId)).catch(() => {});
         }
       }
     } catch {
@@ -1986,18 +1991,21 @@ export class Orchestrator {
       } else {
         await vcs.push(worktreePath, branch);
         prUrl = await vcs.openPr(branch, title, prBody(task.goal, verifyStatus(task)));
+        // Record pr_open the INSTANT the PR exists — BEFORE mergePr — so a mergePr failure leaves
+        // the task in the prOpen state (→ the in-Bureau "Merge to main" retry via mergeOpenPr),
+        // never a dead end with no recovery button. Mirrors establishBaseForTask's proven order.
+        task = this.addArtifacts(task, [
+          { id: this.d.ids() as ArtifactId, kind: "pr_open", ref: prUrl, producedByStep: lastStep, createdAt: this.d.clock() },
+        ]);
         if (merge) {
           await vcs.mergePr(branch);
-          // Full success — the change is on main. Record the MERGED PR.
+          // Full success — the change is on main. Record the MERGED PR (pr_url supersedes pr_open).
           task = this.addArtifacts(task, [
             { id: this.d.ids() as ArtifactId, kind: "pr_url", ref: prUrl, producedByStep: lastStep, createdAt: this.d.clock() },
           ]);
           this.notify("merged", task.id, "Merged to main", `“${truncate(task.goal)}” is merged — ${prUrl}`);
         } else {
-          // PR opened for review — NOT merged. The branch stays on GitHub for the CEO.
-          task = this.addArtifacts(task, [
-            { id: this.d.ids() as ArtifactId, kind: "pr_open", ref: prUrl, producedByStep: lastStep, createdAt: this.d.clock() },
-          ]);
+          // PR opened for review — NOT merged. The branch + PR stay on GitHub for the CEO.
           this.notify("review", task.id, "PR opened for review", `“${truncate(task.goal)}” is on GitHub as an open PR — review and merge it there: ${prUrl}`);
         }
       }
@@ -2008,10 +2016,10 @@ export class Orchestrator {
       // task stays `completed` (the CEO approved + did their part).
       console.error(`[engine] ${merge ? "merge" : "open-PR"} failed for task ${task.id}: ${errMessage(err)}${prUrl !== undefined ? ` (PR opened: ${prUrl})` : ""}`);
       this.notify("merge_failed", task.id, merge ? "Merge didn't land" : "Couldn't open the PR", `“${truncate(task.goal)}” ${merge ? "couldn't merge" : "couldn't open a PR"}: ${errMessage(err)}${prUrl !== undefined ? ` (PR ${prUrl})` : ""}`);
+      // A merge failure leaves the PR OPEN (pr_open was recorded BEFORE mergePr above), so the CEO
+      // keeps the in-Bureau "Merge to main" retry. Record ONLY the honest merge_error here — NEVER
+      // a pr_url (which would falsely read as "merged" and hide the retry).
       task = this.addArtifacts(task, [
-        ...(prUrl !== undefined
-          ? [{ id: this.d.ids() as ArtifactId, kind: "pr_url" as const, ref: prUrl, producedByStep: lastStep, createdAt: this.d.clock() }]
-          : []),
         { id: this.d.ids() as ArtifactId, kind: "merge_error", ref: errMessage(err), producedByStep: lastStep, createdAt: this.d.clock() },
       ]);
       this.emitTaskUpdated(task);

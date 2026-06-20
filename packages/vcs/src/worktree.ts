@@ -43,10 +43,11 @@ export async function pruneWorktrees(canonicalClonePath: string, runner: Runner 
 }
 
 /**
- * Hard-reset an EXISTING worktree to `base` (a validated ref, e.g. "origin/main") and
- * remove untracked files — discarding any uncommitted/partial work a crash left behind, so
- * a resumed task re-runs from a pristine tree. `clean -fd` (NOT `-fdx`) keeps .gitignored
- * build dirs (node_modules/dist/.next), removing only untracked, non-ignored crash debris.
+ * Hard-reset an EXISTING worktree to `base` (a validated ref, e.g. "origin/main") and remove
+ * ALL untracked files — including .gitignored build dirs (node_modules/dist/.next) via `-fdx` —
+ * so a resumed task re-runs from a genuinely PRISTINE tree, never on a half-written build artifact
+ * a crash left in an ignored dir. Dependencies are re-installed by the provisioning step at the
+ * start of the re-run, so dropping node_modules here is safe (correctness over a warm cache).
  * LOCAL only (reset/clean) — never reaches a remote.
  */
 export async function resetWorktreeToBase(
@@ -56,7 +57,7 @@ export async function resetWorktreeToBase(
 ): Promise<void> {
   assertSafeRef(base, "reset base");
   await run(runner, "git", ["-C", worktreePath, "reset", "--hard", base]);
-  await run(runner, "git", ["-C", worktreePath, "clean", "-fd"]);
+  await run(runner, "git", ["-C", worktreePath, "clean", "-fdx"]);
 }
 
 /**
