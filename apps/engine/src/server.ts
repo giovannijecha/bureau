@@ -21,6 +21,8 @@
 //               BUREAU_TASK_BUDGET_USD (per-task spend cap), BUREAU_CURATE_EVERY (auto-curate after N tasks)
 
 import { randomUUID } from "node:crypto";
+import { mkdirSync } from "node:fs";
+import { dirname } from "node:path";
 import Anthropic from "@anthropic-ai/sdk";
 import { createDb, runMigrations, TaskRepo, MessageRepo, ConversationRepo, UsageRepo, NotificationRepo, ProjectRepo } from "@bureau/db";
 import { CapabilityRegistry, EditCapability, DocumentCapability, ReviewCapability, PlanCapability, ResearchCapability, TestCapability } from "@bureau/capabilities";
@@ -36,6 +38,7 @@ import type { WsEvent } from "@bureau/contracts";
 
 import { Orchestrator } from "./orchestrator.js";
 import { ProjectRegistry, projectsFromJson, projectConfigFromRow, projectRowFromConfig, parseTestCommand, slug, type ProjectConfig } from "./projects.js";
+import { runPreflight } from "./preflight.js";
 import { RealVcs, DbMessageLog, DbConversationStore, VaultStore, DbUsage, DbNotifications } from "./adapters.js";
 import { WsHub } from "./ws.js";
 import { TerminalHub } from "./terminal.js";
@@ -51,6 +54,33 @@ function env(name: string, fallback?: string): string {
     throw new Error(`Missing required env var ${name}`);
   }
   return value;
+}
+
+/** Open the SQLite DB, turning a native-ABI mismatch (Node upgraded, deps not rebuilt for this
+ *  ABI/platform) from a raw stack trace into an actionable one-liner — the open is otherwise
+ *  unguarded and would crash the daemon cryptically. */
+function createDbChecked(filename: string): ReturnType<typeof createDb> {
+  // better-sqlite3 won't create the parent dir; a missing one throws a cryptic SQLITE_CANTOPEN.
+  // Ensure it so a fresh clone-and-run works with a not-yet-created data dir. Best-effort.
+  try {
+    mkdirSync(dirname(filename), { recursive: true });
+  } catch {
+    /* createDb will surface a real permission/path error below */
+  }
+  try {
+    return createDb(filename);
+  } catch (err) {
+    const msg = err instanceof Error ? err.message : String(err);
+    // ABI mismatch (Node upgraded, wrong-platform binary) OR the native addon was never built
+    // (install ran with --ignore-scripts / deps copied without build) — same fix, surface it.
+    if (/NODE_MODULE_VERSION|ERR_DLOPEN_FAILED|was compiled against|invalid ELF|not a valid Win32|Could not locate the bindings|better_sqlite3/i.test(msg)) {
+      console.error(
+        `\n[engine] better-sqlite3 doesn't match this Node (${process.version}) or wasn't built. Rebuild the native module:\n  corepack pnpm rebuild better-sqlite3   (or: corepack pnpm install)\n`
+      );
+      process.exit(1);
+    }
+    throw err;
+  }
 }
 
 /** A non-negative integer-ms env var, or undefined when unset/blank/invalid. */
@@ -139,7 +169,22 @@ async function main(): Promise<void> {
 
   const port = Number(env("PORT", "4319"));
 
-  const db = createDb(env("BUREAU_DB", "./bureau.db"));
+  // Resolve the durable paths once (single source — preflight + the stores must agree on them).
+  const dbPath = env("BUREAU_DB", "./bureau.db");
+  const reposRoot = env("BUREAU_REPOS_ROOT", "./.bureau/repos");
+  const vaultPath = env("BUREAU_VAULT", "./bureau-vault");
+  const gitPath = process.env.BUREAU_GIT_PATH || "git";
+  const ghPath = process.env.BUREAU_GH_PATH || "gh";
+
+  // Boot self-check: fail fast + LOUD on a misconfiguration that would otherwise degrade
+  // silently (data on the WSL /mnt 9p mount; git not spawnable from the engine's PATH).
+  const pf = await runPreflight({ paths: { db: dbPath, reposRoot, vault: vaultPath }, gitPath, ghPath });
+  if (!pf.ok) {
+    console.error(`\n[engine] PREFLIGHT FAILED — refusing to start:\n${pf.fatal.map((f) => `  ✗ ${f}`).join("\n")}\n`);
+    process.exit(1);
+  }
+
+  const db = createDbChecked(dbPath);
   runMigrations(db);
   const store = new TaskRepo(db);
 
@@ -154,10 +199,9 @@ async function main(): Promise<void> {
   // none configured a test step just skips. The only worker that executes a command.
   capabilities.register(new TestCapability());
 
-  const runner = makeRunner({
-    ...(process.env.BUREAU_GIT_PATH !== undefined ? { gitPath: process.env.BUREAU_GIT_PATH } : {}),
-    ...(process.env.BUREAU_GH_PATH !== undefined ? { ghPath: process.env.BUREAU_GH_PATH } : {}),
-  });
+  // Reuse the SAME gitPath/ghPath preflight probed, so the self-check validates exactly what the
+  // VCS runner will spawn (no drift on, e.g., an empty-string env var).
+  const runner = makeRunner({ gitPath, ghPath });
 
   const author: CommitAuthor = {
     name: env("BUREAU_AUTHOR_NAME", "Bureau"),
@@ -170,7 +214,6 @@ async function main(): Promise<void> {
   // panel shows its onboarding (add a repo from there); the DB is the source of truth and
   // persists what the CEO adds. BUREAU_REPOS_ROOT defaults to ./.bureau/repos (paths derive
   // from it) so a fresh "clone and run" works with no configuration at all.
-  const reposRoot = env("BUREAU_REPOS_ROOT", "./.bureau/repos");
   const projectRepo = new ProjectRepo(db);
   const hasEnvConfig = (process.env.BUREAU_PROJECTS?.trim() ?? "") !== "" || (process.env.BUREAU_REPO_OWNER?.trim() ?? "") !== "";
   if (hasEnvConfig) {
@@ -196,7 +239,7 @@ async function main(): Promise<void> {
   const messages = new DbMessageLog(new MessageRepo(db));
   const conversations = new DbConversationStore(new ConversationRepo(db));
   // System Memory vault — an on-disk markdown directory (default ./bureau-vault).
-  const memory = new VaultStore(env("BUREAU_VAULT", "./bureau-vault"));
+  const memory = new VaultStore(vaultPath);
   const usage = new DbUsage(new UsageRepo(db));
   const notifications = new DbNotifications(new NotificationRepo(db));
 
