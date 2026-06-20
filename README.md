@@ -2,7 +2,7 @@
 
 <img src=".github/assets/logo.svg" alt="Bureau" width="560" />
 
-### Local-first AI agent team that ships **reviewed pull requests** to your own GitHub repos.
+### Local-first AI agent team that ships **verified, human-approved pull requests** to your own GitHub repos.
 
 [![CI](https://github.com/giovannijecha/bureau/actions/workflows/ci.yml/badge.svg)](https://github.com/giovannijecha/bureau/actions/workflows/ci.yml)
 [![License: Apache-2.0](https://img.shields.io/badge/license-Apache--2.0-blue.svg)](LICENSE)
@@ -17,7 +17,7 @@
 
 ---
 
-**You don't prompt an agent — you run a firm.** You talk only to **Iris**, the orchestrator. She turns a plain-language request into a durable **Task** and hands it to stateless **capability workers** — plan · research · edit · test · review · document — that do the work in an isolated git worktree. You hold exactly three powers: **Start**, **Stop**, and the final **Confirm-merge**. Nothing reaches GitHub until you approve it, and the whole thing runs on your machine. *State is the truth; agents are replaceable operatives.*
+**You don't prompt an agent — you run a firm.** You talk only to **Iris**, the orchestrator. She turns a plain-language request into a durable **Task** and hands it to stateless **capability workers** — plan · research · edit · test · review · document — that do the work in an isolated git worktree. After every edit, Bureau installs the project's dependencies and runs your configured checks (build/tests) — **auto-fixing failures before you ever see the diff** — so you review code that actually works, with an honest status when it couldn't. You hold exactly three powers: **Start**, **Stop**, and the final **Confirm-merge**. Nothing reaches GitHub until you approve it, and the whole thing runs on your machine. *State is the truth; agents are replaceable operatives.*
 
 <div align="center">
   <img src=".github/assets/screenshots/hub.png" alt="The Bureau Hub — command center with the worker floor, task stats, and an activity feed" width="900" />
@@ -73,7 +73,7 @@ pnpm dev        # starts BOTH the engine (:4319) and the panel (:3000)
 
 Open **http://localhost:3000** and **add your first repository from the panel** — Bureau clones it and you're ready. No configuration is required to start: the engine boots with zero projects, the panel onboards you to add one, and the choice persists in a local SQLite DB.
 
-**Provider:** set `ANTHROPIC_API_KEY` to call the API directly; otherwise the engine delegates to the local `claude` CLI.
+**Provider:** Bureau currently targets **Anthropic** only — set `ANTHROPIC_API_KEY` to call the API directly, or install the local `claude` CLI and the engine delegates to it. (OpenAI/Gemini adapters aren't implemented yet.)
 
 **Configuring via env (optional).** Prefer to seed repos or run headless? Copy `apps/engine/.env.example` to `apps/engine/.env` (the engine auto-loads it), or export the vars before launching:
 
@@ -103,8 +103,9 @@ You never drive the workers directly — you chat with Iris, and she turns the c
 1. **chat** — you converse with Iris about the active **Project** (one of your repos). The chat is pure conversation — no diffs here.
 2. **proposal** — when there's something concrete, Iris proposes a Task: a pipeline of steps. You can **Create** it, **Refine** the proposal, or keep chatting.
 3. **Start** — you press Start. The engine runs the pipeline in an isolated git worktree **in the background** (it returns immediately), and the panel streams live progress over a WebSocket — you can walk away.
-4. **diff** — a capability worker (e.g. `edit`) makes the change; it is committed **locally** on a branch and **never pushed**. You review the branch in the panel.
-5. **confirm-merge** — your final confirmation squash-merges into `main` and deletes the branch. Only here, and only when `canPush()` returns `true`, does anything reach GitHub.
+4. **edit + verify** — a capability worker (e.g. `edit`) makes the change. Bureau then provisions the project's dependencies and runs your configured checks (build/tests) in the worktree; on failure it **auto-fixes the code and re-runs**, up to a couple of attempts — so the diff you see is verified, not a blind guess. The change is committed **locally** on a branch and **never pushed**.
+5. **review** — you review the diff and its **measured** verification status (✓ verified · ⚠ not verified · ✗ checks failing) in the panel — Bureau reports only what it actually ran, never an unmeasured "tests green".
+6. **confirm-merge** — your final confirmation squash-merges into `main` and deletes the branch. Only here, and only when `canPush()` returns `true`, does anything reach GitHub.
 
 At any point you can **Stop** a running task — it aborts and tears down its worktree, having pushed nothing.
 
@@ -125,7 +126,18 @@ Stateless operatives that Iris delegates Task steps to. Each is replaceable — 
 | `review` | Reviewer | Read-only — inspect the diff and flag issues before human review | ✅ Live |
 | `test` | Tester | Run the project's configured test suite in the worktree (opt-in, advisory) | ✅ Live |
 
-`research`, `edit`, `document`, and `review` are **agentic** — the model works the worktree files directly (confined to that directory; no shell). `edit`/`document` mutate; `research`/`review` are strictly read-only (read tools, no auto-accept) — `review`'s assessment is shown to you at the gate. Iris composes them into a multi-step pipeline (e.g. edit → document → review) that produces one reviewed diff. Workers are registered in the `CapabilityRegistry`; `createTask` refuses any capability that isn't registered, so an unbuilt worker can never silently no-op.
+Every worker except `test` is **agentic** — the model works the worktree files directly (confined to that directory; no shell). `edit`/`document` mutate; `plan`/`research`/`review` are strictly read-only (read tools, no auto-accept) — `review`'s assessment is shown to you at the gate. Iris composes them into a multi-step pipeline (e.g. edit → document → review) that produces one reviewed diff. Workers are registered in the `CapabilityRegistry`; `createTask` refuses any capability that isn't registered, so an unbuilt worker can never silently no-op.
+
+### Closed-loop verify + auto-fix
+
+This is what makes Bureau's output trustworthy instead of plausible. After the last edit (and **before** any review step), Bureau:
+
+1. **Provisions** the worktree — a fresh `git worktree` has no `node_modules`/`vendor`/`.venv`, so Bureau detects the stack (bun · npm · pnpm · yarn · pip · go · cargo · bundler) and installs dependencies, through the same shell-free argv runner the `test` worker uses.
+2. **Runs your configured checks** (build/tests) in the worktree.
+3. **Auto-fixes on failure** — it feeds the captured failure back into a re-edit and re-runs the checks, up to `BUREAU_VERIFY_MAX_FIX_ATTEMPTS` (default 2) before giving up.
+4. **Reports only what it measured** — `✓ verified` · `⚠ not verified` (couldn't run / no deps / no command) · `✗ checks failing`. That status rides the **review gate banner**, the **PR body**, and the System Memory journal. A check failure never blocks or hides the diff — `canPush()` remains the sole gate — but you always see the truth before you merge.
+
+Configure the command per project in the panel's Settings (**test / verify command**) or via `testCommand` in `BUREAU_PROJECTS`. With nothing configured, Bureau is honest about it (`⚠ Not automatically verified`) rather than implying a check ran.
 
 ## Architecture
 
@@ -149,15 +161,21 @@ Imports only ever point inward. `core` and `contracts` depend on no other `@bure
 
 **Secrets:** the Anthropic API key is supplied via `ANTHROPIC_API_KEY` at launch (or the local `claude` CLI is used instead); GitHub auth is held by `gh` itself. Bureau persists **no** secrets — the database stores tasks, conversations, and the chat, never credentials.
 
-**Workers are shell-free; the `test` worker is the one command-runner.** The agentic workers (`edit`, `document`, `review`) only read/edit files — they have **no shell**. Since no edit tool can delete or rename a file, the `edit` worker requests those in a small `.bureau-ops` manifest, which Bureau applies with Node `fs` (every path confined to the worktree, no shell, no injection surface). The one exception is the **`test`** worker, which runs your project's configured test suite (opt-in, argv-only, no shell). It is therefore **opt-in** (only the per-project `testCommand` you configure ever runs — never anything an LLM, the chat, or a diff could inject), spawned **argv-only with no shell** (metacharacters are inert), confined to the task's worktree, with a timeout + kill and a capped output. Its result is **advisory** — a pass or fail is shown to you at the gate (it never auto-merges, and a failure never blocks or hides the diff), so `canPush()` remains the sole gate. Bureau's own credentials (`ANTHROPIC_API_KEY`, `GH_TOKEN`, `GITHUB_TOKEN`) are stripped from the test process's environment; other env vars are inherited (your test suite runs with the same trust as you running it in your own terminal). Configure it per project: `"testCommand": ["npm","test"]` in `BUREAU_PROJECTS` (or `BUREAU_TEST_COMMAND` for the single-repo path). On Windows, point it at a non-shim binary (e.g. `["node","node_modules/.bin/vitest","run"]`), since `npm`/`pnpm` shims can't be spawned without a shell.
+**Workers are shell-free; the only commands Bureau runs are your own, argv-only with no shell.** The agentic workers (`plan`, `research`, `edit`, `document`, `review`) only read/edit files — they have **no shell**. Since no edit tool can delete or rename a file, the `edit` worker requests those in a small `.bureau-ops` manifest, which Bureau applies with Node `fs` (every path confined to the worktree, no shell, no injection surface). The one exception is the **`test`** worker, which runs your project's configured test suite (opt-in, argv-only, no shell). It is therefore **opt-in** (only the per-project `testCommand` you configure ever runs — never anything an LLM, the chat, or a diff could inject), spawned **argv-only with no shell** (metacharacters are inert), confined to the task's worktree, with a timeout + kill and a capped output. Its result is **advisory** — a pass or fail is shown to you at the gate (it never auto-merges, and a failure never blocks or hides the diff), so `canPush()` remains the sole gate. Bureau's own credentials (`ANTHROPIC_API_KEY`, `GH_TOKEN`, `GITHUB_TOKEN`) are stripped from the test process's environment; other env vars are inherited (your test suite runs with the same trust as you running it in your own terminal). Configure it per project: `"testCommand": ["npm","test"]` in `BUREAU_PROJECTS` (or `BUREAU_TEST_COMMAND` for the single-repo path). On Windows, point it at a non-shim binary (e.g. `["node","node_modules/.bin/vitest","run"]`), since `npm`/`pnpm` shims can't be spawned without a shell.
+
+The **closed-loop verify** and **dependency provisioning** use this *same* argv-only runner — no shell, the three credentials scrubbed, worktree-confined, timeout + kill, capped output. So the only commands that ever run are the dependency install for your detected stack and the exact check command you configured — never anything an LLM, the chat, or a diff could inject. `canPush()` stays the sole gate above all of it.
 
 **Transport:** the engine binds `127.0.0.1` only — it is never meant to be reachable off the machine. The `/ws` and `/terminal` WebSockets and the HTTP API share one same-machine `Origin` policy: a cross-site browser tab is rejected, a local client (the panel, or a CLI with no `Origin`) is allowed — closing both Cross-Site WebSocket Hijacking and CSRF against the loopback daemon. Full model and how to report a vulnerability: [`SECURITY.md`](SECURITY.md).
 
-## Roadmap
+## Status & roadmap
 
-- **Phase 1–4 — Foundations + vertical slice ✅:** core types, state machine (`transition()` + `canPush()`), DB schema, provider adapters, VCS wrapper; chat → Task → isolated worktree change → diff review → real squash-merged PR on GitHub.
-- **Phase 5 — The team + a real cockpit (current) ✅:** the full worker set with multi-step pipelines, streaming chat, and live task progress over WebSocket. The panel covers it end to end — **Assistant**, **Hub** (a live work floor + a "waiting on you" review queue), Projects, Tasks, **Git** (an embedded GitHub browser), **Terminal**, **Memory** (an Obsidian-style vault Iris reads and writes), **Metrics** (real per-worker / -model / -day spend), and **Notifications** — in light or dark. Merge state is honest: a conflicted confirm shows "merge failed" with the PR link, never a false "merged".
+Bureau runs end to end today. It's a personal-scale tool in active development — honest current state below.
+
+- **Phase 1–4 — Foundations + vertical slice ✅:** core types, state machine (`transition()` + `canPush()`), DB schema, the **Anthropic** provider adapter (API key or local `claude` CLI), VCS wrapper; chat → Task → isolated worktree change → diff review → real squash-merged PR on GitHub.
+- **Phase 5 — The team + a real cockpit ✅:** the full worker set with multi-step pipelines, **closed-loop verify + auto-fix** (dependency provisioning, real build/test checks, honest measured status), **network-resilient** clone/push with partial-land recovery, streaming chat, and live task progress over WebSocket. The panel covers it end to end — **Assistant**, **Hub** (a live work floor + a "waiting on you" review queue), Projects, Tasks, **Git** (an embedded GitHub browser), **Terminal**, **Memory** (an Obsidian-style vault Iris reads and writes), **Metrics** (real per-worker / -model / -day spend), and **Notifications** — in light or dark. Merge state is honest: a conflicted confirm shows "merge failed" with the PR link, never a false "merged".
 - **Next:** parallel-task concurrency and mid-pipeline review gates (`plan_review` / `diff_review`) surfaced in the panel.
+
+**Known limitations.** Only the **Anthropic** provider is wired (OpenAI/Gemini aren't implemented). The verify loop needs you to **configure** your project's test/verify command — Bureau never guesses it. Checks run **where the engine runs**: on Windows a Linux/WSL-only toolchain (e.g. `bun`) can't be spawned, so for those projects run the engine inside WSL. Auth is just your local `gh` + Anthropic key, and tasks run one at a time.
 
 ## Contributing
 
