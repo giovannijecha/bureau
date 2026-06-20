@@ -112,11 +112,17 @@ async function handle(deps: HttpDeps, req: IncomingMessage, res: ServerResponse)
     return;
   }
 
-  // PATCH /api/projects/:id — set/clear the test/verify command (turns the verify loop on/off).
+  // PATCH /api/projects/:id — patch the project's command config (test command, the full verify
+  // list, and/or the provisioning override). Only the fields present in the body are applied.
   const projPatchMatch = path.match(/^\/api\/projects\/([^/]+)$/);
   if (method === "PATCH" && projPatchMatch) {
     const body = SetProjectCommandRequestDto.parse(await readJson(req));
-    sendJson(res, 200, deps.orchestrator.setProjectTestCommand(decodeURIComponent(projPatchMatch[1]!), body.testCommand ?? undefined));
+    const patch = {
+      ...(body.testCommand !== undefined ? { testCommand: body.testCommand } : {}),
+      ...(body.verifyCommands !== undefined ? { verifyCommands: body.verifyCommands } : {}),
+      ...(body.provisionCommand !== undefined ? { provisionCommand: body.provisionCommand } : {}),
+    };
+    sendJson(res, 200, deps.orchestrator.setProjectConfig(decodeURIComponent(projPatchMatch[1]!), patch));
     return;
   }
 

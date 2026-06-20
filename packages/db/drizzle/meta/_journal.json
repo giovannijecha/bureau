@@ -78,6 +78,13 @@
       "when": 1781879211462,
       "tag": "0010_minor_human_torch",
       "breakpoints": true
+    },
+    {
+      "idx": 11,
+      "version": "6",
+      "when": 1781957081699,
+      "tag": "0011_charming_firelord",
+      "breakpoints": true
     }
   ]
 }

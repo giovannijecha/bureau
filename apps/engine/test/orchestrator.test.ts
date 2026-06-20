@@ -1690,6 +1690,80 @@ describe("verify loop (closed-loop auto-fix)", () => {
     // clearing removes it
     expect(o.setProjectTestCommand(PROJECT.id, undefined).testCommand).toBeUndefined();
   });
+
+  it("setProjectConfig sets the verify LIST + provision override, leaving the test command untouched (persisted + live)", () => {
+    const { o } = setup({ changingDiff: true, runner: async () => ({ stdout: "", stderr: "", code: 0, timedOut: false }) });
+    const dto = o.setProjectConfig(PROJECT.id, {
+      verifyCommands: [["pnpm", "build"], ["pnpm", "test"]],
+      provisionCommand: ["pnpm", "install"],
+    });
+    expect(dto.verifyCommands).toEqual([["pnpm", "build"], ["pnpm", "test"]]);
+    expect(dto.provisionCommand).toEqual(["pnpm", "install"]);
+    expect(dto.testCommand).toEqual(["npm", "test"]); // a verify-only patch leaves the test command alone
+    // Live registry reflects it…
+    expect(o.listProjects().find((p) => p.id === PROJECT.id)!.verifyCommands).toEqual([["pnpm", "build"], ["pnpm", "test"]]);
+    // …and the durable row persists it (nested JSON columns).
+    const row = projectRepo.get(PROJECT.id);
+    expect(row?.verifyCommands).toEqual([["pnpm", "build"], ["pnpm", "test"]]);
+    expect(row?.provisionCommand).toEqual(["pnpm", "install"]);
+    // Clearing just the verify list falls back to the test command; the provision override stays.
+    const cleared = o.setProjectConfig(PROJECT.id, { verifyCommands: null });
+    expect("verifyCommands" in cleared).toBe(false);
+    expect(cleared.provisionCommand).toEqual(["pnpm", "install"]);
+  });
+
+  it("runs the configured verify LIST in order (not the single test command) and the provision override — through the sandboxed runner", async () => {
+    // PROJECT keeps testCommand ["npm","test"]; the verify list must OVERRIDE it for verification.
+    const proj: ProjectConfig = {
+      ...PROJECT,
+      verifyCommands: [["pnpm", "build"], ["pnpm", "test"]],
+      provisionCommand: ["pnpm", "install", "--frozen-lockfile"],
+    };
+    const captured: string[][] = [];
+    const reg = new CapabilityRegistry();
+    reg.register({
+      kind: "edit",
+      async execute() {
+        return { artifacts: [], summary: "edited", usage: { inputTokens: 1, outputTokens: 1, model: "claude-opus-4-8" } };
+      },
+    });
+    const v = fakeVcs();
+    v.vcs.workingDiff = async () => "diff"; // a real change → the gate opens and verify runs
+    let n = 0;
+    const o = new Orchestrator({
+      store,
+      capabilities: reg,
+      provider: prov.provider,
+      projects: new ProjectRegistry([proj]),
+      projectRepo,
+      reposRoot: "/repos",
+      vcs: () => v.vcs,
+      events: { emit: () => {} },
+      messages: fakeMessages(),
+      conversations: fakeConversations(),
+      memory: mem.memory,
+      usage: usage.usage,
+      notifications: notifs.store,
+      // Capture every argv the sandboxed runner is handed (provision + each verify command).
+      commandRunner: async (command) => {
+        captured.push([...command]);
+        return { stdout: "ok", stderr: "", code: 0, timedOut: false };
+      },
+      ids: () => `vc-${++n}`,
+      clock: () => "2026-06-13T00:00:00.000Z",
+    });
+    const draft = o.createTask(EDIT_ONLY);
+    await o.startTask(draft.id);
+    await o.settle(draft.id);
+
+    expect(captured[0]).toEqual(["pnpm", "install", "--frozen-lockfile"]); // provisioning used the CEO override
+    expect(captured.slice(1)).toEqual([["pnpm", "build"], ["pnpm", "test"]]); // verify ran the LIST, in order
+    expect(captured).not.toContainEqual(["npm", "test"]); // the single test command was overridden, never run
+    const task = store.load(draft.id)!;
+    expect(task.status).toBe("awaiting_human");
+    // The report is honest about exactly what ran.
+    expect(task.artifacts.find((a) => a.kind === "report")?.ref).toContain("pnpm build, pnpm test");
+  });
 });
 
 describe("chat — project pinning (an existing thread keeps its own project)", () => {

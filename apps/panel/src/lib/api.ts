@@ -61,13 +61,21 @@ export async function createProject(req: CreateProjectRequest): Promise<Project>
   return json(await postJson("/api/projects", req));
 }
 
-/** Set (or clear) a project's test/verify command — the command the post-edit verify loop runs.
- *  Pass a tokenized argv (e.g. ["bun","run","build"]) to set it, or null to clear it. */
-export async function setProjectCommand(id: string, testCommand: string[] | null): Promise<Project> {
+/** A partial update to a project's command config. Each field is independently optional — only
+ *  the keys present are applied (a tokenized argv sets it, `null` clears it). */
+export interface ProjectConfigPatch {
+  testCommand?: string[] | null;
+  verifyCommands?: string[][] | null;
+  provisionCommand?: string[] | null;
+}
+
+/** Patch a project's command config — the test command, the full verify list, and/or the
+ *  provisioning override. The post-edit verify loop runs these after every edit. */
+export async function setProjectConfig(id: string, patch: ProjectConfigPatch): Promise<Project> {
   const res = await fetch(`${BASE}/api/projects/${encodeURIComponent(id)}`, {
     method: "PATCH",
     headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ testCommand }),
+    body: JSON.stringify(patch),
   });
   return json(res);
 }

@@ -13,6 +13,10 @@ export interface ProjectRow {
   readonly url: string;
   readonly baseBranch: string;
   readonly testCommand: string[] | null;
+  /** The verify loop's full check list (list of argv commands). NULL ⇒ fall back to testCommand. */
+  readonly verifyCommands: string[][] | null;
+  /** Dependency-install override (argv). NULL ⇒ auto-detect the stack. */
+  readonly provisionCommand: string[] | null;
   readonly createdAt: string;
 }
 
@@ -23,6 +27,8 @@ const toRow = (r: typeof projects.$inferSelect): ProjectRow => ({
   url: r.url,
   baseBranch: r.baseBranch,
   testCommand: r.testCommand ?? null,
+  verifyCommands: r.verifyCommands ?? null,
+  provisionCommand: r.provisionCommand ?? null,
   createdAt: r.createdAt,
 });
 
@@ -41,7 +47,15 @@ export class ProjectRepo {
       .values({ ...row })
       .onConflictDoUpdate({
         target: projects.id,
-        set: { owner: row.owner, name: row.name, url: row.url, baseBranch: row.baseBranch, testCommand: row.testCommand },
+        set: {
+          owner: row.owner,
+          name: row.name,
+          url: row.url,
+          baseBranch: row.baseBranch,
+          testCommand: row.testCommand,
+          verifyCommands: row.verifyCommands,
+          provisionCommand: row.provisionCommand,
+        },
       })
       .run();
   }

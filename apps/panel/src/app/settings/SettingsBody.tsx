@@ -26,12 +26,13 @@ import {
   Plus,
   Trash2,
   Loader2,
+  ChevronRight,
   Terminal as TerminalIcon,
   type LucideIcon,
   type LucideProps,
 } from "lucide-react";
 import type { EngineInfo, GithubAccount, Project } from "@bureau/contracts";
-import { getConfig, ENGINE_URL, getGithubAccount, setModels, setEfforts, setBudget, createProject, removeProject, setProjectCommand } from "../../lib/api";
+import { getConfig, ENGINE_URL, getGithubAccount, setModels, setEfforts, setBudget, createProject, removeProject, setProjectConfig } from "../../lib/api";
 import { useAppearance, ACCENTS, SCALES, type ThemeMode, type ScaleKey } from "../../lib/appearance";
 import { useProjects } from "../../lib/useProjects";
 import { useConfirm } from "../../components/ConfirmDialog";
@@ -577,13 +578,15 @@ function ProjectsCard() {
       )}
       <p className="text-xs text-muted-foreground">
         Repos are cloned under the engine&apos;s repos root. Only <code className="font-mono">https://github.com/…</code> URLs — no credentials are stored. The
-        {" "}<span className="font-medium">test / verify command</span> runs after every edit — Bureau auto-fixes failures before you review.
+        {" "}<span className="font-medium">test command</span> runs after every edit — Bureau auto-fixes failures before you review. Open{" "}
+        <span className="font-medium">Advanced</span> on a repo for the full verify list (build, typecheck, test) and an install override.
       </p>
     </Card>
   );
 }
 
-/** One project row: identity + the editable test/verify command that powers the verify loop. */
+/** One project row: identity + the editable commands that power the verify loop. The test command
+ *  is always visible; the full verify list + install override live under an Advanced disclosure. */
 function ProjectRow({
   project: p,
   onRemove,
@@ -595,31 +598,39 @@ function ProjectRow({
   onError: (msg: string | null) => void;
   refresh: () => void;
 }) {
-  const saved = (p.testCommand ?? []).join(" ");
-  const [cmd, setCmd] = useState(saved);
-  const [busy, setBusy] = useState(false);
-  const [ok, setOk] = useState(false);
-  // Resync the input when the persisted value changes (e.g. another tab saved it).
-  useEffect(() => setCmd(saved), [saved]);
-  const dirty = cmd.trim() !== saved.trim();
+  // Start with Advanced open when the repo already carries verify/provision config (initial render
+  // only — once open the CEO controls it; clearing the fields doesn't auto-collapse the section).
+  const hasAdvanced = (p.verifyCommands?.length ?? 0) > 0 || (p.provisionCommand?.length ?? 0) > 0;
+  const [advanced, setAdvanced] = useState(hasAdvanced);
 
-  async function save() {
-    if (!dirty || busy) return;
-    setBusy(true);
-    onError(null);
-    try {
-      // Tokenize on the CLIENT — the engine never parses a string into a command. Whitespace
-      // split covers build/test commands (e.g. "node node_modules/.bin/vitest run").
-      const argv = cmd.trim() === "" ? null : cmd.trim().split(/\s+/);
-      await setProjectCommand(p.id, argv);
-      setOk(true);
-      setTimeout(() => setOk(false), 1500);
-      refresh();
-    } catch (e) {
-      onError(e instanceof Error ? e.message : String(e));
-    } finally {
-      setBusy(false);
-    }
+  const testSaved = (p.testCommand ?? []).join(" ");
+  const verifySaved = (p.verifyCommands ?? []).map((c) => c.join(" ")).join("\n");
+  const provisionSaved = (p.provisionCommand ?? []).join(" ");
+
+  // Tokenize on the CLIENT — the engine never parses a string into a command. Whitespace split
+  // covers build/test commands (e.g. "node node_modules/.bin/vitest run").
+  const argv = (text: string): string[] | null => {
+    const t = text.trim();
+    return t === "" ? null : t.split(/\s+/);
+  };
+
+  async function saveTest(text: string) {
+    await setProjectConfig(p.id, { testCommand: argv(text) });
+    refresh();
+  }
+  async function saveVerify(text: string) {
+    // One command per line; blank lines dropped. Empty ⇒ clear (fall back to the test command).
+    const cmds = text
+      .split("\n")
+      .map((l) => l.trim())
+      .filter(Boolean)
+      .map((l) => l.split(/\s+/));
+    await setProjectConfig(p.id, { verifyCommands: cmds.length > 0 ? cmds : null });
+    refresh();
+  }
+  async function saveProvision(text: string) {
+    await setProjectConfig(p.id, { provisionCommand: argv(text) });
+    refresh();
   }
 
   return (
@@ -643,21 +654,133 @@ function ProjectRow({
           <Trash2 className="h-4 w-4" />
         </button>
       </div>
-      <div className="mt-2 flex items-center gap-2 pl-6">
-        <input
-          value={cmd}
-          disabled={busy}
-          onChange={(e) => setCmd(e.target.value)}
-          onKeyDown={(e) => {
-            if (e.key === "Enter") {
-              e.preventDefault();
-              void save();
-            }
-          }}
-          placeholder="Test / verify command — e.g. bun run build"
-          aria-label={`Test / verify command for ${p.owner}/${p.name}`}
-          className="h-8 min-w-0 flex-1 rounded-md border bg-background px-2.5 font-mono text-xs outline-none transition-colors focus:border-primary/60"
+
+      <div className="mt-2 space-y-2 pl-6">
+        <CommandField
+          label={`Test / verify command for ${p.owner}/${p.name}`}
+          placeholder="Test command — e.g. bun run build"
+          value={testSaved}
+          onSave={saveTest}
+          onError={onError}
         />
+
+        <button
+          onClick={() => setAdvanced((v) => !v)}
+          className="inline-flex items-center gap-1 text-[11px] font-medium text-muted-foreground transition-colors hover:text-foreground"
+          aria-expanded={advanced}
+        >
+          <ChevronRight className={cn("h-3 w-3 transition-transform", advanced && "rotate-90")} />
+          Advanced
+        </button>
+
+        {advanced && (
+          <div className="space-y-2 border-l pl-3">
+            <CommandField
+              label={`Verify commands for ${p.owner}/${p.name}`}
+              hint="One per line (build, typecheck, test). Overrides the test command for verification."
+              placeholder={"bun run build\nbun run typecheck\nbun test"}
+              value={verifySaved}
+              multiline
+              onSave={saveVerify}
+              onError={onError}
+            />
+            <CommandField
+              label={`Install override for ${p.owner}/${p.name}`}
+              hint="Overrides the auto-detected dependency install (e.g. when the detector guesses wrong)."
+              placeholder="Install override — e.g. bun install"
+              value={provisionSaved}
+              onSave={saveProvision}
+              onError={onError}
+            />
+          </div>
+        )}
+      </div>
+    </li>
+  );
+}
+
+/** An inline command editor: a (single- or multi-line) field with dirty-tracking and a Save button.
+ *  Tokenization + the persistence call live in the parent's onSave; this only owns the input state. */
+function CommandField({
+  label,
+  hint,
+  value,
+  placeholder,
+  multiline = false,
+  onSave,
+  onError,
+}: {
+  label: string;
+  hint?: string;
+  value: string;
+  placeholder: string;
+  multiline?: boolean;
+  onSave: (text: string) => Promise<void>;
+  onError: (msg: string | null) => void;
+}) {
+  const [text, setText] = useState(value);
+  const [busy, setBusy] = useState(false);
+  const [ok, setOk] = useState(false);
+  // Resync when the persisted value changes (e.g. another tab saved it).
+  useEffect(() => setText(value), [value]);
+  const dirty = text.trim() !== value.trim();
+
+  async function save() {
+    if (!dirty || busy) return;
+    setBusy(true);
+    onError(null);
+    try {
+      await onSave(text);
+      setOk(true);
+      setTimeout(() => setOk(false), 1500);
+    } catch (e) {
+      onError(e instanceof Error ? e.message : String(e));
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  const inputClass =
+    "min-w-0 flex-1 rounded-md border bg-background px-2.5 py-1.5 font-mono text-xs outline-none transition-colors focus:border-primary/60";
+
+  return (
+    <div>
+      {hint && <p className="mb-1 text-[11px] text-muted-foreground">{hint}</p>}
+      <div className="flex items-start gap-2">
+        {multiline ? (
+          <textarea
+            value={text}
+            disabled={busy}
+            onChange={(e) => setText(e.target.value)}
+            onKeyDown={(e) => {
+              // Cmd/Ctrl+Enter saves (plain Enter inserts a newline in a multiline field).
+              if (e.key === "Enter" && (e.metaKey || e.ctrlKey)) {
+                e.preventDefault();
+                void save();
+              }
+            }}
+            placeholder={placeholder}
+            aria-label={label}
+            rows={3}
+            spellCheck={false}
+            className={cn(inputClass, "resize-y")}
+          />
+        ) : (
+          <input
+            value={text}
+            disabled={busy}
+            onChange={(e) => setText(e.target.value)}
+            onKeyDown={(e) => {
+              if (e.key === "Enter") {
+                e.preventDefault();
+                void save();
+              }
+            }}
+            placeholder={placeholder}
+            aria-label={label}
+            className={cn(inputClass, "h-8")}
+          />
+        )}
         <button
           onClick={() => void save()}
           disabled={!dirty || busy}
@@ -666,7 +789,7 @@ function ProjectRow({
           {busy ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : ok ? "Saved" : "Save"}
         </button>
       </div>
-    </li>
+    </div>
   );
 }
 

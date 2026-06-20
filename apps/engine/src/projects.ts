@@ -5,6 +5,7 @@
 
 import { join, resolve, sep } from "node:path";
 import type { Project } from "@bureau/contracts";
+import type { ProjectRow } from "@bureau/db";
 import { parseGithubRepo } from "@bureau/vcs";
 import { OrchestratorError } from "./errors.js";
 
@@ -23,6 +24,20 @@ export interface ProjectConfig {
    *  tokenized — the runtime NEVER parses a string into a command. Undefined ⇒ the
    *  project has no test suite and a test step degrades to a skip. */
   readonly testCommand?: readonly string[];
+  /** The post-edit verify loop's full check list — a list of argv commands (build, typecheck,
+   *  test) run in order. When set it OVERRIDES `testCommand` for verification. Undefined ⇒ the
+   *  loop falls back to `[testCommand]`. */
+  readonly verifyCommands?: readonly (readonly string[])[];
+  /** CEO override for the dependency-install command (argv). Undefined ⇒ auto-detect the stack. */
+  readonly provisionCommand?: readonly string[];
+}
+
+/** A partial update to a project's mutable command fields. Each key is independently optional:
+ *  PRESENT (even as null) ⇒ apply (null/empty clears); ABSENT ⇒ leave the current value. */
+export interface ProjectConfigPatch {
+  readonly testCommand?: readonly string[] | null;
+  readonly verifyCommands?: readonly (readonly string[])[] | null;
+  readonly provisionCommand?: readonly string[] | null;
 }
 
 /** Public, panel-facing view of a project (no urls or on-disk paths). */
@@ -33,6 +48,8 @@ export function toProjectDto(p: ProjectConfig): Project {
     name: p.name,
     baseBranch: p.baseBranch,
     ...(p.testCommand && p.testCommand.length > 0 ? { testCommand: [...p.testCommand] } : {}),
+    ...(p.verifyCommands && p.verifyCommands.length > 0 ? { verifyCommands: p.verifyCommands.map((c) => [...c]) } : {}),
+    ...(p.provisionCommand && p.provisionCommand.length > 0 ? { provisionCommand: [...p.provisionCommand] } : {}),
   };
 }
 
@@ -83,15 +100,38 @@ export class ProjectRegistry {
     return p;
   }
 
-  /** Set (or clear) a project's test/verify command in place — the only MUTABLE field of a
-   *  config (everything else keys on-disk paths / identity). Returns the new config. Mutates
-   *  the one shared array so every holder (orchestrator, terminal) sees it immediately. */
-  setTestCommand(id: string, testCommand: readonly string[] | undefined): ProjectConfig {
+  /** Apply a PARTIAL command-config patch to a project in place — the only MUTABLE fields of a
+   *  config (everything else keys on-disk paths / identity). A field PRESENT in the patch is set
+   *  (or cleared when null/empty); a field ABSENT is left untouched. Returns the new config and
+   *  mutates the one shared array so every holder (orchestrator, terminal) sees it immediately. */
+  setConfig(id: string, patch: ProjectConfigPatch): ProjectConfig {
     const idx = this.projects.findIndex((p) => p.id === id);
     if (idx < 0) throw new OrchestratorError(`Unknown project: ${id}`, 404);
-    const { testCommand: _drop, ...base } = this.projects[idx]!;
-    const next: ProjectConfig =
-      testCommand && testCommand.length > 0 ? { ...base, testCommand: [...testCommand] } : { ...base };
+    const cur = this.projects[idx]!;
+    // Normalize + VALIDATE each command. The runtime PATCH path lands here, so the argv[0]-not-a-flag
+    // argument-injection defense (mirroring parseTestCommand on the env-boot path) must run here too —
+    // every command is later spawned through the shell-free runner with the CEO supplying the whole argv.
+    const argv = (v: readonly string[] | null | undefined, field: string): readonly string[] | undefined => {
+      if (!v || v.length === 0) return undefined;
+      assertSafeArgv(v, field);
+      return [...v];
+    };
+    const argvList = (
+      v: readonly (readonly string[])[] | null | undefined,
+      field: string
+    ): readonly (readonly string[])[] | undefined =>
+      v && v.length > 0 ? v.map((c, i) => argv(c, `${field}[${i}]`)!) : undefined;
+    // For each command field: apply the patch when the key is present, else keep the current value.
+    const testCommand = "testCommand" in patch ? argv(patch.testCommand, "testCommand") : cur.testCommand;
+    const verifyCommands = "verifyCommands" in patch ? argvList(patch.verifyCommands, "verifyCommands") : cur.verifyCommands;
+    const provisionCommand = "provisionCommand" in patch ? argv(patch.provisionCommand, "provisionCommand") : cur.provisionCommand;
+    const { testCommand: _t, verifyCommands: _v, provisionCommand: _p, ...base } = cur;
+    const next: ProjectConfig = {
+      ...base,
+      ...(testCommand !== undefined ? { testCommand } : {}),
+      ...(verifyCommands !== undefined ? { verifyCommands } : {}),
+      ...(provisionCommand !== undefined ? { provisionCommand } : {}),
+    };
     this.projects = this.projects.map((p, i) => (i === idx ? next : p));
     return next;
   }
@@ -131,7 +171,13 @@ function derivePaths(reposRoot: string, id: string): { canonicalPath: string; wo
  *  derived from the slug id. Throws VcsError (bad URL) or OrchestratorError. */
 export function buildProjectConfig(
   reposRoot: string,
-  input: { url: string; baseBranch?: string | undefined; testCommand?: readonly string[] | undefined }
+  input: {
+    url: string;
+    baseBranch?: string | undefined;
+    testCommand?: readonly string[] | undefined;
+    verifyCommands?: readonly (readonly string[])[] | undefined;
+    provisionCommand?: readonly string[] | undefined;
+  }
 ): ProjectConfig {
   const { owner, name } = parseGithubRepo(input.url);
   const id = slug(`${owner}-${name}`);
@@ -146,6 +192,8 @@ export function buildProjectConfig(
     canonicalPath,
     worktreesDir,
     ...(input.testCommand !== undefined ? { testCommand: input.testCommand } : {}),
+    ...(input.verifyCommands !== undefined ? { verifyCommands: input.verifyCommands } : {}),
+    ...(input.provisionCommand !== undefined ? { provisionCommand: input.provisionCommand } : {}),
   };
 }
 
@@ -153,7 +201,16 @@ export function buildProjectConfig(
  *  (never stored), the durable facts come from the row (already validated when added). */
 export function projectConfigFromRow(
   reposRoot: string,
-  row: { id: string; owner: string; name: string; url: string; baseBranch: string; testCommand: string[] | null }
+  row: {
+    id: string;
+    owner: string;
+    name: string;
+    url: string;
+    baseBranch: string;
+    testCommand: string[] | null;
+    verifyCommands?: string[][] | null;
+    provisionCommand?: string[] | null;
+  }
 ): ProjectConfig {
   const { canonicalPath, worktreesDir } = derivePaths(reposRoot, row.id);
   return {
@@ -165,6 +222,23 @@ export function projectConfigFromRow(
     canonicalPath,
     worktreesDir,
     ...(row.testCommand && row.testCommand.length > 0 ? { testCommand: row.testCommand } : {}),
+    ...(row.verifyCommands && row.verifyCommands.length > 0 ? { verifyCommands: row.verifyCommands } : {}),
+    ...(row.provisionCommand && row.provisionCommand.length > 0 ? { provisionCommand: row.provisionCommand } : {}),
+  };
+}
+
+/** Flatten a config to its persisted-row shape (minus createdAt) — the SINGLE source for which
+ *  durable command columns get written, so the add / patch / env-seed paths never drift. */
+export function projectRowFromConfig(c: ProjectConfig): Omit<ProjectRow, "createdAt"> {
+  return {
+    id: c.id,
+    owner: c.owner,
+    name: c.name,
+    url: c.url,
+    baseBranch: c.baseBranch,
+    testCommand: c.testCommand ? [...c.testCommand] : null,
+    verifyCommands: c.verifyCommands ? c.verifyCommands.map((cmd) => [...cmd]) : null,
+    provisionCommand: c.provisionCommand ? [...c.provisionCommand] : null,
   };
 }
 
@@ -181,10 +255,18 @@ function requireStr(value: unknown, field: string): string {
   return value;
 }
 
+/** Reject an argv whose program (argv[0]) looks like a flag — the argument-injection defense
+ *  (echoing assertSafeRef's precedent). Shared by the env-boot parser and the runtime PATCH path
+ *  so EVERY entry point that can reach the shell-free runner is guarded identically. */
+function assertSafeArgv(argv: readonly string[], field: string): void {
+  if (argv.length > 0 && argv[0]!.startsWith("-")) {
+    throw new OrchestratorError(`${field} ("${argv[0]}") must be a program, not a flag`, 400);
+  }
+}
+
 /** Parse a CEO-configured test command — a JSON array of non-empty strings (already
- *  tokenized; the runtime never splits a string). Rejects an argv[0] that looks like
- *  a flag (argument-injection defense, echoing assertSafeRef's precedent). Returns
- *  undefined when absent so the field can be spread-omitted (exactOptionalPropertyTypes). */
+ *  tokenized; the runtime never splits a string). Rejects an argv[0] that looks like a flag.
+ *  Returns undefined when absent so the field can be spread-omitted (exactOptionalPropertyTypes). */
 export function parseTestCommand(value: unknown, field: string): readonly string[] | undefined {
   if (value === undefined || value === null) return undefined;
   if (!Array.isArray(value) || value.length === 0) {
@@ -194,8 +276,18 @@ export function parseTestCommand(value: unknown, field: string): readonly string
     if (typeof v !== "string" || v.trim() === "") throw new Error(`${field}[${i}] must be a non-empty string`);
     return v;
   });
-  if (argv[0]!.startsWith("-")) throw new Error(`${field}[0] ("${argv[0]}") must be a program, not a flag`);
+  assertSafeArgv(argv, field);
   return argv;
+}
+
+/** Parse a CEO-configured verify list — a JSON array of argv arrays (each command validated by
+ *  {@link parseTestCommand}). Returns undefined when absent so the field can be spread-omitted. */
+export function parseVerifyCommands(value: unknown, field: string): readonly (readonly string[])[] | undefined {
+  if (value === undefined || value === null) return undefined;
+  if (!Array.isArray(value) || value.length === 0) {
+    throw new Error(`${field} must be a non-empty JSON array of argv arrays (e.g. [["pnpm","build"],["pnpm","test"]])`);
+  }
+  return value.map((cmd, i) => parseTestCommand(cmd, `${field}[${i}]`)!);
 }
 
 /** Build project configs from BUREAU_PROJECTS (JSON array), deriving on-disk paths
@@ -217,6 +309,8 @@ export function projectsFromJson(json: string, reposRoot: string): ProjectConfig
     // different owners don't collide.
     const id = typeof r.id === "string" && r.id.trim() !== "" ? slug(r.id) : slug(`${owner}-${name}`);
     const testCommand = parseTestCommand(r.testCommand, `projects[${i}].testCommand`);
+    const verifyCommands = parseVerifyCommands(r.verifyCommands, `projects[${i}].verifyCommands`);
+    const provisionCommand = parseTestCommand(r.provisionCommand, `projects[${i}].provisionCommand`);
     const { canonicalPath, worktreesDir } = derivePaths(reposRoot, id);
     return {
       id,
@@ -227,6 +321,8 @@ export function projectsFromJson(json: string, reposRoot: string): ProjectConfig
       canonicalPath,
       worktreesDir,
       ...(testCommand !== undefined ? { testCommand } : {}),
+      ...(verifyCommands !== undefined ? { verifyCommands } : {}),
+      ...(provisionCommand !== undefined ? { provisionCommand } : {}),
     };
   });
 }

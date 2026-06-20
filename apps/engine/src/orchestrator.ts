@@ -35,7 +35,7 @@ import { existsSync } from "node:fs";
 import { mkdir, writeFile, rm } from "node:fs/promises";
 
 import type { TaskStore, VcsPort, EventSink, MessageLog, ConversationStore, MemoryPort, UsagePort, NotificationStore, RepoView, GitAdminOp } from "./ports.js";
-import { ProjectRegistry, toProjectDto, buildProjectConfig, type ProjectConfig } from "./projects.js";
+import { ProjectRegistry, toProjectDto, buildProjectConfig, projectRowFromConfig, type ProjectConfig, type ProjectConfigPatch } from "./projects.js";
 import {
   defaultModelPolicy, resolveModel, isKnownModel, MODEL_SCOPES, type ModelPolicy,
   defaultEffortPolicy, resolveEffort, isKnownEffort, type EffortPolicy, type Effort,
@@ -86,10 +86,12 @@ const PROVISION_TIMEOUT_MS = ((): number => {
   return Number.isFinite(v) && v > 0 ? v : 600_000; // 10 min
 })();
 
-/** The check command(s) the verify loop runs for a project. Reuses the configured testCommand
- *  (one command today) — no separate config, no DB column. Empty ⇒ verify is skipped, never
- *  guessed (exactly like the advisory `test` worker degrades). */
+/** The check command(s) the verify loop runs for a project. Prefers the CEO-configured
+ *  `verifyCommands` list (build + typecheck + test — the real acceptance bar); falls back to the
+ *  single `testCommand` when no list is set. Empty ⇒ verify is skipped, never guessed (exactly
+ *  like the advisory `test` worker degrades). */
 function verifyCommandsFor(project: ProjectConfig): readonly (readonly string[])[] {
+  if (project.verifyCommands && project.verifyCommands.length > 0) return project.verifyCommands;
   return project.testCommand && project.testCommand.length > 0 ? [project.testCommand] : [];
 }
 
@@ -198,15 +200,7 @@ export class Orchestrator {
       throw new OrchestratorError(`A project for ${config.owner}/${config.name} already exists`, 409);
     }
     // Persist first, then clone eagerly; roll back the row + any partial clone on failure.
-    this.d.projectRepo.upsert({
-      id: config.id,
-      owner: config.owner,
-      name: config.name,
-      url: config.url,
-      baseBranch: config.baseBranch,
-      testCommand: config.testCommand ? [...config.testCommand] : null,
-      createdAt: this.d.clock(),
-    });
+    this.d.projectRepo.upsert({ ...projectRowFromConfig(config), createdAt: this.d.clock() });
     try {
       await this.d.vcs(config).ensureClone();
     } catch (err) {
@@ -219,24 +213,25 @@ export class Orchestrator {
     return toProjectDto(config);
   }
 
-  /** Set (or clear) a project's test/verify command — the command the post-edit verify loop runs
-   *  (and the advisory `test` worker runs). The only way to turn the loop on for a repo added by
-   *  URL (the add form takes a URL only). Updates the live registry in place + persists the row. */
-  setProjectTestCommand(id: string, testCommand: readonly string[] | undefined): Project {
+  /** Apply a partial command-config patch to a project — the test command, the full verify list,
+   *  and/or the provisioning override. The only way to turn the verify loop on (and tune it) for a
+   *  repo added by URL (the add form takes a URL only). Updates the live registry in place +
+   *  persists the row. An absent patch field is left untouched; a null/empty one is cleared. */
+  setProjectConfig(id: string, patch: ProjectConfigPatch): Project {
     this.d.projects.get(id); // 404 if unknown
-    const next = this.d.projects.setTestCommand(id, testCommand);
+    const next = this.d.projects.setConfig(id, patch);
     const row = this.d.projectRepo.get(id); // preserve the original createdAt
     this.d.projectRepo.upsert({
-      id: next.id,
-      owner: next.owner,
-      name: next.name,
-      url: next.url,
-      baseBranch: next.baseBranch,
-      testCommand: next.testCommand ? [...next.testCommand] : null,
+      ...projectRowFromConfig(next),
       createdAt: row?.createdAt ?? this.d.clock(),
     });
     this.d.events.emit({ type: "projects_changed" });
     return toProjectDto(next);
+  }
+
+  /** Back-compat single-field setter — set (or clear) just the test command. */
+  setProjectTestCommand(id: string, testCommand: readonly string[] | undefined): Project {
+    return this.setProjectConfig(id, { testCommand: testCommand ?? null });
   }
 
   /** Remove a project. Refuses (409) while any non-terminal task still references it
@@ -1236,7 +1231,12 @@ export class Orchestrator {
    *  surfaces check failures as ENVIRONMENTAL (couldn't run) instead of burning fix attempts on a
    *  missing-deps error. Skipped when no step runs a command (pure plan/review) or no stack is
    *  detected. Streams progress to the panel under the first step. */
-  private async provisionWorktree(taskId: string, worktreePath: string, firstStepId: StepId): Promise<boolean> {
+  private async provisionWorktree(
+    taskId: string,
+    worktreePath: string,
+    firstStepId: StepId,
+    override?: readonly string[] | undefined
+  ): Promise<boolean> {
     const needsDeps = this.requireTask(taskId).steps.some(
       (s) => s.capability === "edit" || s.capability === "document" || s.capability === "test"
     );
@@ -1245,7 +1245,12 @@ export class Orchestrator {
       this.d.events.emit({ type: "step_progress", taskId, stepId: firstStepId, capability: "provision", chunk });
     let result;
     try {
-      result = await provision(worktreePath, { runner: this.commandRunner, timeoutMs: PROVISION_TIMEOUT_MS, onChunk: emit });
+      result = await provision(worktreePath, {
+        ...(override !== undefined ? { override } : {}),
+        runner: this.commandRunner,
+        timeoutMs: PROVISION_TIMEOUT_MS,
+        onChunk: emit,
+      });
     } catch {
       return false; // unexpected — treat as deps-not-ready (verify surfaces it), never abort
     }
@@ -1396,7 +1401,7 @@ export class Orchestrator {
       // Provision the worktree's dependencies before any step runs (a fresh worktree has none),
       // so verify/test actually have something to check. Best-effort — false ⇒ checks are env-gated.
       const firstStep = task.steps[0];
-      const depsReady = firstStep ? await this.provisionWorktree(taskId, worktreePath, firstStep.id) : true;
+      const depsReady = firstStep ? await this.provisionWorktree(taskId, worktreePath, firstStep.id, project.provisionCommand) : true;
       if (this.requireTask(taskId).status !== "executing") return; // stopped during provisioning
       // Running tally of this task's model spend, for the budget guard (0 cap = off).
       let spentUsd = 0;
@@ -1593,7 +1598,7 @@ export class Orchestrator {
       // Re-provision deps (the worktree is reused; package.json may have changed, and a run-1
       // provision failure shouldn't poison the revise). Same gating/best-effort as the first run.
       const firstStep = task.steps[0];
-      const depsReady = firstStep ? await this.provisionWorktree(taskId, worktreePath, firstStep.id) : true;
+      const depsReady = firstStep ? await this.provisionWorktree(taskId, worktreePath, firstStep.id, project.provisionCommand) : true;
       if (this.requireTask(taskId).status !== "executing") return; // stopped during provisioning
       // Verify after the LAST mutating step (before any later review/test), same as the first run.
       let verifyReport = "";

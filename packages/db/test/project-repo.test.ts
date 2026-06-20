@@ -19,6 +19,8 @@ const p = (over: Partial<ProjectRow> = {}): ProjectRow => ({
   url: "https://github.com/acme/widget",
   baseBranch: "main",
   testCommand: null,
+  verifyCommands: null,
+  provisionCommand: null,
   createdAt: "2026-06-18T00:00:00.000Z",
   ...over,
 });
@@ -38,6 +40,29 @@ describe("ProjectRepo", () => {
     const row = repo.get("acme-widget");
     expect(row?.baseBranch).toBe("develop");
     expect(row?.testCommand).toEqual(["npm", "test"]); // JSON column round-trips
+  });
+
+  it("round-trips the verify list and provision override (nested JSON columns)", () => {
+    repo.upsert(
+      p({
+        verifyCommands: [
+          ["pnpm", "build"],
+          ["pnpm", "test"],
+        ],
+        provisionCommand: ["pnpm", "install", "--frozen-lockfile"],
+      })
+    );
+    const row = repo.get("acme-widget");
+    expect(row?.verifyCommands).toEqual([
+      ["pnpm", "build"],
+      ["pnpm", "test"],
+    ]);
+    expect(row?.provisionCommand).toEqual(["pnpm", "install", "--frozen-lockfile"]);
+    // Clearing them back to null persists (upsert overwrites with the new row's nulls).
+    repo.upsert(p());
+    const cleared = repo.get("acme-widget");
+    expect(cleared?.verifyCommands).toBeNull();
+    expect(cleared?.provisionCommand).toBeNull();
   });
 
   it("lists in insertion order and deletes by id", () => {

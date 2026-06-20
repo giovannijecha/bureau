@@ -206,7 +206,17 @@ export const projects = sqliteTable("projects", {
   name: text("name").notNull(),
   url: text("url").notNull(),
   baseBranch: text("base_branch").notNull(),
+  /** Single argv for the advisory `test` worker (e.g. ["npm","test"]); also the verify-loop
+   *  fallback when `verifyCommands` is unset. NULL ⇒ no test suite configured. */
   testCommand: text("test_command", { mode: "json" }).$type<string[] | null>(),
+  /** The post-edit verify loop's full check list — a list of argv commands (build, typecheck,
+   *  test) run in order. When set it OVERRIDES the single testCommand for verification, so the
+   *  human reviews code that meets the real acceptance bar, not just one command. NULL ⇒ fall
+   *  back to [testCommand]. */
+  verifyCommands: text("verify_commands", { mode: "json" }).$type<string[][] | null>(),
+  /** CEO override for the dependency-install command (already-tokenized argv). Wins over the
+   *  auto-detected stack in provisioning. NULL ⇒ auto-detect. */
+  provisionCommand: text("provision_command", { mode: "json" }).$type<string[] | null>(),
   createdAt: text("created_at").notNull(),
 });
 

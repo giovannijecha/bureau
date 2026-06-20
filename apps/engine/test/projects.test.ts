@@ -72,6 +72,39 @@ describe("projectsFromJson", () => {
     expect(bad(["--evil", "x"])).toThrow(/must be a program, not a flag/); // argv[0] flag = argument-injection defense
   });
 
+  it("parses a verifyCommands list and a provisionCommand override, omitting absent ones", () => {
+    const cfgs = projectsFromJson(
+      JSON.stringify([
+        {
+          owner: "a",
+          name: "b",
+          url: "u",
+          verifyCommands: [
+            ["pnpm", "build"],
+            ["pnpm", "test"],
+          ],
+          provisionCommand: ["pnpm", "install"],
+        },
+      ]),
+      "/r"
+    );
+    expect(cfgs[0]!.verifyCommands).toEqual([
+      ["pnpm", "build"],
+      ["pnpm", "test"],
+    ]);
+    expect(cfgs[0]!.provisionCommand).toEqual(["pnpm", "install"]);
+    const without = projectsFromJson(JSON.stringify([{ owner: "a", name: "b", url: "u" }]), "/r");
+    expect("verifyCommands" in without[0]!).toBe(false); // omitted, not undefined
+    expect("provisionCommand" in without[0]!).toBe(false);
+  });
+
+  it("rejects a malformed verifyCommands (each entry must be a valid argv)", () => {
+    const bad = (vc: unknown) => () => projectsFromJson(JSON.stringify([{ owner: "a", name: "b", url: "u", verifyCommands: vc }]), "/r");
+    expect(bad("pnpm build")).toThrow(/array of argv arrays/); // a bare string is rejected
+    expect(bad([])).toThrow(/non-empty/);
+    expect(bad([["pnpm", "build"], ["--evil"]])).toThrow(/must be a program, not a flag/); // inner argv[0] flag guarded
+  });
+
   it("rejects a malformed project shape", () => {
     expect(() => projectsFromJson(JSON.stringify([{ owner: "a" }]), "/r")).toThrow();
     expect(() => projectsFromJson(JSON.stringify([]), "/r")).toThrow();
@@ -109,6 +142,48 @@ describe("ProjectRegistry", () => {
       name: "n",
       baseBranch: "main",
     });
+  });
+
+  it("toProjectDto exposes the verify list + provision override when configured", () => {
+    const dto = toProjectDto(
+      P({ id: "a", owner: "o", name: "n", verifyCommands: [["pnpm", "build"], ["pnpm", "test"]], provisionCommand: ["pnpm", "install"] })
+    );
+    expect(dto.verifyCommands).toEqual([["pnpm", "build"], ["pnpm", "test"]]);
+    expect(dto.provisionCommand).toEqual(["pnpm", "install"]);
+  });
+
+  it("setConfig applies only the patched fields, leaving the rest untouched", () => {
+    const reg = new ProjectRegistry([P({ id: "a", testCommand: ["npm", "test"] })]);
+    // Patch only verifyCommands → testCommand survives.
+    const a = reg.setConfig("a", { verifyCommands: [["npm", "run", "build"]] });
+    expect(a.testCommand).toEqual(["npm", "test"]);
+    expect(a.verifyCommands).toEqual([["npm", "run", "build"]]);
+    // Patch only provisionCommand → both prior fields survive.
+    const b = reg.setConfig("a", { provisionCommand: ["npm", "ci"] });
+    expect(b.testCommand).toEqual(["npm", "test"]);
+    expect(b.verifyCommands).toEqual([["npm", "run", "build"]]);
+    expect(b.provisionCommand).toEqual(["npm", "ci"]);
+    // null clears just that field; absent fields stay.
+    const c = reg.setConfig("a", { verifyCommands: null });
+    expect("verifyCommands" in c).toBe(false);
+    expect(c.testCommand).toEqual(["npm", "test"]);
+    expect(c.provisionCommand).toEqual(["npm", "ci"]);
+    expect(() => reg.setConfig("nope", { testCommand: ["x"] })).toThrow(expect.objectContaining({ status: 404 }));
+  });
+
+  it("setConfig enforces the argv[0]-not-a-flag defense on the runtime path (every command field)", () => {
+    // The runtime PATCH path lands in setConfig, so the argument-injection guard must run here too —
+    // matching the env-boot parser. A leading-dash program is rejected with a 400 on all three fields.
+    const reg = new ProjectRegistry([P({ id: "a" })]);
+    expect(() => reg.setConfig("a", { testCommand: ["-x", "y"] })).toThrow(/must be a program, not a flag/);
+    expect(() => reg.setConfig("a", { provisionCommand: ["--config=/etc/evil", "install"] })).toThrow(
+      expect.objectContaining({ status: 400 })
+    );
+    expect(() => reg.setConfig("a", { verifyCommands: [["pnpm", "build"], ["-rf", "x"]] })).toThrow(
+      /must be a program, not a flag/
+    );
+    // The rejected patch never mutates the project (no partial write).
+    expect("testCommand" in reg.get("a")).toBe(false);
   });
 
   it("add appends a project, rejecting a duplicate id (409)", () => {
@@ -166,5 +241,23 @@ describe("projectConfigFromRow — rebuild at boot", () => {
   it("omits testCommand when the row has none", () => {
     const c = projectConfigFromRow("/r", { id: "a", owner: "o", name: "n", url: "u", baseBranch: "main", testCommand: null });
     expect("testCommand" in c).toBe(false);
+  });
+
+  it("rebuilds the verify list + provision override from the row, omitting nulls", () => {
+    const c = projectConfigFromRow("/r", {
+      id: "a",
+      owner: "o",
+      name: "n",
+      url: "u",
+      baseBranch: "main",
+      testCommand: null,
+      verifyCommands: [["pnpm", "build"], ["pnpm", "test"]],
+      provisionCommand: ["pnpm", "install"],
+    });
+    expect(c.verifyCommands).toEqual([["pnpm", "build"], ["pnpm", "test"]]);
+    expect(c.provisionCommand).toEqual(["pnpm", "install"]);
+    const bare = projectConfigFromRow("/r", { id: "a", owner: "o", name: "n", url: "u", baseBranch: "main", testCommand: null, verifyCommands: null, provisionCommand: null });
+    expect("verifyCommands" in bare).toBe(false);
+    expect("provisionCommand" in bare).toBe(false);
   });
 });

@@ -35,7 +35,7 @@ import { makeRunner, type CommitAuthor } from "@bureau/vcs";
 import type { WsEvent } from "@bureau/contracts";
 
 import { Orchestrator } from "./orchestrator.js";
-import { ProjectRegistry, projectsFromJson, projectConfigFromRow, parseTestCommand, slug, type ProjectConfig } from "./projects.js";
+import { ProjectRegistry, projectsFromJson, projectConfigFromRow, projectRowFromConfig, parseTestCommand, slug, type ProjectConfig } from "./projects.js";
 import { RealVcs, DbMessageLog, DbConversationStore, VaultStore, DbUsage, DbNotifications } from "./adapters.js";
 import { WsHub } from "./ws.js";
 import { TerminalHub } from "./terminal.js";
@@ -175,15 +175,7 @@ async function main(): Promise<void> {
   const hasEnvConfig = (process.env.BUREAU_PROJECTS?.trim() ?? "") !== "" || (process.env.BUREAU_REPO_OWNER?.trim() ?? "") !== "";
   if (hasEnvConfig) {
     for (const c of buildEnvConfigs(reposRoot)) {
-      projectRepo.seed({
-        id: c.id,
-        owner: c.owner,
-        name: c.name,
-        url: c.url,
-        baseBranch: c.baseBranch,
-        testCommand: c.testCommand ? [...c.testCommand] : null,
-        createdAt: new Date().toISOString(),
-      });
+      projectRepo.seed({ ...projectRowFromConfig(c), createdAt: new Date().toISOString() });
     }
   }
   // May be empty on a fresh install — the panel onboards the CEO to add the first repo.
