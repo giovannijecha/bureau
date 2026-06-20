@@ -2,7 +2,7 @@
 
 @custom-variant dark (&:is(.dark *));
 
-/* shadcn/ui design tokens (OKLCH) — same system as the Agency panel. */
+/* shadcn/ui design tokens (OKLCH). */
 :root {
   --radius: 0.625rem;
   --background: oklch(1 0 0);
@@ -112,7 +112,7 @@
     background-color: var(--background);
     color: var(--foreground);
   }
-  /* Thin, theme-aware scrollbars (matches Agency). */
+  /* Thin, theme-aware scrollbars. */
   ::-webkit-scrollbar {
     width: 8px;
     height: 8px;

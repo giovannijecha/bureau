@@ -45,6 +45,7 @@ import { irisRespond, extractJsonObject } from "./iris.js";
 import { buildHub } from "./hub.js";
 import { journalPath, journalMarkdown, notePath, slug, JOURNAL_DIR } from "./memory.js";
 import { estimateTaskCost, type ScopeAverage } from "./estimate.js";
+import { provision } from "./provision.js";
 import { costUsd } from "./usage.js";
 import { ASSIGNEE, prOpen, prUrl, isMerged } from "./summary.js";
 
@@ -78,6 +79,11 @@ const VERIFY_MAX_FIX_ATTEMPTS = ((): number => {
 const VERIFY_TIMEOUT_MS = ((): number => {
   const v = Number(process.env.BUREAU_VERIFY_TIMEOUT);
   return Number.isFinite(v) && v > 0 ? v : 600_000; // 10 min per check command
+})();
+// Dependency install can be slow on a cold cache (a fresh worktree + native deps). Non-positive ⇒ default.
+const PROVISION_TIMEOUT_MS = ((): number => {
+  const v = Number(process.env.BUREAU_PROVISION_TIMEOUT);
+  return Number.isFinite(v) && v > 0 ? v : 600_000; // 10 min
 })();
 
 /** The check command(s) the verify loop runs for a project. Reuses the configured testCommand
@@ -1224,6 +1230,42 @@ export class Orchestrator {
     }
   }
 
+  /** Install the worktree's dependencies before any step runs — a fresh `git worktree add` has
+   *  none, so verify/test would otherwise fail on module-not-found. Best-effort: a failed or
+   *  unspawnable install NEVER aborts the task; it returns depsReady=false so verifyAndFix
+   *  surfaces check failures as ENVIRONMENTAL (couldn't run) instead of burning fix attempts on a
+   *  missing-deps error. Skipped when no step runs a command (pure plan/review) or no stack is
+   *  detected. Streams progress to the panel under the first step. */
+  private async provisionWorktree(taskId: string, worktreePath: string, firstStepId: StepId): Promise<boolean> {
+    const needsDeps = this.requireTask(taskId).steps.some(
+      (s) => s.capability === "edit" || s.capability === "document" || s.capability === "test"
+    );
+    if (!needsDeps) return true; // nothing will run a command — deps are irrelevant
+    const emit = (chunk: string): void =>
+      this.d.events.emit({ type: "step_progress", taskId, stepId: firstStepId, capability: "provision", chunk });
+    let result;
+    try {
+      result = await provision(worktreePath, { runner: this.commandRunner, timeoutMs: PROVISION_TIMEOUT_MS, onChunk: emit });
+    } catch {
+      return false; // unexpected — treat as deps-not-ready (verify surfaces it), never abort
+    }
+    if (result.skipped || result.ok) return true;
+    const goal = (() => {
+      try {
+        return truncate(this.requireTask(taskId).goal);
+      } catch {
+        return taskId;
+      }
+    })();
+    this.notify(
+      "failed",
+      taskId,
+      "Couldn't install dependencies",
+      `“${goal}” — \`${(result.command ?? []).join(" ")}\` failed, so the automated checks can't run. Review with care before merging, or fix the project's setup.`
+    );
+    return false;
+  }
+
   /** Closed-loop verification + auto-fix. After the edit pipeline (and before the single commit
    *  + pr_approval gate), run the project's configured check command(s) in the worktree; on a
    *  failure feed the captured output back into a RE-EDIT and retry, up to VERIFY_MAX_FIX_ATTEMPTS,
@@ -1246,7 +1288,8 @@ export class Orchestrator {
     worktreePath: string,
     editStepId: StepId,
     changeRequest: string | undefined,
-    spentUsd: number
+    spentUsd: number,
+    depsReady: boolean
   ): Promise<number> {
     const commands = verifyCommandsFor(project);
     if (commands.length === 0) return spentUsd; // nothing configured — skip (never guess)
@@ -1280,6 +1323,14 @@ export class Orchestrator {
       if (result.failure?.couldNotRun) {
         emit(`\n⚠ ${result.digest}\n`);
         this.notify("failed", taskId, "Couldn't run the checks", `“${goal()}” — ${result.digest} Configure the project's test/verify command.`);
+        return spentUsd;
+      }
+      // Dependencies weren't installed (provisioning failed) → a check failure is almost certainly
+      // module-not-found, not a code bug. Don't burn fix attempts re-editing working code; surface
+      // it as environmental, like couldNotRun.
+      if (!depsReady) {
+        emit("\n⚠ Checks failed, but dependencies aren't installed — treating as environmental, not a code issue.\n");
+        this.notify("failed", taskId, "Checks couldn't run (no dependencies)", `“${goal()}” — dependencies aren't installed, so the checks can't be trusted. Review with care before merging.`);
         return spentUsd;
       }
       // Out of fix attempts → land at the gate with the failing diff for the human to judge.
@@ -1337,6 +1388,11 @@ export class Orchestrator {
     let currentStepId: StepId | undefined;
     try {
       let task = this.requireTask(taskId);
+      // Provision the worktree's dependencies before any step runs (a fresh worktree has none),
+      // so verify/test actually have something to check. Best-effort — false ⇒ checks are env-gated.
+      const firstStep = task.steps[0];
+      const depsReady = firstStep ? await this.provisionWorktree(taskId, worktreePath, firstStep.id) : true;
+      if (this.requireTask(taskId).status !== "executing") return; // stopped during provisioning
       // Running tally of this task's model spend, for the budget guard (0 cap = off).
       let spentUsd = 0;
       for (const planned of task.steps) {
@@ -1402,7 +1458,7 @@ export class Orchestrator {
         const fresh = this.requireTask(taskId);
         const editStep = fresh.steps.filter((s) => s.capability === "edit").pop();
         if (editStep && fresh.gates[0] !== undefined) {
-          spentUsd = await this.verifyAndFix(taskId, project, vcs, worktreePath, editStep.id, undefined, spentUsd);
+          spentUsd = await this.verifyAndFix(taskId, project, vcs, worktreePath, editStep.id, undefined, spentUsd, depsReady);
         }
       }
 
@@ -1504,6 +1560,11 @@ export class Orchestrator {
       // (executeFromExecuting). A revise re-runs the whole pipeline + a verify loop, so it must
       // honor the per-task USD cap too (0 = off).
       let spentUsd = 0;
+      // Re-provision deps (the worktree is reused; package.json may have changed, and a run-1
+      // provision failure shouldn't poison the revise). Same gating/best-effort as the first run.
+      const firstStep = task.steps[0];
+      const depsReady = firstStep ? await this.provisionWorktree(taskId, worktreePath, firstStep.id) : true;
+      if (this.requireTask(taskId).status !== "executing") return; // stopped during provisioning
 
       for (const planned of task.steps) {
         if (this.requireTask(taskId).status !== "executing") return; // stopped between steps
@@ -1557,7 +1618,7 @@ export class Orchestrator {
         const fresh = this.requireTask(taskId);
         const editStep = fresh.steps.filter((s) => s.capability === "edit").pop();
         if (editStep && fresh.gates[0] !== undefined) {
-          spentUsd = await this.verifyAndFix(taskId, project, vcs, worktreePath, editStep.id, changeRequest, spentUsd);
+          spentUsd = await this.verifyAndFix(taskId, project, vcs, worktreePath, editStep.id, changeRequest, spentUsd, depsReady);
         }
       }
 
