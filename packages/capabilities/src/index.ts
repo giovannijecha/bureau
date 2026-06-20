@@ -11,4 +11,5 @@ export { PlanCapability, buildPlanPrompt, PLAN_TOOLS, type PlanCapabilityDeps } 
 export { ResearchCapability, buildResearchPrompt, RESEARCH_TOOLS, type ResearchCapabilityDeps } from "./research.js";
 export { TestCapability, DEFAULT_TEST_TIMEOUT_MS, type TestCapabilityDeps } from "./test.js";
 export { runCurator, buildCuratePrompt, CURATE_SYSTEM } from "./curate.js";
+export { runVerify, type VerifyResult, type VerifyFailure } from "./verify.js";
 export { defaultCommandRunner, type CommandRunner, type CommandResult } from "./run-command.js";

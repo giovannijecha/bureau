@@ -9,6 +9,9 @@ export const ProjectDto = z.object({
   owner: z.string(),
   name: z.string(),
   baseBranch: z.string(),
+  /** The configured test/verify command (already-tokenized argv) — powers both the advisory
+   *  `test` worker and the post-edit verify loop. Absent ⇒ none configured. */
+  testCommand: z.array(z.string()).optional(),
 });
 
 export type Project = z.infer<typeof ProjectDto>;
@@ -24,3 +27,13 @@ export const CreateProjectRequestDto = z.object({
 });
 
 export type CreateProjectRequest = z.infer<typeof CreateProjectRequestDto>;
+
+// Set (or clear) an existing project's test/verify command from the panel — the only way to
+// turn the verify loop on for a repo added by URL (the add form takes a URL only). A non-empty
+// argv array sets it; null clears it. Already-tokenized (the client splits; the server never
+// parses a string into a command).
+export const SetProjectCommandRequestDto = z.object({
+  testCommand: z.array(z.string().min(1)).nonempty().nullable(),
+});
+
+export type SetProjectCommandRequest = z.infer<typeof SetProjectCommandRequestDto>;

@@ -30,8 +30,8 @@ import {
   type LucideIcon,
   type LucideProps,
 } from "lucide-react";
-import type { EngineInfo, GithubAccount } from "@bureau/contracts";
-import { getConfig, ENGINE_URL, getGithubAccount, setModels, setEfforts, setBudget, createProject, removeProject } from "../../lib/api";
+import type { EngineInfo, GithubAccount, Project } from "@bureau/contracts";
+import { getConfig, ENGINE_URL, getGithubAccount, setModels, setEfforts, setBudget, createProject, removeProject, setProjectCommand } from "../../lib/api";
 import { useAppearance, ACCENTS, SCALES, type ThemeMode, type ScaleKey } from "../../lib/appearance";
 import { useProjects } from "../../lib/useProjects";
 import { useConfirm } from "../../components/ConfirmDialog";
@@ -571,32 +571,102 @@ function ProjectsCard() {
       ) : (
         <ul className="divide-y rounded-lg border">
           {projects.map((p) => (
-            <li key={p.id} className="group flex items-center gap-2.5 px-3 py-2.5">
-              <FolderGit2 className="h-4 w-4 shrink-0 text-muted-foreground" />
-              <div className="min-w-0 flex-1">
-                <div className="truncate text-sm font-medium">
-                  {p.owner}/{p.name}
-                </div>
-                <div className="flex items-center gap-1 text-xs text-muted-foreground">
-                  <GitBranch className="h-3 w-3" /> {p.baseBranch}
-                </div>
-              </div>
-              <button
-                onClick={() => void remove(p)}
-                title="Remove project"
-                aria-label={`Remove ${p.owner}/${p.name}`}
-                className="shrink-0 rounded-md p-1.5 text-muted-foreground opacity-0 transition-all hover:bg-destructive/10 hover:text-destructive focus:opacity-100 group-hover:opacity-100"
-              >
-                <Trash2 className="h-4 w-4" />
-              </button>
-            </li>
+            <ProjectRow key={p.id} project={p} onRemove={() => void remove(p)} onError={setError} refresh={refresh} />
           ))}
         </ul>
       )}
       <p className="text-xs text-muted-foreground">
-        Repos are cloned under the engine&apos;s repos root. Only <code className="font-mono">https://github.com/…</code> URLs — no credentials are stored.
+        Repos are cloned under the engine&apos;s repos root. Only <code className="font-mono">https://github.com/…</code> URLs — no credentials are stored. The
+        {" "}<span className="font-medium">test / verify command</span> runs after every edit — Bureau auto-fixes failures before you review.
       </p>
     </Card>
+  );
+}
+
+/** One project row: identity + the editable test/verify command that powers the verify loop. */
+function ProjectRow({
+  project: p,
+  onRemove,
+  onError,
+  refresh,
+}: {
+  project: Project;
+  onRemove: () => void;
+  onError: (msg: string | null) => void;
+  refresh: () => void;
+}) {
+  const saved = (p.testCommand ?? []).join(" ");
+  const [cmd, setCmd] = useState(saved);
+  const [busy, setBusy] = useState(false);
+  const [ok, setOk] = useState(false);
+  // Resync the input when the persisted value changes (e.g. another tab saved it).
+  useEffect(() => setCmd(saved), [saved]);
+  const dirty = cmd.trim() !== saved.trim();
+
+  async function save() {
+    if (!dirty || busy) return;
+    setBusy(true);
+    onError(null);
+    try {
+      // Tokenize on the CLIENT — the engine never parses a string into a command. Whitespace
+      // split covers build/test commands (e.g. "node node_modules/.bin/vitest run").
+      const argv = cmd.trim() === "" ? null : cmd.trim().split(/\s+/);
+      await setProjectCommand(p.id, argv);
+      setOk(true);
+      setTimeout(() => setOk(false), 1500);
+      refresh();
+    } catch (e) {
+      onError(e instanceof Error ? e.message : String(e));
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  return (
+    <li className="group px-3 py-2.5">
+      <div className="flex items-center gap-2.5">
+        <FolderGit2 className="h-4 w-4 shrink-0 text-muted-foreground" />
+        <div className="min-w-0 flex-1">
+          <div className="truncate text-sm font-medium">
+            {p.owner}/{p.name}
+          </div>
+          <div className="flex items-center gap-1 text-xs text-muted-foreground">
+            <GitBranch className="h-3 w-3" /> {p.baseBranch}
+          </div>
+        </div>
+        <button
+          onClick={onRemove}
+          title="Remove project"
+          aria-label={`Remove ${p.owner}/${p.name}`}
+          className="shrink-0 rounded-md p-1.5 text-muted-foreground opacity-0 transition-all hover:bg-destructive/10 hover:text-destructive focus:opacity-100 group-hover:opacity-100"
+        >
+          <Trash2 className="h-4 w-4" />
+        </button>
+      </div>
+      <div className="mt-2 flex items-center gap-2 pl-6">
+        <input
+          value={cmd}
+          disabled={busy}
+          onChange={(e) => setCmd(e.target.value)}
+          onKeyDown={(e) => {
+            if (e.key === "Enter") {
+              e.preventDefault();
+              void save();
+            }
+          }}
+          placeholder="Test / verify command — e.g. bun run build"
+          aria-label={`Test / verify command for ${p.owner}/${p.name}`}
+          className="h-8 min-w-0 flex-1 rounded-md border bg-background px-2.5 font-mono text-xs outline-none transition-colors focus:border-primary/60"
+        />
+        <button
+          onClick={() => void save()}
+          disabled={!dirty || busy}
+          className="inline-flex h-8 shrink-0 items-center gap-1.5 rounded-md border px-2.5 text-xs font-medium transition-colors hover:bg-muted disabled:opacity-40"
+        >
+          {busy ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : ok ? "Saved" : "Save"}
+        </button>
+      </div>
+    </li>
   );
 }
 

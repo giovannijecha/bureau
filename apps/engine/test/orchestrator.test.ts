@@ -390,6 +390,9 @@ beforeEach(() => {
     memory: mem.memory,
     usage: usage.usage,
     notifications: notifs.store,
+    // The verify loop runs on every mutating task (PROJECT has a testCommand) — a passing fake
+    // runner keeps it silent on the happy path. The dedicated "verify loop" suite injects its own.
+    commandRunner: async () => ({ stdout: "ok", stderr: "", code: 0, timedOut: false }),
     ids: () => `id-${++n}`,
     clock: () => "2026-06-13T00:00:00.000Z",
   });
@@ -399,7 +402,7 @@ beforeEach(() => {
 
 describe("projects", () => {
   it("lists projects as DTOs (no urls or on-disk paths leaked)", () => {
-    expect(orch.listProjects()).toEqual([{ id: "widget", owner: "acme", name: "widget", baseBranch: "main" }]);
+    expect(orch.listProjects()).toEqual([{ id: "widget", owner: "acme", name: "widget", baseBranch: "main", testCommand: ["npm", "test"] }]);
   });
 
   it("resolves a task's project by its stable id, even when two projects share owner/name", async () => {
@@ -1471,6 +1474,142 @@ describe("reconcile (crash recovery)", () => {
     orch.createTask(PROPOSAL); // created (draft)
     const cleaned = await orch.reconcile();
     expect(cleaned).toBe(0);
+  });
+});
+
+describe("verify loop (closed-loop auto-fix)", () => {
+  type Runner = () => Promise<{ stdout: string; stderr: string; code: number; timedOut: boolean }>;
+
+  /** Build an orchestrator with a custom edit capability, vcs, and verify-command runner. The
+   *  edit capability bumps `version`; the vcs diff reflects it so the no-progress guard only
+   *  fires when an edit genuinely changes nothing. */
+  function setup(opts: { runner: Runner; changingDiff?: boolean; project?: ProjectConfig }) {
+    const counters = { edits: 0, version: 0, verifyRuns: 0 };
+    const reg = new CapabilityRegistry();
+    reg.register({
+      kind: "edit",
+      async execute(input) {
+        counters.edits++;
+        counters.version++;
+        input.onChunk?.(`edit ${counters.edits}`);
+        return { artifacts: [], summary: `edit ${counters.edits}`, usage: { inputTokens: 100, outputTokens: 50, model: "claude-opus-4-8" } };
+      },
+    });
+    const v = fakeVcs();
+    if (opts.changingDiff) v.vcs.workingDiff = async () => `diff-v${counters.version}`; // changes per edit
+    const runner: Runner = async () => {
+      counters.verifyRuns++;
+      return opts.runner();
+    };
+    let n = 0;
+    const o = new Orchestrator({
+      store,
+      capabilities: reg,
+      provider: prov.provider,
+      projects: new ProjectRegistry([opts.project ?? PROJECT]),
+      projectRepo,
+      reposRoot: "/repos",
+      vcs: () => v.vcs,
+      events: { emit: () => {} },
+      messages: fakeMessages(),
+      conversations: fakeConversations(),
+      memory: mem.memory,
+      usage: usage.usage,
+      notifications: notifs.store,
+      commandRunner: runner,
+      ids: () => `vf-${++n}`,
+      clock: () => "2026-06-13T00:00:00.000Z",
+    });
+    return { o, v, counters };
+  }
+
+  const EDIT_ONLY: TaskProposal = { title: "verify me", summary: "x", steps: [{ capability: "edit", description: "do it" }] };
+
+  it("re-edits to fix a failing check, then lands at the gate with a verified diff (one commit, no push)", async () => {
+    // Fail until a fix has run (version ≥ 2), then pass.
+    const { o, v, counters } = setup({
+      changingDiff: true,
+      runner: async () =>
+        counters.version >= 2
+          ? { stdout: "ok", stderr: "", code: 0, timedOut: false }
+          : { stdout: "boom", stderr: "TypeError: key={turn()}", code: 1, timedOut: false },
+    });
+    const draft = o.createTask(EDIT_ONLY);
+    await o.startTask(draft.id);
+    await o.settle(draft.id);
+
+    const task = store.load(draft.id)!;
+    expect(task.status).toBe("awaiting_human"); // parked at the gate, NOT aborted
+    expect(counters.edits).toBe(2); // initial edit + ONE fix re-edit
+    expect(counters.verifyRuns).toBe(2); // failed once, then passed
+    expect(v.calls.commitAll).toHaveLength(1); // exactly one commit — the verified diff
+    expect(v.calls.push).toHaveLength(0); // the wall held — nothing reached GitHub
+    expect(usage.events.filter((e) => e.scope === "edit" && e.taskId === draft.id)).toHaveLength(2); // fix billed
+  });
+
+  it("lands at the gate (never aborts) and notifies when checks keep failing past the attempt budget", async () => {
+    const { o, v, counters } = setup({ changingDiff: true, runner: async () => ({ stdout: "still broken", stderr: "err", code: 1, timedOut: false }) });
+    const draft = o.createTask(EDIT_ONLY);
+    await o.startTask(draft.id);
+    await o.settle(draft.id);
+
+    const task = store.load(draft.id)!;
+    expect(task.status).toBe("awaiting_human"); // the human still decides — work is never discarded
+    expect(v.calls.commitAll).toHaveLength(1);
+    expect(v.calls.push).toHaveLength(0);
+    expect(counters.edits).toBe(3); // initial + 2 fix attempts (VERIFY_MAX_FIX_ATTEMPTS=2)
+    expect(notifs.items.some((nf) => nf.subject === "Checks still failing" && nf.taskId === draft.id)).toBe(true);
+  });
+
+  it("stops early (no-progress guard) when a fix changes nothing", async () => {
+    // changingDiff:false → the vcs diff is constant, so a fix that the worker 'made' looks identical.
+    const { o, v, counters } = setup({ changingDiff: false, runner: async () => ({ stdout: "broken", stderr: "err", code: 1, timedOut: false }) });
+    const draft = o.createTask(EDIT_ONLY);
+    await o.startTask(draft.id);
+    await o.settle(draft.id);
+
+    const task = store.load(draft.id)!;
+    expect(task.status).toBe("awaiting_human");
+    expect(counters.edits).toBe(2); // initial + ONE fix; identical diff ⇒ stop (not the full budget)
+    expect(notifs.items.some((nf) => nf.subject === "Checks failing (no fix)" && nf.taskId === draft.id)).toBe(true);
+  });
+
+  it("surfaces a check that can't run as a config problem without burning fix attempts", async () => {
+    const { o, v, counters } = setup({ changingDiff: true, runner: async () => ({ stdout: "", stderr: "spawn ENOENT", code: -1, timedOut: false }) });
+    const draft = o.createTask(EDIT_ONLY);
+    await o.startTask(draft.id);
+    await o.settle(draft.id);
+
+    const task = store.load(draft.id)!;
+    expect(task.status).toBe("awaiting_human");
+    expect(counters.edits).toBe(1); // no re-edit — a missing binary isn't a code bug
+    expect(counters.verifyRuns).toBe(1);
+    expect(v.calls.commitAll).toHaveLength(1);
+    expect(notifs.items.some((nf) => nf.subject === "Couldn't run the checks" && nf.taskId === draft.id)).toBe(true);
+  });
+
+  it("skips verify entirely when the project has no command configured", async () => {
+    const noCmd: ProjectConfig = { id: "nocmd", owner: "acme", name: "bare", url: "u", baseBranch: "main", canonicalPath: "/n/repo", worktreesDir: "/n/wt" };
+    let called = 0;
+    const { o, v } = setup({ project: noCmd, changingDiff: true, runner: async () => (called++, { stdout: "", stderr: "", code: 0, timedOut: false }) });
+    const draft = o.createTask(EDIT_ONLY);
+    await o.startTask(draft.id);
+    await o.settle(draft.id);
+
+    expect(called).toBe(0); // the runner was never invoked — no command to run
+    expect(store.load(draft.id)!.status).toBe("awaiting_human");
+    expect(v.calls.commitAll).toHaveLength(1);
+  });
+
+  it("setProjectTestCommand turns the loop on for an existing project (persisted + live)", () => {
+    const { o } = setup({ changingDiff: true, runner: async () => ({ stdout: "", stderr: "", code: 0, timedOut: false }) });
+    const before = o.listProjects().find((p) => p.id === PROJECT.id)!;
+    expect(before.testCommand).toEqual(["npm", "test"]); // PROJECT seeds with one
+    const dto = o.setProjectTestCommand(PROJECT.id, ["bun", "run", "build"]);
+    expect(dto.testCommand).toEqual(["bun", "run", "build"]);
+    expect(o.listProjects().find((p) => p.id === PROJECT.id)!.testCommand).toEqual(["bun", "run", "build"]);
+    // clearing removes it
+    expect(o.setProjectTestCommand(PROJECT.id, undefined).testCommand).toBeUndefined();
   });
 });
 

@@ -17,7 +17,7 @@
 //   POST /api/tasks/:id/establish-base  recover a land that failed on an empty repo (no base)
 
 import { createServer, type IncomingMessage, type ServerResponse, type Server } from "node:http";
-import { SendMessageRequestDto, CreateTaskRequestDto, SaveNoteRequestDto, GateDecisionRequestDto, GitOpRequestDto, SetModelsRequestDto, SetEffortsRequestDto, CurateRequestDto, ApplyCurationRequestDto, CreateProjectRequestDto, EstimateRequestDto, SetBudgetRequestDto } from "@bureau/contracts";
+import { SendMessageRequestDto, CreateTaskRequestDto, SaveNoteRequestDto, GateDecisionRequestDto, GitOpRequestDto, SetModelsRequestDto, SetEffortsRequestDto, CurateRequestDto, ApplyCurationRequestDto, CreateProjectRequestDto, SetProjectCommandRequestDto, EstimateRequestDto, SetBudgetRequestDto } from "@bureau/contracts";
 import type { TaskId } from "@bureau/core";
 import { VcsError } from "@bureau/vcs";
 import { Orchestrator, OrchestratorError } from "./orchestrator.js";
@@ -109,6 +109,14 @@ async function handle(deps: HttpDeps, req: IncomingMessage, res: ServerResponse)
   if (method === "DELETE" && projDelMatch) {
     await deps.orchestrator.removeProject(decodeURIComponent(projDelMatch[1]!), { force: url.searchParams.get("force") === "1" });
     res.writeHead(204).end();
+    return;
+  }
+
+  // PATCH /api/projects/:id — set/clear the test/verify command (turns the verify loop on/off).
+  const projPatchMatch = path.match(/^\/api\/projects\/([^/]+)$/);
+  if (method === "PATCH" && projPatchMatch) {
+    const body = SetProjectCommandRequestDto.parse(await readJson(req));
+    sendJson(res, 200, deps.orchestrator.setProjectTestCommand(decodeURIComponent(projPatchMatch[1]!), body.testCommand ?? undefined));
     return;
   }
 
@@ -467,7 +475,7 @@ function setCors(res: ServerResponse, origin: string | undefined, sameOrigin: bo
   if (origin && sameOrigin) {
     res.setHeader("Access-Control-Allow-Origin", origin);
     res.setHeader("Vary", "Origin");
-    res.setHeader("Access-Control-Allow-Methods", "GET, POST, DELETE, OPTIONS");
+    res.setHeader("Access-Control-Allow-Methods", "GET, POST, PATCH, DELETE, OPTIONS");
     res.setHeader("Access-Control-Allow-Headers", "Content-Type");
   }
 }

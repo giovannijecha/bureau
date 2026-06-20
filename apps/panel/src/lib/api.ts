@@ -61,6 +61,17 @@ export async function createProject(req: CreateProjectRequest): Promise<Project>
   return json(await postJson("/api/projects", req));
 }
 
+/** Set (or clear) a project's test/verify command — the command the post-edit verify loop runs.
+ *  Pass a tokenized argv (e.g. ["bun","run","build"]) to set it, or null to clear it. */
+export async function setProjectCommand(id: string, testCommand: string[] | null): Promise<Project> {
+  const res = await fetch(`${BASE}/api/projects/${encodeURIComponent(id)}`, {
+    method: "PATCH",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ testCommand }),
+  });
+  return json(res);
+}
+
 /** Remove a repo. `force` overrides the in-flight-task guard (rarely needed). */
 export async function removeProject(id: string, force = false): Promise<void> {
   const res = await fetch(`${BASE}/api/projects/${encodeURIComponent(id)}${force ? "?force=1" : ""}`, { method: "DELETE" });

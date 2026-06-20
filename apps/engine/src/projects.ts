@@ -27,7 +27,13 @@ export interface ProjectConfig {
 
 /** Public, panel-facing view of a project (no urls or on-disk paths). */
 export function toProjectDto(p: ProjectConfig): Project {
-  return { id: p.id, owner: p.owner, name: p.name, baseBranch: p.baseBranch };
+  return {
+    id: p.id,
+    owner: p.owner,
+    name: p.name,
+    baseBranch: p.baseBranch,
+    ...(p.testCommand && p.testCommand.length > 0 ? { testCommand: [...p.testCommand] } : {}),
+  };
 }
 
 export class ProjectRegistry {
@@ -75,6 +81,19 @@ export class ProjectRegistry {
     const p = this.projects.find((x) => x.owner === owner && x.name === name);
     if (!p) throw new OrchestratorError(`No project configured for ${owner}/${name}`, 409);
     return p;
+  }
+
+  /** Set (or clear) a project's test/verify command in place — the only MUTABLE field of a
+   *  config (everything else keys on-disk paths / identity). Returns the new config. Mutates
+   *  the one shared array so every holder (orchestrator, terminal) sees it immediately. */
+  setTestCommand(id: string, testCommand: readonly string[] | undefined): ProjectConfig {
+    const idx = this.projects.findIndex((p) => p.id === id);
+    if (idx < 0) throw new OrchestratorError(`Unknown project: ${id}`, 404);
+    const { testCommand: _drop, ...base } = this.projects[idx]!;
+    const next: ProjectConfig =
+      testCommand && testCommand.length > 0 ? { ...base, testCommand: [...testCommand] } : { ...base };
+    this.projects = this.projects.map((p, i) => (i === idx ? next : p));
+    return next;
   }
 
   /** Add a project at runtime. Rejects a duplicate id so two inputs can't alias one clone. */

@@ -23,8 +23,8 @@ import type {
   TransitionEvent,
   HumanDecision,
 } from "@bureau/core";
-import type { CapabilityRegistry } from "@bureau/capabilities";
-import { runCurator } from "@bureau/capabilities";
+import type { CapabilityRegistry, CommandRunner } from "@bureau/capabilities";
+import { runCurator, runVerify, defaultCommandRunner } from "@bureau/capabilities";
 import type { Provider } from "@bureau/providers";
 import type { Message, TaskProposal, ChatResponse, Project, CreateProjectRequest, Conversation, EngineInfo, Hub, Note, NoteSummary, UsageSummary, CostEstimate, Notification, NotificationKind, GitInfo, Attachment, GitOpRequest, GitOpResult, GitTree, GitFileContent, GithubAccount, PullRequest, Issue, TreeCommits, CommitDetail, FileList, FileHistory, CurationPlan, CurateRequest, ApplyCurationRequest, CurationStatus } from "@bureau/contracts";
 import { DESTRUCTIVE_GIT_OPS, CurationPlanDto } from "@bureau/contracts";
@@ -65,6 +65,28 @@ const STEP_TIMEOUT_MS = ((): number => {
 })();
 const TEST_STEP_TIMEOUT_MS = 660_000; // 11 min — > the test runner's 600s self-timeout (no retries)
 
+// ── Closed-loop verify + auto-fix ─────────────────────────────────────────────
+// After the edit pipeline, Bureau runs the project's configured check command(s) in the
+// worktree and feeds any failure back into a re-edit so the CEO reviews code that actually
+// builds/passes — not a blind diff. This is LIVENESS/QUALITY only: it NEVER caps cost (the
+// per-task USD budget guard is the cost backstop) and NEVER pushes (the pr_approval gate +
+// canPush wall are untouched). Non-positive env ⇒ the default, never "disable".
+const VERIFY_MAX_FIX_ATTEMPTS = ((): number => {
+  const v = Number(process.env.BUREAU_VERIFY_MAX_FIX_ATTEMPTS);
+  return Number.isInteger(v) && v > 0 ? v : 2;
+})();
+const VERIFY_TIMEOUT_MS = ((): number => {
+  const v = Number(process.env.BUREAU_VERIFY_TIMEOUT);
+  return Number.isFinite(v) && v > 0 ? v : 600_000; // 10 min per check command
+})();
+
+/** The check command(s) the verify loop runs for a project. Reuses the configured testCommand
+ *  (one command today) — no separate config, no DB column. Empty ⇒ verify is skipped, never
+ *  guessed (exactly like the advisory `test` worker degrades). */
+function verifyCommandsFor(project: ProjectConfig): readonly (readonly string[])[] {
+  return project.testCommand && project.testCommand.length > 0 ? [project.testCommand] : [];
+}
+
 // Chat compaction: keep Iris's context bounded (and turns fast) on a long thread. The most
 // recent turns ride verbatim up to CHAT_VERBATIM_BUDGET chars; older turns are folded into a
 // rolling summary capped at CHAT_SUMMARY_CAP. Short threads never overflow → zero overhead.
@@ -99,6 +121,9 @@ export interface OrchestratorDeps {
   /** Per-step wall-clock hard cap (ms) — defense-in-depth above the CLI watchdog. Defaults to
    *  STEP_TIMEOUT_MS (75 min / BUREAU_STEP_HARD_CAP). Tests pass a tiny value to exercise it. */
   readonly stepHardCapMs?: number;
+  /** Runs the verify loop's check command(s) (build/tests) — the sandboxed argv-only runner by
+   *  default (shell:false, secrets scrubbed). Tests inject a fake to avoid spawning processes. */
+  readonly commandRunner?: CommandRunner;
   readonly ids: () => string;
   readonly clock: () => string;
 }
@@ -129,6 +154,8 @@ export class Orchestrator {
   private readonly curateEvery: number;
   /** Per-step wall-clock hard cap (ms) — the never-settling-promise backstop above the CLI watchdog. */
   private readonly stepHardCapMs: number;
+  /** Verify-loop command runner (build/tests) — the sandboxed argv-only runner unless a test injects one. */
+  private readonly commandRunner: CommandRunner;
 
   constructor(private readonly d: OrchestratorDeps) {
     this.modelPolicy = { ...(d.models ?? defaultModelPolicy()) };
@@ -138,6 +165,7 @@ export class Orchestrator {
     this.curateEvery = Number.isInteger(every) && every > 0 ? every : 10;
     // A non-positive injected value means "use the default", not "1ms cap that kills every step".
     this.stepHardCapMs = d.stepHardCapMs && d.stepHardCapMs > 0 ? d.stepHardCapMs : STEP_TIMEOUT_MS;
+    this.commandRunner = d.commandRunner ?? defaultCommandRunner;
   }
 
   /** Set the per-task USD budget cap (0 = no cap). Returns the clamped value in effect. */
@@ -183,6 +211,26 @@ export class Orchestrator {
     this.d.projects.add(config); // mutate the one shared registry in place → every consumer sees it
     this.d.events.emit({ type: "projects_changed" });
     return toProjectDto(config);
+  }
+
+  /** Set (or clear) a project's test/verify command — the command the post-edit verify loop runs
+   *  (and the advisory `test` worker runs). The only way to turn the loop on for a repo added by
+   *  URL (the add form takes a URL only). Updates the live registry in place + persists the row. */
+  setProjectTestCommand(id: string, testCommand: readonly string[] | undefined): Project {
+    this.d.projects.get(id); // 404 if unknown
+    const next = this.d.projects.setTestCommand(id, testCommand);
+    const row = this.d.projectRepo.get(id); // preserve the original createdAt
+    this.d.projectRepo.upsert({
+      id: next.id,
+      owner: next.owner,
+      name: next.name,
+      url: next.url,
+      baseBranch: next.baseBranch,
+      testCommand: next.testCommand ? [...next.testCommand] : null,
+      createdAt: row?.createdAt ?? this.d.clock(),
+    });
+    this.d.events.emit({ type: "projects_changed" });
+    return toProjectDto(next);
   }
 
   /** Remove a project. Refuses (409) while any non-terminal task still references it
@@ -1176,6 +1224,110 @@ export class Orchestrator {
     }
   }
 
+  /** Closed-loop verification + auto-fix. After the edit pipeline (and before the single commit
+   *  + pr_approval gate), run the project's configured check command(s) in the worktree; on a
+   *  failure feed the captured output back into a RE-EDIT and retry, up to VERIFY_MAX_FIX_ATTEMPTS,
+   *  so the CEO reviews code that actually builds/passes instead of a blind diff.
+   *
+   *  Invariants:
+   *  - NEVER commits, pushes, opens, or decides a gate — it only mutates the worktree in place.
+   *    The caller's single commit + pr_approval gate (canPush wall) still own landing → the
+   *    human still approves the FINAL diff once. The security wall is untouched.
+   *  - Liveness/quality only: it never caps cost. Each re-edit counts against the per-task USD
+   *    budget guard (the cost backstop); once the cap is crossed it STOPS fixing and lands what
+   *    it has (it never discards the work — the human decides at the gate).
+   *  - Idempotent on resume: executeFromExecuting is re-entered verbatim after a worktree
+   *    reset-to-base, so verify simply re-runs from the rebuilt change (no persisted counter).
+   *  Returns the updated running spend. */
+  private async verifyAndFix(
+    taskId: string,
+    project: ProjectConfig,
+    vcs: VcsPort,
+    worktreePath: string,
+    editStepId: StepId,
+    changeRequest: string | undefined,
+    spentUsd: number
+  ): Promise<number> {
+    const commands = verifyCommandsFor(project);
+    if (commands.length === 0) return spentUsd; // nothing configured — skip (never guess)
+
+    const goal = (): string => {
+      try {
+        return truncate(this.requireTask(taskId).goal);
+      } catch {
+        return taskId;
+      }
+    };
+    const emit = (chunk: string): void =>
+      this.d.events.emit({ type: "step_progress", taskId, stepId: editStepId, capability: "verify", chunk });
+
+    // attempt 1 = the initial verify; attempts 2..N+1 = a verify AFTER a fix re-edit.
+    for (let attempt = 1; attempt <= VERIFY_MAX_FIX_ATTEMPTS + 1; attempt++) {
+      try {
+        if (this.requireTask(taskId).status !== "executing") return spentUsd; // stopped/deleted — bail quietly
+      } catch {
+        return spentUsd;
+      }
+      emit(attempt === 1 ? "\nVerifying the change…\n" : `\nRe-verifying (attempt ${attempt})…\n`);
+      const result = await runVerify(commands, worktreePath, VERIFY_TIMEOUT_MS, this.commandRunner, emit);
+
+      if (result.passed) {
+        emit("\n✓ All checks passed.\n");
+        return spentUsd;
+      }
+      // A check that can't even START is a project-CONFIG problem (missing binary, Windows shim),
+      // not a code bug — re-editing can't fix it. Surface it and stop; the diff still lands at the gate.
+      if (result.failure?.couldNotRun) {
+        emit(`\n⚠ ${result.digest}\n`);
+        this.notify("failed", taskId, "Couldn't run the checks", `“${goal()}” — ${result.digest} Configure the project's test/verify command.`);
+        return spentUsd;
+      }
+      // Out of fix attempts → land at the gate with the failing diff for the human to judge.
+      if (attempt > VERIFY_MAX_FIX_ATTEMPTS) {
+        emit(`\n✗ Checks still failing after ${VERIFY_MAX_FIX_ATTEMPTS} fix attempt(s).\n`);
+        this.notify("failed", taskId, "Checks still failing", `“${goal()}” — automated checks still fail after ${VERIFY_MAX_FIX_ATTEMPTS} fix attempt(s). Review carefully before merging.`);
+        return spentUsd;
+      }
+      // Budget backstop: don't start another PAID re-edit once the cap is crossed. Stop and land
+      // what we have rather than discard it (the human decides at the gate).
+      if (this.budgetUsd > 0 && spentUsd > this.budgetUsd) {
+        emit("\n✗ Checks failing — budget reached, stopping.\n");
+        this.notify("failed", taskId, "Checks failing (budget reached)", `“${goal()}” — checks still fail but the task hit its $${this.budgetUsd.toFixed(2)} budget; stopping. Review before merging.`);
+        return spentUsd;
+      }
+
+      // Feed the failure back into a re-edit. Snapshot the diff first so we can detect a
+      // no-progress fix (the worker changed nothing) and stop early instead of burning attempts.
+      const before = await vcs.workingDiff(worktreePath);
+      emit("\n✗ Checks failed — fixing…\n");
+      const editStep = this.requireTask(taskId).steps.find((s) => s.id === editStepId);
+      if (!editStep) return spentUsd; // defensive — caller guarantees it exists
+      const fixContext = this.stepContext(taskId, editStepId, [changeRequest, result.digest].filter(Boolean).join("\n\n"));
+      const fixEffort = resolveEffort(this.effortPolicy, "edit");
+      const out = await this.withStepTimeout(
+        "edit",
+        this.d.capabilities.get("edit").execute({
+          step: editStep,
+          worktreePath,
+          context: fixContext,
+          model: resolveModel(this.modelPolicy, "edit"),
+          ...(fixEffort !== undefined ? { effort: fixEffort } : {}),
+          onChunk: emit,
+        })
+      );
+      this.recordUsage("edit", taskId, out.usage);
+      if (out.usage) spentUsd += costUsd(out.usage.model, out.usage.inputTokens, out.usage.outputTokens);
+
+      const after = await vcs.workingDiff(worktreePath);
+      if (after === before) {
+        emit("\n⚠ The fix changed nothing — stopping.\n");
+        this.notify("failed", taskId, "Checks failing (no fix)", `“${goal()}” — checks fail and the auto-fix couldn't change anything. Review before merging.`);
+        return spentUsd;
+      }
+    }
+    return spentUsd;
+  }
+
   /** The execute phase — run every pending step, enforce the budget cap, then commit +
    *  open the review gate (mutating task) or complete directly (read-only). Owns its own
    *  failPipeline so a thrown step is marked failed. Re-entered VERBATIM by resumeTask
@@ -1240,6 +1392,17 @@ export class Orchestrator {
           throw new Error(
             `Budget cap reached: this task has spent ~$${spentUsd.toFixed(2)} of its $${this.budgetUsd.toFixed(2)} cap. Stopping before the next step.`
           );
+        }
+      }
+
+      // Closed-loop verify + auto-fix: for a MUTATING task with an edit step, run the project's
+      // checks and feed any failure back into a re-edit BEFORE the diff is committed + gated, so
+      // the CEO reviews code that builds/passes. No-op for read-only tasks or when none configured.
+      {
+        const fresh = this.requireTask(taskId);
+        const editStep = fresh.steps.filter((s) => s.capability === "edit").pop();
+        if (editStep && fresh.gates[0] !== undefined) {
+          spentUsd = await this.verifyAndFix(taskId, project, vcs, worktreePath, editStep.id, undefined, spentUsd);
         }
       }
 
@@ -1337,6 +1500,10 @@ export class Orchestrator {
       let task = this.drive(this.requireTask(taskId), { type: "REOPEN_FOR_CHANGES", gateId });
       this.emitTaskUpdated(task);
       const changeRequest = `The reviewer (CEO) reviewed the previous diff and requested these changes:\n${notes}`;
+      // Running spend for THIS revise pass, for the budget guard — symmetric with the first run
+      // (executeFromExecuting). A revise re-runs the whole pipeline + a verify loop, so it must
+      // honor the per-task USD cap too (0 = off).
+      let spentUsd = 0;
 
       for (const planned of task.steps) {
         if (this.requireTask(taskId).status !== "executing") return; // stopped between steps
@@ -1367,12 +1534,31 @@ export class Orchestrator {
           })
         );
         this.recordUsage(step.capability, taskId, out.usage);
+        if (out.usage) spentUsd += costUsd(out.usage.model, out.usage.inputTokens, out.usage.outputTokens);
         if (this.requireTask(taskId).status !== "executing") return; // stopped during the step
         if (out.artifacts.length > 0) this.addArtifacts(this.requireTask(taskId), out.artifacts);
         this.drive(this.requireTask(taskId), { type: "COMPLETE_STEP", stepId: planned.id, summary: out.summary });
         currentStepId = undefined;
         this.d.events.emit({ type: "step_completed", taskId, stepId: planned.id });
         this.notifyTestFailure(taskId, step.capability, out.summary);
+
+        // Budget guard, same as the first run: stop before the next step once spend crosses the cap.
+        if (this.budgetUsd > 0 && spentUsd > this.budgetUsd) {
+          throw new Error(
+            `Budget cap reached: this task has spent ~$${spentUsd.toFixed(2)} of its $${this.budgetUsd.toFixed(2)} cap. Stopping before the next step.`
+          );
+        }
+      }
+
+      // Same closed-loop verify + auto-fix as the first run, now also carrying the CEO's change
+      // request into any fix re-edit. Runs BEFORE the commit so the re-reviewed diff is verified.
+      // Threads the revise pass's running spend so its budget backstop accounts for it (not 0).
+      {
+        const fresh = this.requireTask(taskId);
+        const editStep = fresh.steps.filter((s) => s.capability === "edit").pop();
+        if (editStep && fresh.gates[0] !== undefined) {
+          spentUsd = await this.verifyAndFix(taskId, project, vcs, worktreePath, editStep.id, changeRequest, spentUsd);
+        }
       }
 
       if (this.requireTask(taskId).status !== "executing") return; // stopped before commit
