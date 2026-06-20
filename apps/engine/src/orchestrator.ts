@@ -1400,6 +1400,15 @@ export class Orchestrator {
       if (this.requireTask(taskId).status !== "executing") return; // stopped during provisioning
       // Running tally of this task's model spend, for the budget guard (0 cap = off).
       let spentUsd = 0;
+      // The verify loop runs right after the LAST mutating step (edit/document) — BEFORE any later
+      // read-only step (review/test) — so a reviewer assesses VERIFIED code, not the pre-fix diff.
+      let verifyReport = "";
+      const editStep = task.steps.filter((s) => s.capability === "edit").pop();
+      const lastMutatingStepId = ((): StepId | undefined => {
+        let id: StepId | undefined;
+        for (const s of task.steps) if (s.capability === "edit" || s.capability === "document") id = s.id;
+        return id;
+      })();
       for (const planned of task.steps) {
         if (this.requireTask(taskId).status !== "executing") return; // stopped between steps
         currentStepId = planned.id;
@@ -1454,22 +1463,28 @@ export class Orchestrator {
             `Budget cap reached: this task has spent ~$${spentUsd.toFixed(2)} of its $${this.budgetUsd.toFixed(2)} cap. Stopping before the next step.`
           );
         }
+
+        // Closed-loop verify + auto-fix, positioned right after the LAST mutating step so any later
+        // read-only step (review/test) assesses VERIFIED code, not the pre-fix diff. Best-effort
+        // QUALITY: an ERROR in the auto-fix (e.g. a timed-out re-edit) must NOT discard the
+        // completed edit — catch it and land at the gate with an honest "couldn't verify", exactly
+        // like the couldNotRun path. The human still decides.
+        if (planned.id === lastMutatingStepId && editStep && this.requireTask(taskId).gates[0] !== undefined) {
+          try {
+            const v = await this.verifyAndFix(taskId, project, vcs, worktreePath, editStep.id, undefined, spentUsd, depsReady);
+            spentUsd = v.spentUsd;
+            verifyReport = v.report;
+          } catch (verifyErr) {
+            console.warn(`[engine] verify phase errored for task ${taskId}: ${errMessage(verifyErr)}`);
+            verifyReport = `⚠ NOT VERIFIED — the verification step errored: ${errMessage(verifyErr)}`;
+          }
+          if (this.requireTask(taskId).status !== "executing") return; // stopped during verify
+        }
       }
 
-      // Closed-loop verify + auto-fix: for a MUTATING task with an edit step, run the project's
-      // checks and feed any failure back into a re-edit BEFORE the diff is committed + gated, so
-      // the CEO reviews code that builds/passes. No-op for read-only tasks or when none configured.
-      let verifyReport = "";
-      {
-        const fresh = this.requireTask(taskId);
-        const editStep = fresh.steps.filter((s) => s.capability === "edit").pop();
-        if (editStep && fresh.gates[0] !== undefined) {
-          const v = await this.verifyAndFix(taskId, project, vcs, worktreePath, editStep.id, undefined, spentUsd, depsReady);
-          spentUsd = v.spentUsd;
-          verifyReport = v.report;
-        } else if (fresh.gates[0] !== undefined) {
-          verifyReport = "⚠ Not automatically verified."; // mutating (document-only) task with no edit step
-        }
+      // A mutating task that never verified (no edit step, e.g. document-only) is honestly "not verified".
+      if (!verifyReport && this.requireTask(taskId).gates[0] !== undefined) {
+        verifyReport = "⚠ Not automatically verified.";
       }
 
       // A read-only task (plan/review/test only) has no gate: there's no diff to
@@ -1580,6 +1595,14 @@ export class Orchestrator {
       const firstStep = task.steps[0];
       const depsReady = firstStep ? await this.provisionWorktree(taskId, worktreePath, firstStep.id) : true;
       if (this.requireTask(taskId).status !== "executing") return; // stopped during provisioning
+      // Verify after the LAST mutating step (before any later review/test), same as the first run.
+      let verifyReport = "";
+      const editStep = task.steps.filter((s) => s.capability === "edit").pop();
+      const lastMutatingStepId = ((): StepId | undefined => {
+        let id: StepId | undefined;
+        for (const s of task.steps) if (s.capability === "edit" || s.capability === "document") id = s.id;
+        return id;
+      })();
 
       for (const planned of task.steps) {
         if (this.requireTask(taskId).status !== "executing") return; // stopped between steps
@@ -1624,22 +1647,26 @@ export class Orchestrator {
             `Budget cap reached: this task has spent ~$${spentUsd.toFixed(2)} of its $${this.budgetUsd.toFixed(2)} cap. Stopping before the next step.`
           );
         }
+
+        // Verify + auto-fix right after the LAST mutating step (before any later review/test),
+        // carrying the CEO's change request into a fix re-edit. Symmetric with the first run,
+        // including the best-effort catch (a verify error never discards the revise's edit).
+        if (planned.id === lastMutatingStepId && editStep && this.requireTask(taskId).gates[0] !== undefined) {
+          try {
+            const v = await this.verifyAndFix(taskId, project, vcs, worktreePath, editStep.id, changeRequest, spentUsd, depsReady);
+            spentUsd = v.spentUsd;
+            verifyReport = v.report;
+          } catch (verifyErr) {
+            console.warn(`[engine] verify phase errored for task ${taskId}: ${errMessage(verifyErr)}`);
+            verifyReport = `⚠ NOT VERIFIED — the verification step errored: ${errMessage(verifyErr)}`;
+          }
+          if (this.requireTask(taskId).status !== "executing") return; // stopped during verify
+        }
       }
 
-      // Same closed-loop verify + auto-fix as the first run, now also carrying the CEO's change
-      // request into any fix re-edit. Runs BEFORE the commit so the re-reviewed diff is verified.
-      // Threads the revise pass's running spend so its budget backstop accounts for it (not 0).
-      let verifyReport = "";
-      {
-        const fresh = this.requireTask(taskId);
-        const editStep = fresh.steps.filter((s) => s.capability === "edit").pop();
-        if (editStep && fresh.gates[0] !== undefined) {
-          const v = await this.verifyAndFix(taskId, project, vcs, worktreePath, editStep.id, changeRequest, spentUsd, depsReady);
-          spentUsd = v.spentUsd;
-          verifyReport = v.report;
-        } else if (fresh.gates[0] !== undefined) {
-          verifyReport = "⚠ Not automatically verified.";
-        }
+      // A mutating revise that never verified (no edit step) is honestly "not verified".
+      if (!verifyReport && this.requireTask(taskId).gates[0] !== undefined) {
+        verifyReport = "⚠ Not automatically verified.";
       }
       const reportArtifact = (stepId: StepId): Artifact[] =>
         verifyReport

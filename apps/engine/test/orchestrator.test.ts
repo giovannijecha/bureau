@@ -1484,16 +1484,26 @@ describe("verify loop (closed-loop auto-fix)", () => {
   /** Build an orchestrator with a custom edit capability, vcs, and verify-command runner. The
    *  edit capability bumps `version`; the vcs diff reflects it so the no-progress guard only
    *  fires when an edit genuinely changes nothing. */
-  function setup(opts: { runner: Runner; changingDiff?: boolean; project?: ProjectConfig }) {
-    const counters = { edits: 0, version: 0, verifyRuns: 0 };
+  function setup(opts: { runner: Runner; changingDiff?: boolean; project?: ProjectConfig; editThrows?: number }) {
+    const counters = { edits: 0, version: 0, verifyRuns: 0, reviewSawEdits: -1 };
     const reg = new CapabilityRegistry();
     reg.register({
       kind: "edit",
       async execute(input) {
         counters.edits++;
         counters.version++;
+        if (opts.editThrows === counters.edits) throw new Error("re-edit boom"); // simulate a verify-phase fix throwing
         input.onChunk?.(`edit ${counters.edits}`);
         return { artifacts: [], summary: `edit ${counters.edits}`, usage: { inputTokens: 100, outputTokens: 50, model: "claude-opus-4-8" } };
+      },
+    });
+    reg.register({
+      kind: "review",
+      // Records how many edits had run by the time review assessed the change — so a test can
+      // prove review sees VERIFIED (post-fix) code, not the pre-fix diff.
+      async execute() {
+        counters.reviewSawEdits = counters.edits;
+        return { artifacts: [], summary: "Looks good." };
       },
     });
     const v = fakeVcs();
@@ -1600,6 +1610,48 @@ describe("verify loop (closed-loop auto-fix)", () => {
     expect(called).toBe(0); // the runner was never invoked — no command to run
     expect(store.load(draft.id)!.status).toBe("awaiting_human");
     expect(v.calls.commitAll).toHaveLength(1);
+  });
+
+  it("a verify-phase error lands at the gate (preserving the edit), never aborts the task", async () => {
+    // Verify always fails → a fix re-edit is triggered; that re-edit THROWS (e.g. a timed-out worker).
+    const { o, v } = setup({
+      changingDiff: true,
+      editThrows: 2, // the initial edit succeeds; the fix re-edit throws
+      runner: async () => ({ stdout: "", stderr: "fail", code: 1, timedOut: false }),
+    });
+    const draft = o.createTask(EDIT_ONLY);
+    await o.startTask(draft.id);
+    await o.settle(draft.id);
+
+    const task = store.load(draft.id)!;
+    expect(task.status).toBe("awaiting_human"); // NOT aborted — the completed edit survives for review
+    expect(v.calls.commitAll).toHaveLength(1);
+    expect(task.artifacts.find((a) => a.kind === "report")?.ref).toContain("errored"); // honest status
+  });
+
+  it("runs verify BEFORE a later review step — the reviewer assesses VERIFIED code, not the pre-fix diff", async () => {
+    // Fail the first verify, pass after one fix re-edit.
+    const { o, counters } = setup({
+      changingDiff: true,
+      runner: async () =>
+        counters.version >= 2
+          ? { stdout: "ok", stderr: "", code: 0, timedOut: false }
+          : { stdout: "boom", stderr: "TypeError", code: 1, timedOut: false },
+    });
+    const draft = o.createTask({
+      title: "edit then review",
+      summary: "x",
+      steps: [
+        { capability: "edit", description: "make the change" },
+        { capability: "review", description: "check it before merge" },
+      ],
+    });
+    await o.startTask(draft.id);
+    await o.settle(draft.id);
+
+    expect(counters.edits).toBe(2); // initial edit + one verify-driven fix
+    expect(counters.reviewSawEdits).toBe(2); // review ran AFTER the fix → it assessed verified code
+    expect(store.load(draft.id)!.status).toBe("awaiting_human");
   });
 
   it("persists an HONEST measured verification status (artifact + PR body) when checks pass", async () => {
